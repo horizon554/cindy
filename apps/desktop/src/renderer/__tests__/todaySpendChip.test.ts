@@ -190,12 +190,8 @@ describe('TodaySpendChip dashboard routing', () => {
     expect(source).toContain('todaySpend.claude.windowLine');
     expect(source).toContain('todaySpend.claude.resetAt');
     expect(source).toContain('todaySpend.claude.resetInAt');
-    // Claude chip 保留稳定窗口身份,reset 时间只放 tooltip。周限即使恰好剩 5h
-    // 也必须显示 Weekly / Fable weekly,不能与 5h 窗口同名。
-    expect(source).toContain("label: '5h',");
-    expect(source).toContain('label: weekly.label,');
-    expect(source).toContain('resetIn: formatCompactTimeUntilReset(window.resetsAt, nowMs, t)');
-    expect(source).not.toContain('weekly.modelDisplayName ? `${weekly.modelDisplayName} ${countdown}` : countdown');
+    // 稳定窗口身份与完整 reset tooltip 的最终输出由 todaySpendChip.behavior.test.tsx
+    // 直接渲染组件验证；这里仅保留形态路由契约。
     expect(source).toContain('todaySpend.claude.sessionValueLabel');
     expect(source).toContain('todaySpend.claude.planLine');
     // 告警判定是纯数据判定, 统一收在 shared/claudeSubscriptionUsage.ts (有直接单测:
