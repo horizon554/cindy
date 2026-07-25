@@ -139,7 +139,7 @@ describe('TodaySpendChip dashboard routing', () => {
     expect(source).toContain('getCodexWindowUsages(snapshot, t, nowMs)');
     expect(source).toContain('todaySpend.codex.planCreditsLine');
     expect(source).toContain('todaySpend.codex.windowLine');
-    // chip 主体 label 统一为距 reset 的剩余时长倒计时 (Claude / Codex 同一函数),
+    // Codex chip 主体 label 为距 reset 的剩余时长倒计时,
     // tooltip 保留窗口名 + 精确 reset 时间点
     expect(source).toContain('function formatCompactTimeUntilReset(');
     expect(source).toContain('function toCodexChipWindow(');
@@ -189,8 +189,13 @@ describe('TodaySpendChip dashboard routing', () => {
     expect(source).toContain('todaySpend.claude.weeklyLabel');
     expect(source).toContain('todaySpend.claude.windowLine');
     expect(source).toContain('todaySpend.claude.resetAt');
-    // chip 周限段: scoped 命中时倒计时前带模型名标注口径 (「Fable 7天 剩余 78%」)
-    expect(source).toContain('weekly.modelDisplayName ? `${weekly.modelDisplayName} ${countdown}` : countdown');
+    expect(source).toContain('todaySpend.claude.resetInAt');
+    // Claude chip 保留稳定窗口身份,reset 时间只放 tooltip。周限即使恰好剩 5h
+    // 也必须显示 Weekly / Fable weekly,不能与 5h 窗口同名。
+    expect(source).toContain("label: '5h',");
+    expect(source).toContain('label: weekly.label,');
+    expect(source).toContain('resetIn: formatCompactTimeUntilReset(window.resetsAt, nowMs, t)');
+    expect(source).not.toContain('weekly.modelDisplayName ? `${weekly.modelDisplayName} ${countdown}` : countdown');
     expect(source).toContain('todaySpend.claude.sessionValueLabel');
     expect(source).toContain('todaySpend.claude.planLine');
     // 告警判定是纯数据判定, 统一收在 shared/claudeSubscriptionUsage.ts (有直接单测:
