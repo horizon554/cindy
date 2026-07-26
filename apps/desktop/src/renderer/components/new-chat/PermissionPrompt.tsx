@@ -11,20 +11,47 @@
  *   Enter       → Allow once
  *   Ctrl+Enter  → Always allow for session
  *   Esc         → Deny
+ *   Shift+Tab   → cycle permission mode (only with `modeSwitch`; combo is
+ *                 user-rebindable via the `cycle-permission-mode` registry)
+ *
+ * `modeSwitch` (optional): while this card is up, ChatInput is unmounted, so the
+ * composer's permission chip *and* its Shift+Tab cycling both disappear — the
+ * user gets stuck answering prompts one by one with no way to reach "auto
+ * approve". Passing `modeSwitch` puts that same chip on the card. It is a pure
+ * setting: switching modes never answers the pending request, which stays up for
+ * the user to Allow/Deny. Omit the prop and this component renders exactly as
+ * before.
  */
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import { cn } from '@/lib/utils';
 import type { PendingPermission } from '@/lib/makerChatStore';
+import { getAppShortcutCombos } from '@/lib/appShortcutStore';
+import { getNextPermissionMode } from '@/lib/permissionModeCycle';
+import type { PermissionMode } from '@/lib/userPreferences.types';
+import type { PermissionModeDescriptor } from '@/hooks/useAgentCapabilities';
+import { matchesKeyboardEvent } from '../../../shared/appShortcuts';
+import { PermissionSelector } from './PermissionSelector';
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
+export interface PermissionPromptModeSwitch {
+  permissionMode: PermissionMode;
+  onPermissionModeChange: (mode: PermissionMode) => void;
+  vendorKey: 'cc' | 'codex';
+  /** device-link 远程会话所属被控端 id;本地会话留空。 */
+  deviceId?: string;
+  /** Shift+Tab 轮切候选 —— 与下拉同一份 capabilities.permissionModes,顺序一致。 */
+  cycleOptions: readonly PermissionModeDescriptor[];
+}
+
 interface PermissionPromptProps {
   permission: PendingPermission;
   onRespond: (result: CCAgentPermissionResult) => void;
+  modeSwitch?: PermissionPromptModeSwitch;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,8 +91,13 @@ function filterSessionScopedSuggestions(suggestions?: unknown[]): unknown[] {
 // Component
 // ---------------------------------------------------------------------------
 
-export function PermissionPrompt({ permission, onRespond }: PermissionPromptProps) {
+export function PermissionPrompt({ permission, onRespond, modeSwitch }: PermissionPromptProps) {
   const { toolName, input, title, description, suggestions } = permission;
+
+  // keydown handler 只在动作 handler 变化时重注册;modeSwitch 每次渲染都是新对象,
+  // 走 ref 取最新值,避免 window listener 每帧摘挂(同 ChatInput 的 ref 桥接约定)。
+  const modeSwitchRef = useRef(modeSwitch);
+  modeSwitchRef.current = modeSwitch;
 
   const displayTitle = title || `Allow Claude to use ${toolName}?`;
   const codeContent = formatToolInput(toolName, input);
@@ -110,6 +142,24 @@ export function PermissionPrompt({ permission, onRespond }: PermissionPromptProp
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      // cycle-permission-mode (registry 默认 Shift+Tab, 用户可改绑) —— 补齐卡片期间
+      // 失效的键盘路径: ChatInput 不挂载时它的 TipTap handler 一起没了。轮切只改档,
+      // 不回应当前请求; 可用模式不足 2 个时不消费, Shift+Tab 保持原生焦点导航。
+      const cycle = modeSwitchRef.current;
+      if (
+        cycle &&
+        !e.repeat &&
+        getAppShortcutCombos('cycle-permission-mode').some((combo) =>
+          matchesKeyboardEvent(e, combo),
+        )
+      ) {
+        const next = getNextPermissionMode(cycle.permissionMode, cycle.cycleOptions);
+        if (next) {
+          e.preventDefault();
+          cycle.onPermissionModeChange(next);
+          return;
+        }
+      }
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
         handleAlwaysAllow();
@@ -158,8 +208,27 @@ export function PermissionPrompt({ permission, onRespond }: PermissionPromptProp
         <pre className="whitespace-pre-wrap break-all">{codeContent}</pre>
       </div>
 
-      {/* Action buttons — inline text + kbd badges, right-aligned */}
-      <div className="mt-4 flex items-center justify-end gap-2">
+      {/* Action buttons — inline text + kbd badges, right-aligned.
+          有 modeSwitch 时左端多一枚权限档 chip(mr-auto 顶开),窄宽(doc rail portal)
+          下允许 chip 与动作组换行分层;不传时排布与换行行为与改造前逐字一致。 */}
+      <div
+        className={cn(
+          'mt-4 flex items-center justify-end gap-2',
+          modeSwitch && 'flex-wrap',
+        )}
+      >
+        {modeSwitch && (
+          // 设置而非动作:切档只改会话后续行为,当前这条请求仍留给用户 Allow/Deny。
+          <div className="mr-auto flex min-w-0 items-center">
+            <PermissionSelector
+              permissionMode={modeSwitch.permissionMode}
+              onPermissionModeChange={modeSwitch.onPermissionModeChange}
+              vendorKey={modeSwitch.vendorKey}
+              deviceId={modeSwitch.deviceId}
+            />
+          </div>
+        )}
+
         {/* Deny */}
         <button
           type="button"

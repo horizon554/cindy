@@ -674,23 +674,37 @@ describe('远程交互接线不变式', () => {
     expect(src).toContain(': getMakerMemoryEnabled()');
   });
 
-  it('ChatInput 的 setPermissionMode 远程经隧道(makerApiFor),本机才走本机 IPC', () => {
-    const src = read('components/new-chat/ChatInput.tsx');
+  // 切档语义已从 ChatInput 抽到 lib/sessionPermissionMode.ts —— 权限卡片顶替
+  // composer 期间 ChatInput 不挂载,卡片上的同款入口必须走同一条路径,不变式跟着搬家。
+  it('setPermissionMode 远程经隧道(makerApiFor),本机才走本机 IPC', () => {
+    const src = read('lib/sessionPermissionMode.ts');
     expect(src).toContain('makerApiFor(sessionId).setPermissionMode');
     const runtimeSet = src.indexOf(
-      'await window.electronAPI.maker.setPermissionMode(sessionId, newMode);',
+      'await window.electronAPI.maker.setPermissionMode(sessionId, nextMode);',
     );
     const persistSet = src.indexOf(
-      'await sessionService.update(sessionId, { permissionMode: newMode });',
+      'await sessionService.update(sessionId, { permissionMode: nextMode });',
     );
     expect(runtimeSet).toBeGreaterThan(-1);
     expect(persistSet).toBeGreaterThan(runtimeSet);
     expect(src).toContain(
-      'await window.electronAPI.maker.setPermissionMode(sessionId, previousMode);',
+      'await window.electronAPI.maker.setPermissionMode(sessionId, currentMode);',
     );
-    expect(src).toContain('requiresFullAccessConfirmation(previousMode, newMode)');
-    expect(src).toContain('if (!confirmed) return;');
-    expect(src).toContain("toast.error(t('newChat.chatInput.permissionSwitchFailed'))");
+    expect(src).toContain('requiresFullAccessConfirmation(currentMode, nextMode)');
+    expect(src).toContain("if (!confirmed) return 'cancelled';");
+  });
+
+  it('composer 与权限卡片共用同一条切档路径,各自负责失败 toast', () => {
+    for (const rel of [
+      'components/new-chat/ChatInput.tsx',
+      'features/cc-agent/CCAgentSessionView.tsx',
+    ]) {
+      const src = read(rel);
+      expect(src).toContain('applySessionPermissionModeChange({');
+      // 各自不得再私搭一套 setPermissionMode 写入(否则远程/回滚语义会分叉)。
+      expect(src).not.toContain('.setPermissionMode(sessionId,');
+      expect(src).toContain("toast.error(t('newChat.chatInput.permissionSwitchFailed'))");
+    }
   });
 
   it('ChatInput 的 Fast 草稿默认同步必须等 onFastModeChange 成功后才执行', () => {

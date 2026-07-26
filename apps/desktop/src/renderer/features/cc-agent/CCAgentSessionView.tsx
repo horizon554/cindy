@@ -56,6 +56,7 @@ import { createWorkerLabel } from './workerLabel';
 import { TakeoverMask } from '@/components/new-chat/TakeoverMask';
 import { WorktreeCreatingOverlay } from '@/components/new-chat/WorktreeCreatingOverlay';
 import { PermissionPrompt } from '@/components/new-chat/PermissionPrompt';
+import { applySessionPermissionModeChange } from '@/lib/sessionPermissionMode';
 import { IssueConfirmCard } from './IssueConfirmCard';
 import { RenameSessionsConfirmCard } from './RenameSessionsConfirmCard';
 import { GhostGrantConfirmCard } from './GhostGrantConfirmCard';
@@ -2304,6 +2305,35 @@ export function CCAgentSessionView({
   }, [sessionId, session, handleSend, t]);
 
   const { confirm: confirmDialog } = useConfirmDialog();
+
+  // 权限卡片内的档位切换 —— 卡片顶替 composer 期间 ChatInput 不挂载,composer 上的
+  // 权限 chip 与 Shift+Tab 轮切一起失效,用户就没法在连续授权里切到自动放行。
+  // 与 ChatInput 共用 applySessionPermissionModeChange,语义(确认门 / 远程分支 /
+  // runtime-first / 回滚)只此一份。切档不回应当前 pending —— 卡片留在原地等用户决定。
+  const handlePermissionCardModeChange = useCallback(
+    async (nextMode: PermissionMode) => {
+      const outcome = await applySessionPermissionModeChange({
+        sessionId,
+        currentMode: (session?.permissionMode as PermissionMode) ?? 'ask',
+        nextMode,
+        confirmFullAccess: () =>
+          confirmDialog({
+            title: t('newChat.chatInput.fullAccessConfirmation.title'),
+            description: t('newChat.chatInput.fullAccessConfirmation.description'),
+            confirmText: t('newChat.chatInput.fullAccessConfirmation.confirm'),
+            cancelText: t('newChat.chatInput.fullAccessConfirmation.cancel'),
+          }),
+      });
+      if (outcome === 'cancelled') return;
+      if (outcome === 'failed') {
+        toast.error(t('newChat.chatInput.permissionSwitchFailed'));
+        return;
+      }
+      handlePermissionModeDidChange();
+    },
+    [confirmDialog, handlePermissionModeDidChange, session?.permissionMode, sessionId, t],
+  );
+
   // 防双击重入:ConfirmDialogProvider 是队列语义,弹窗 mount 前的连续点击会入队
   // 多个 confirm,逐个确认就会发多次 compact 请求。in-flight 期间后续点击直接 no-op。
   const compactRequestInFlightRef = useRef(false);
@@ -3074,6 +3104,13 @@ export function CCAgentSessionView({
                   <PermissionPrompt
                     permission={pendingPermission}
                     onRespond={respondToPermission}
+                    modeSwitch={{
+                      permissionMode: (session?.permissionMode as PermissionMode) ?? 'ask',
+                      onPermissionModeChange: handlePermissionCardModeChange,
+                      vendorKey: isCodex ? 'codex' : 'cc',
+                      deviceId: remoteDeviceId,
+                      cycleOptions: sessionCaps?.permissionModes ?? [],
+                    }}
                   />
                 ) : pendingAskUser ? (
                   <AskUserQuestionPrompt

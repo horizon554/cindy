@@ -15,7 +15,6 @@ import { useNavigate } from 'react-router-dom';
 import { Folder, MessageSquarePlus, Mic, Pen, TriangleAlert, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AgentInputReference } from '@cindy/maker-shared/agent-input-projection';
-import { requiresFullAccessConfirmation } from '@cindy/maker-shared/permission-mode';
 import { ImageLightbox } from '@/components/chat/ImageLightbox';
 import { TextLightbox } from '@/components/chat/TextLightbox';
 import { useEditor, EditorContent } from '@tiptap/react';
@@ -157,6 +156,7 @@ import { scanAtResources, filterAtResources, type AtResourceItem } from '@/lib/a
 import type { Effort, PermissionMode } from '@/lib/userPreferences.types';
 import { getAppShortcutCombos } from '@/lib/appShortcutStore';
 import { getNextPermissionMode } from '@/lib/permissionModeCycle';
+import { applySessionPermissionModeChange } from '@/lib/sessionPermissionMode';
 import { matchesKeyboardEvent } from '../../../shared/appShortcuts';
 import { createLogger } from '@/lib/logger';
 import { useAgentCapabilities, type AgentKind } from '@/hooks/useAgentCapabilities';
@@ -203,7 +203,7 @@ import { COMPOSER_MENTION_MIME, decodeComposerMentionPayload } from '@/lib/compo
 import { appendMentionChip } from './mentionChipInsertion';
 // device-link 远程会话:设置变更不落本地 DB(会 404),改写远程内存层 + 运行时隧道。
 import { getSessionDeviceId } from '@/features/device-link/remoteProjectsStore';
-import { makerApiFor, makerApiForDevice } from '@/lib/makerTransport';
+import { makerApiForDevice } from '@/lib/makerTransport';
 
 const log = createLogger('ChatInput');
 // perf-baseline(与 MessageStream / sidebar 的 perf/session-switch 探针同通道):
@@ -4723,45 +4723,30 @@ export function ChatInput({
     navigate('/settings?tab=providers');
   }, [navigate]);
 
+  // 切档语义(确认门 / 远程分支 / runtime-first / 回滚)统一由
+  // applySessionPermissionModeChange 持有 —— 权限卡片内的同款入口走同一条路径。
+  // 这里只留 composer 侧的壳:文案、失败 toast 和 SSoT 回调。
   const handlePermissionModeChange = useCallback(
     async (newMode: PermissionMode) => {
-      const previousMode = activePermissionModeRef.current;
-      if (requiresFullAccessConfirmation(previousMode, newMode)) {
-        const confirmed = await confirmDialog({
-          title: t('newChat.chatInput.fullAccessConfirmation.title'),
-          description: t('newChat.chatInput.fullAccessConfirmation.description'),
-          confirmText: t('newChat.chatInput.fullAccessConfirmation.confirm'),
-          cancelText: t('newChat.chatInput.fullAccessConfirmation.cancel'),
-        });
-        if (!confirmed) return;
-      }
-      try {
-        if (sessionId) {
-          if (getSessionDeviceId(sessionId)) {
-            // 控制端纯镜像:运行时隧道 setPermissionMode,被控端持久化后广播回流更新分片。
-            await makerApiFor(sessionId).setPermissionMode(sessionId, newMode);
-          } else {
-            // runtime-first:运行时成功后才持久化，避免 UI/DB 先显示已切换而实际 agent 仍是旧档。
-            await window.electronAPI.maker.setPermissionMode(sessionId, newMode);
-            try {
-              await sessionService.update(sessionId, { permissionMode: newMode });
-            } catch (persistError) {
-              // DB 写入失败时尽力恢复运行时，保持用户看到的旧设置与实际行为一致。
-              try {
-                await window.electronAPI.maker.setPermissionMode(sessionId, previousMode);
-              } catch (rollbackError) {
-                log.warn('permission runtime rollback failed:', rollbackError);
-              }
-              throw persistError;
-            }
-          }
-        }
-        // SSoT: notify parent so it refreshes `session.permissionMode` → props update.
-        onPermissionModeDidChange?.(newMode);
-      } catch (err) {
-        log.warn('permission change failed:', err);
+      const outcome = await applySessionPermissionModeChange({
+        sessionId,
+        currentMode: activePermissionModeRef.current,
+        nextMode: newMode,
+        confirmFullAccess: () =>
+          confirmDialog({
+            title: t('newChat.chatInput.fullAccessConfirmation.title'),
+            description: t('newChat.chatInput.fullAccessConfirmation.description'),
+            confirmText: t('newChat.chatInput.fullAccessConfirmation.confirm'),
+            cancelText: t('newChat.chatInput.fullAccessConfirmation.cancel'),
+          }),
+      });
+      if (outcome === 'cancelled') return;
+      if (outcome === 'failed') {
         toast.error(t('newChat.chatInput.permissionSwitchFailed'));
+        return;
       }
+      // SSoT: notify parent so it refreshes `session.permissionMode` → props update.
+      onPermissionModeDidChange?.(newMode);
     },
     [sessionId, onPermissionModeDidChange, t, confirmDialog],
   );
