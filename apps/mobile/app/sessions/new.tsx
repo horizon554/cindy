@@ -174,6 +174,7 @@ import {
   ComposerToolbarSpacer,
   ComposerToolbarVoiceSlot,
   MOBILE_COMPOSER_CONTROL_SIZE,
+  MOBILE_COMPOSER_DRAFT_TEXT_STYLE,
   MOBILE_COMPOSER_INPUT_LINE_HEIGHT,
   MOBILE_COMPOSER_INPUT_MAX_HEIGHT,
   MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT,
@@ -195,6 +196,7 @@ import {
   resolveComposerVoiceHoldActive,
   shouldArmComposerVoiceHold,
 } from '@/session/composerVoiceHold';
+import { COMPOSER_TEXT_HORIZONTAL_PADDING } from '@/session/composerTextMetrics';
 import {
   isMobileRealtimeAudioAvailable,
   prewarmMobileRealtimeAudio,
@@ -2805,7 +2807,7 @@ export default function NewRemoteSessionScreen() {
                   leading={renderComposerCollapsedAttachmentBadge()}
                   inputFrameHeight={composerResize.frameHeight}
                   inputOverlay={renderComposerInputOverlay()}
-                  inputStyle={[styles.sessionComposerInput, voiceIsListening && styles.inputVoiceHidden]}
+                  inputStyle={voiceIsListening ? styles.inputVoiceHidden : undefined}
                   inputTestID="newSession.firstMessageInput"
                   maxHeight={composerResize.inputMaxHeight}
                   multilineShape={!composerCardActive && composerInputIsMultiline}
@@ -3533,8 +3535,9 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     ...StyleSheet.absoluteFill,
     overflow: 'hidden',
   },
+  // 内边距与真实输入框同源:差一点就会让听写文字与非听写文字左右错位、换行位置不同。
   voiceDraftOverlayContent: {
-    paddingHorizontal: spacing.xs,
+    paddingHorizontal: COMPOSER_TEXT_HORIZONTAL_PADDING,
     paddingVertical: MOBILE_COMPOSER_INPUT_VERTICAL_PADDING,
   },
   voiceDraftMeasuredBlock: {
@@ -3544,10 +3547,11 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   voiceDraftCaretOverlay: {
     position: 'absolute',
   },
+  // 草稿层的文本档必须与真实 TextInput 完全一致,否则换行位置错开、超出的行被裁在
+  // 框外(见 MOBILE_COMPOSER_DRAFT_TEXT_STYLE)。
   voiceDraftText: {
     color: colors.textPrimary,
-    fontSize: typeScale.body,
-    lineHeight: MOBILE_COMPOSER_INPUT_LINE_HEIGHT,
+    ...MOBILE_COMPOSER_DRAFT_TEXT_STYLE,
   },
   voiceDraftListeningPrompt: {
     alignItems: 'center',
@@ -3556,8 +3560,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
   voiceDraftListeningText: {
     color: colors.statusReady,
-    fontSize: typeScale.body,
-    lineHeight: MOBILE_COMPOSER_INPUT_LINE_HEIGHT,
+    ...MOBILE_COMPOSER_DRAFT_TEXT_STYLE,
   },
   composerToolbarWrap: {
     position: 'relative',
@@ -3586,10 +3589,6 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     fontWeight: fontWeight.semibold,
     lineHeight: lineHeight.caption,
     minWidth: 0,
-  },
-  sessionComposerInput: {
-    fontSize: typeScale.listBody,
-    lineHeight: lineHeight.listBody,
   },
   inputVoiceHidden: {
     color: 'transparent',

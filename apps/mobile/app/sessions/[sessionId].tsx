@@ -246,6 +246,7 @@ import {
   ComposerToolbarSpacer,
   ComposerToolbarVoiceSlot,
   MOBILE_COMPOSER_CONTROL_SIZE,
+  MOBILE_COMPOSER_DRAFT_TEXT_STYLE,
   MOBILE_COMPOSER_INPUT_LINE_HEIGHT,
   MOBILE_COMPOSER_INPUT_MAX_HEIGHT,
   MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT,
@@ -301,6 +302,7 @@ import {
   resolveComposerVoiceHoldActive,
   shouldArmComposerVoiceHold,
 } from '@/session/composerVoiceHold';
+import { COMPOSER_TEXT_HORIZONTAL_PADDING } from '@/session/composerTextMetrics';
 import {
   isMobileRealtimeAudioAvailable,
   prewarmMobileRealtimeAudio,
@@ -1817,52 +1819,64 @@ export default function SessionScreen() {
     </>
   );
   const renderComposerInputOverlay = () => voiceIsListening ? (
-    <ScrollView
-      ref={voiceDraftScrollRef}
-      contentContainerStyle={styles.voiceDraftOverlayContent}
-      onContentSizeChange={() => {
-        requestAnimationFrame(() => {
-          voiceDraftScrollRef.current?.scrollToEnd({ animated: false });
-        });
-      }}
-      onLayout={() => {
-        requestAnimationFrame(() => {
-          voiceDraftScrollRef.current?.scrollToEnd({ animated: false });
-        });
-      }}
-      pointerEvents="none"
-      scrollEnabled={composerInputScrollEnabled}
-      showsVerticalScrollIndicator={false}
+    // 「点输入区 = 想打字 → 停止听写」由这层 RN 覆盖层承接。听写期间真正盖在输入区上的
+    // 就是它;底下的富文本 WebView 此刻是 hidden(opacity 0),iOS hitTest 会跳过 alpha≈0
+    // 的 view,它根本收不到触摸——把停听写挂在 WebView 的 focus / touch 上都不成立
+    // (focus 还会被 WKWebView 自己恢复焦点误触发,掐断刚开始的听写)。
+    <Pressable
+      accessibilityLabel={t('session.common.voiceStopRecording')}
+      accessibilityRole="button"
+      onPressIn={handleComposerInputPressIn}
       style={styles.voiceDraftOverlay}
+      testID="session.voiceDraftOverlay"
     >
-      {voiceDraftShowsListeningPrompt ? (
-        <View style={styles.voiceDraftListeningPrompt}>
-          <VoiceMicWaveCaret color={colors.statusReady} testID="session.voiceMicCaret" />
-          <Text style={styles.voiceDraftListeningText}>{composerLayout.input.placeholder}</Text>
-        </View>
-      ) : (
-        <View style={styles.voiceDraftMeasuredBlock}>
-          <Text
-            onTextLayout={handleVoiceDraftTextLayout}
-            style={styles.voiceDraftText}
-          >
-            {draft}
-          </Text>
-          <View
-            pointerEvents="none"
-            style={[
-              styles.voiceDraftCaretOverlay,
-              {
-                left: voiceDraftCaretFrame.left,
-                top: voiceDraftCaretFrame.top,
-              },
-            ]}
-          >
+      <ScrollView
+        ref={voiceDraftScrollRef}
+        contentContainerStyle={styles.voiceDraftOverlayContent}
+        onContentSizeChange={() => {
+          requestAnimationFrame(() => {
+            voiceDraftScrollRef.current?.scrollToEnd({ animated: false });
+          });
+        }}
+        onLayout={() => {
+          requestAnimationFrame(() => {
+            voiceDraftScrollRef.current?.scrollToEnd({ animated: false });
+          });
+        }}
+        pointerEvents="none"
+        scrollEnabled={composerInputScrollEnabled}
+        showsVerticalScrollIndicator={false}
+        style={styles.voiceDraftScroll}
+      >
+        {voiceDraftShowsListeningPrompt ? (
+          <View style={styles.voiceDraftListeningPrompt}>
             <VoiceMicWaveCaret color={colors.statusReady} testID="session.voiceMicCaret" />
+            <Text style={styles.voiceDraftListeningText}>{composerLayout.input.placeholder}</Text>
           </View>
-        </View>
-      )}
-    </ScrollView>
+        ) : (
+          <View style={styles.voiceDraftMeasuredBlock}>
+            <Text
+              onTextLayout={handleVoiceDraftTextLayout}
+              style={styles.voiceDraftText}
+            >
+              {draft}
+            </Text>
+            <View
+              pointerEvents="none"
+              style={[
+                styles.voiceDraftCaretOverlay,
+                {
+                  left: voiceDraftCaretFrame.left,
+                  top: voiceDraftCaretFrame.top,
+                },
+              ]}
+            >
+              <VoiceMicWaveCaret color={colors.statusReady} testID="session.voiceMicCaret" />
+            </View>
+          </View>
+        )}
+      </ScrollView>
+    </Pressable>
   ) : null;
   const measureSendButtonTarget = useCallback(() => {
     sendButtonRef.current?.measureInWindow((x, y, width, height) => {
@@ -7111,10 +7125,7 @@ export default function SessionScreen() {
                           setComposerVoiceHoldArmed(false);
                         }}
                         onChangeDocument={applyRichComposerChange}
-                        onFocus={() => {
-                          setComposerFocused(true);
-                          handleComposerInputPressIn();
-                        }}
+                        onFocus={() => setComposerFocused(true)}
                         onHeightChange={handleComposerRichInputHeight}
                         onPasteImages={(uris) => void addPastedImageAttachments(uris)}
                         onPasteImagesLoading={beginPastePlaceholders}
@@ -7134,7 +7145,7 @@ export default function SessionScreen() {
                       />
                     )}
                     inputOverlay={renderComposerInputOverlay()}
-                    inputStyle={[styles.sessionComposerInput, voiceIsListening && styles.inputVoiceHidden]}
+                    inputStyle={voiceIsListening ? styles.inputVoiceHidden : undefined}
                     inputTestID="session.composerInput"
                     leading={renderComposerCollapsedAttachmentBadge()}
                     maxHeight={composerResize.inputMaxHeight}
@@ -8319,16 +8330,17 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
     backgroundColor: colors.surfaceChip,
     borderColor: colors.borderStrong,
   },
-  sessionComposerInput: {
-    fontSize: typeScale.listBody,
-    lineHeight: lineHeight.listBody,
-  },
   voiceDraftOverlay: {
     ...StyleSheet.absoluteFill,
     overflow: 'hidden',
   },
+  // 草稿滚动层填满外层触摸区(外层负责「点输入区停听写」,自身 pointerEvents 关闭)。
+  voiceDraftScroll: {
+    flex: 1,
+  },
+  // 内边距与真实输入框同源:差一点就会让听写文字与非听写文字左右错位、换行位置不同。
   voiceDraftOverlayContent: {
-    paddingHorizontal: spacing.xs,
+    paddingHorizontal: COMPOSER_TEXT_HORIZONTAL_PADDING,
     paddingVertical: COMPOSER_INPUT_VERTICAL_PADDING,
   },
   voiceDraftMeasuredBlock: {
@@ -8338,10 +8350,11 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   voiceDraftCaretOverlay: {
     position: 'absolute',
   },
+  // 草稿层的文本档必须与真实 TextInput 完全一致,否则换行位置错开、超出的行被裁在
+  // 框外(见 MOBILE_COMPOSER_DRAFT_TEXT_STYLE)。
   voiceDraftText: {
     color: colors.textPrimary,
-    fontSize: typeScale.body,
-    lineHeight: COMPOSER_INPUT_LINE_HEIGHT,
+    ...MOBILE_COMPOSER_DRAFT_TEXT_STYLE,
   },
   voiceDraftListeningPrompt: {
     alignItems: 'center',
@@ -8350,8 +8363,7 @@ const makeStyles = (colors: ThemeColors) => StyleSheet.create({
   },
   voiceDraftListeningText: {
     color: colors.statusReady,
-    fontSize: typeScale.body,
-    lineHeight: COMPOSER_INPUT_LINE_HEIGHT,
+    ...MOBILE_COMPOSER_DRAFT_TEXT_STYLE,
   },
   palettePanel: {
     backgroundColor: colors.surfaceElevated,

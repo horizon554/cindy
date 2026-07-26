@@ -17,11 +17,26 @@ import { Mic } from 'lucide-react-native';
 import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { iconSize, iconStroke, useThemedStyles, type ThemeColors } from '@/theme';
-import { radius, spacing, typeScale } from '@/theme/tokens';
+import { radius, spacing } from '@/theme/tokens';
+import {
+  COMPOSER_SINGLE_LINE_HEIGHT,
+  COMPOSER_TEXT_HORIZONTAL_PADDING,
+  COMPOSER_TEXT_LINE_HEIGHT,
+  COMPOSER_TEXT_STYLE,
+  COMPOSER_TEXT_VERTICAL_PADDING,
+} from '@/session/composerTextMetrics';
 
-export const MOBILE_COMPOSER_INPUT_LINE_HEIGHT = 22;
-export const MOBILE_COMPOSER_INPUT_VERTICAL_PADDING = 3;
-export const MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT = 28;
+/**
+ * Composer 草稿文本的排版档。正本在 `composerTextMetrics`——原生输入框、WebView 富文本
+ * 编辑器与语音听写覆盖层共用同一档,任一处漂移都会让听写文字与真实输入框换行位置错开
+ * (详见该文件注释)。此处只做转出,页面按既有名字引用。
+ */
+export const MOBILE_COMPOSER_DRAFT_TEXT_STYLE = COMPOSER_TEXT_STYLE;
+
+/** 单行内容盒高 = 文本行高(两者同源,保证「单行 = 一行文字」)。 */
+export const MOBILE_COMPOSER_INPUT_LINE_HEIGHT = COMPOSER_TEXT_LINE_HEIGHT;
+export const MOBILE_COMPOSER_INPUT_VERTICAL_PADDING = COMPOSER_TEXT_VERTICAL_PADDING;
+export const MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT = COMPOSER_SINGLE_LINE_HEIGHT;
 export const MOBILE_COMPOSER_INPUT_MAX_VISIBLE_LINES = 12;
 export const MOBILE_COMPOSER_INPUT_MAX_HEIGHT = (MOBILE_COMPOSER_INPUT_LINE_HEIGHT * MOBILE_COMPOSER_INPUT_MAX_VISIBLE_LINES)
   + (MOBILE_COMPOSER_INPUT_VERTICAL_PADDING * 2);
@@ -518,16 +533,17 @@ const makeMobileComposerInputRowStyles = (colors: ThemeColors) => ({
     height: MOBILE_COMPOSER_CONTROL_SIZE,
     width: MOBILE_COMPOSER_CONTROL_SIZE,
   },
+  // 字号 / 行高 / 水平内边距全部走 composerTextMetrics:WebView 富文本编辑器与语音
+  // 听写覆盖层用同一份度量,三边换行位置必须逐字一致(见该文件注释)。
   input: {
     backgroundColor: 'transparent',
     borderWidth: 0,
     color: colors.textPrimary,
     flex: 1,
-    fontSize: typeScale.body,
-    lineHeight: MOBILE_COMPOSER_INPUT_LINE_HEIGHT,
+    ...COMPOSER_TEXT_STYLE,
     maxHeight: MOBILE_COMPOSER_INPUT_MAX_HEIGHT,
     minHeight: MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT,
-    paddingHorizontal: spacing.xs,
+    paddingHorizontal: COMPOSER_TEXT_HORIZONTAL_PADDING,
     paddingVertical: MOBILE_COMPOSER_INPUT_VERTICAL_PADDING,
     textAlignVertical: 'top',
   },

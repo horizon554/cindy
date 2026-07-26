@@ -93,6 +93,32 @@ describe('mobile composer rich input HTML', () => {
     expect(selectSource).not.toContain('composerInputRef.current?.focus();');
   });
 
+  /**
+   * 「点输入区 = 想打字 → 停止听写」必须由听写期间盖在输入区上的 RN 覆盖层承接:
+   * - 挂 WebView 的 focus 不行:WKWebView 在输入区展开、拿到 native 焦点后会自己恢复
+   *   DOM 焦点并派发 focus,收起态点语音、输入框展开的那一拍就把刚开始的听写掐断;
+   * - 挂 WebView 内的触摸也不行:听写期间富文本编辑器是 hidden(opacity 0),iOS hitTest
+   *   跳过 alpha≈0 的 view,它根本收不到触摸。
+   * 两条都由 2026-07 的实机日志确认。
+   */
+  it('stops dictation from the RN draft overlay instead of WebView focus', () => {
+    const screenSource = readFileSync(
+      resolve(process.cwd(), 'app/sessions/[sessionId].tsx'),
+      'utf8',
+    ).replace(/\r\n/g, '\n');
+    const overlayStart = screenSource.indexOf('const renderComposerInputOverlay = ');
+    const overlaySource = screenSource.slice(
+      overlayStart,
+      screenSource.indexOf('const measureSendButtonTarget', overlayStart),
+    );
+
+    expect(overlaySource).toContain('onPressIn={handleComposerInputPressIn}');
+    expect(overlaySource).toContain('testID="session.voiceDraftOverlay"');
+    // 草稿滚动层本身不吃触摸,交给外层覆盖层。
+    expect(overlaySource).toContain('pointerEvents="none"');
+    expect(screenSource).toContain('onFocus={() => setComposerFocused(true)}');
+  });
+
   it('rejects malformed image messages at the WebView boundary', () => {
     expect(parseComposerWebMessage(JSON.stringify({ type: 'paste-images-start', count: '2' }))).toBeNull();
     expect(parseComposerWebMessage(JSON.stringify({

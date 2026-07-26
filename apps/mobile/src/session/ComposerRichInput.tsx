@@ -12,6 +12,7 @@ import {
 } from '@/session/composerDocument';
 import { composerNodesForBoundedPlainTextPaste } from '@/session/composerPaste';
 import { buildComposerRichInputHtml, type ComposerRichInputTheme } from '@/session/composerRichInputHtml';
+import { COMPOSER_SINGLE_LINE_HEIGHT } from '@/session/composerTextMetrics';
 import {
   parseComposerWebMessage,
   type ComposerWebMessage,
@@ -326,7 +327,9 @@ export const ComposerRichInput = forwardRef<ComposerRichInputHandle, ComposerRic
         return;
       }
       if (message.type === 'height') {
-        if (Number.isFinite(message.height)) onHeightChange?.(Math.max(28, Math.min(maxHeight, message.height)));
+        if (Number.isFinite(message.height)) {
+          onHeightChange?.(Math.max(COMPOSER_SINGLE_LINE_HEIGHT, Math.min(maxHeight, message.height)));
+        }
         return;
       }
       if (message.type === 'focus') return onFocus?.();
@@ -406,6 +409,6 @@ const styles = StyleSheet.create({
     // react-native-webview defaults the native child to flex: 1. Override it
     // because this composer drives the child with an explicit measured height.
     flex: 0,
-    minHeight: 28,
+    minHeight: COMPOSER_SINGLE_LINE_HEIGHT,
   },
 });
