@@ -22,6 +22,7 @@ import type {
 } from '@cindy/model-providers';
 import {
   findReservedOAuthExtraParam,
+  isLoopbackProviderUrl,
   isProviderRequestPath,
 } from '@cindy/model-providers';
 
@@ -43,6 +44,23 @@ export type ValidationResult =
 
 function invalid(message: string): ValidationResult {
   return { ok: false, code: 'INVALID_PARAMS', message };
+}
+
+function validateNoAuthLoopbackBoundary(
+  auth: CustomProviderConfig['auth'],
+  runtimes: Partial<Record<AgentKind, CustomProviderRuntimeConfig>>,
+): ValidationResult {
+  if (auth?.method !== 'none') return { ok: true };
+  for (const [agent, runtime] of Object.entries(runtimes)) {
+    if (!runtime) continue;
+    if (!isLoopbackProviderUrl(runtime.baseUrl)) {
+      return invalid(`runtime '${agent}' baseUrl must be loopback when auth method is none`);
+    }
+    if (runtime.modelsUrl !== undefined && !isLoopbackProviderUrl(runtime.modelsUrl)) {
+      return invalid(`runtime '${agent}' modelsUrl must be loopback when auth method is none`);
+    }
+  }
+  return { ok: true };
 }
 
 function validateRuntime(agent: string, rt: unknown): ValidationResult {
@@ -286,7 +304,10 @@ export function validateCustomProviderConfig(config: unknown): ValidationResult 
     const r = validateRuntime(k, rts[k]);
     if (!r.ok) return r;
   }
-  return { ok: true };
+  return validateNoAuthLoopbackBoundary(
+    c.auth as CustomProviderConfig['auth'],
+    rts as Partial<Record<AgentKind, CustomProviderRuntimeConfig>>,
+  );
 }
 
 /** 规整单个 runtime（trim baseUrl、去重 models、裁 headers）。 */
@@ -453,7 +474,16 @@ function parseRuntimes(raw: string): Partial<Record<AgentKind, CustomProviderRun
 
 function rowToConfig(row: typeof customProviders.$inferSelect): CustomProviderConfig {
   const auth = parseAuth(row.auth);
-  return { id: row.id, name: row.name, ...(auth ? { auth } : {}), runtimes: parseRuntimes(row.runtimes) };
+  const runtimes = parseRuntimes(row.runtimes);
+  // #527 之前保存的远程 auth:none 记录保留原始表单数据，供设置页展示和修复。
+  // buildUserProvider 会把不满足当前 loopback 边界的 runtime 标成 disabled；路由解析
+  // 一律拒绝 disabled 描述符，因此不会把历史远程 endpoint 重新解释成 API-key 路由。
+  return {
+    id: row.id,
+    name: row.name,
+    ...(auth ? { auth } : {}),
+    runtimes,
+  };
 }
 
 /** 列出当前账号的全部自定义供应商（按 sortOrder 升序，再按 createdAt）。 */

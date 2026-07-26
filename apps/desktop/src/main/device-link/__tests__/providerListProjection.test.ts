@@ -36,6 +36,20 @@ const project = (result: unknown) =>
   __testing.projectInvokeResultForTunnel('maker:provider:list', result) as {
     providers: Record<string, unknown>[];
   };
+const projectForCurrentController = (result: unknown) =>
+  __testing.projectInvokeResultForTunnel('maker:provider:list', result, true) as {
+    providers: Record<string, unknown>[];
+  };
+
+describe('controller capability metadata', () => {
+  it('distinguishes an absent subscribe field from an explicit empty capability set', () => {
+    expect(__testing.optionalControllerCapabilities({})).toBeUndefined();
+    expect(__testing.optionalControllerCapabilities({ capabilities: [] })).toEqual([]);
+    expect(__testing.optionalControllerCapabilities({
+      capabilities: ['provider-logo-kinds-v2', 42, 'provider-logo-kinds-v2'],
+    })).toEqual(['provider-logo-kinds-v2']);
+  });
+});
 
 /** 一个带完整 routing(含执行机密 + 残留 supportsFastMode)+ per-provider models 的被控端 provider。仿 XD 网关。 */
 function xdProviderWithFullRouting() {
@@ -146,6 +160,36 @@ describe('projectInvokeResultForTunnel — maker:provider:list 投影', () => {
     expect(providers[0].routing).toEqual({ 'claude-code': {} });
     expect(JSON.stringify(providers[0])).not.toContain('api.moonshot.cn');
     expect(JSON.stringify(providers[0])).not.toContain('secret');
+  });
+
+  it('新 logo kind 不发给独立更新的旧版 mobile，避免旧路径表索引 undefined', () => {
+    const { providers } = project({
+      providers: [{
+        ...xdProviderWithFullRouting(),
+        id: 'my-renamed-vercel-provider',
+        routing: {
+          codex: { upstream: 'https://ai-gateway.vercel.sh/v1' },
+        },
+      }],
+    });
+
+    expect(providers[0]).not.toHaveProperty('logoKind');
+    expect(providers[0].routing).toEqual({ codex: {} });
+  });
+
+  it('声明完整 logo 能力的当前控制端收到新 logo kind', () => {
+    const { providers } = projectForCurrentController({
+      providers: [{
+        ...xdProviderWithFullRouting(),
+        id: 'my-renamed-vercel-provider',
+        routing: {
+          codex: { upstream: 'https://ai-gateway.vercel.sh/v1' },
+        },
+      }],
+    });
+
+    expect(providers[0].logoKind).toBe('vercel');
+    expect(providers[0].routing).toEqual({ codex: {} });
   });
 
   it('混合品牌 routing 不产生 logoKind,也不透传伪造值', () => {

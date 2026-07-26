@@ -15,6 +15,7 @@
  */
 
 import {
+  isLoopbackProviderUrl,
   isProviderRequestPath,
   type AgentKind,
   type CustomProviderConfig,
@@ -43,6 +44,7 @@ import { MAKER_INVOKE } from './channels.js';
 import type { IpcHandlerRegistry } from './ipcHandlerRegistry.js';
 
 const VALID_AGENTS: readonly string[] = ['claude-code', 'codex'];
+const VALID_ADHOC_AUTH_METHODS: readonly string[] = ['apiKey', 'oauth', 'none'];
 
 function sortedStringRecord(value: Record<string, string> | undefined): Record<string, string> | undefined {
   if (!value) return undefined;
@@ -134,6 +136,10 @@ function parseTestInput(input: unknown): ProviderTestInput | null {
     if (!s || typeof s !== 'object') return null;
     const spec = s as Record<string, unknown>;
     if (typeof spec.agent !== 'string' || !VALID_AGENTS.includes(spec.agent)) return null;
+    if (
+      typeof spec.authMethod !== 'string'
+      || !VALID_ADHOC_AUTH_METHODS.includes(spec.authMethod)
+    ) return null;
     if (typeof spec.baseUrl !== 'string' || spec.baseUrl.length === 0) return null;
     try {
       const u = new URL(spec.baseUrl);
@@ -141,6 +147,7 @@ function parseTestInput(input: unknown): ProviderTestInput | null {
     } catch {
       return null;
     }
+    if (spec.authMethod === 'none' && !isLoopbackProviderUrl(spec.baseUrl)) return null;
     if (typeof spec.modelId !== 'string' || spec.modelId.length === 0) return null;
     if (spec.apiKey !== undefined && spec.apiKey !== null && typeof spec.apiKey !== 'string') return null;
     if (spec.headers !== undefined) {
@@ -160,6 +167,7 @@ function parseTestInput(input: unknown): ProviderTestInput | null {
         agent: spec.agent as AgentKind,
         baseUrl: spec.baseUrl,
         modelId: spec.modelId,
+        authMethod: spec.authMethod as ProviderProbeSpec['authMethod'],
         wireProtocol: spec.wireProtocol as ProviderProbeSpec['wireProtocol'],
         requestPath: spec.requestPath as string | undefined,
         apiKey: (spec.apiKey as string | null | undefined) ?? null,
@@ -175,6 +183,10 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
   if (!input || typeof input !== 'object') return null;
   const spec = input as Record<string, unknown>;
   if (typeof spec.agent !== 'string' || !VALID_AGENTS.includes(spec.agent)) return null;
+  if (
+    typeof spec.authMethod !== 'string'
+    || !VALID_ADHOC_AUTH_METHODS.includes(spec.authMethod)
+  ) return null;
   if (typeof spec.baseUrl !== 'string' || spec.baseUrl.length === 0) return null;
   const httpUrlOk = (v: string): boolean => {
     try {
@@ -188,6 +200,17 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
   if (spec.modelsUrl !== undefined && spec.modelsUrl !== null) {
     if (typeof spec.modelsUrl !== 'string' || !httpUrlOk(spec.modelsUrl)) return null;
   }
+  if (
+    spec.authMethod === 'none'
+    && (
+      !isLoopbackProviderUrl(spec.baseUrl)
+      || (
+        typeof spec.modelsUrl === 'string'
+        && spec.modelsUrl.trim().length > 0
+        && !isLoopbackProviderUrl(spec.modelsUrl)
+      )
+    )
+  ) return null;
   if (spec.apiKey !== undefined && spec.apiKey !== null && typeof spec.apiKey !== 'string') return null;
   if (spec.headers !== undefined) {
     if (!spec.headers || typeof spec.headers !== 'object' || Array.isArray(spec.headers)) return null;
@@ -196,6 +219,7 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
   return {
     agent: spec.agent as AgentKind,
     baseUrl: spec.baseUrl,
+    authMethod: spec.authMethod as ProviderModelsFetchSpec['authMethod'],
     modelsUrl: (spec.modelsUrl as string | null | undefined) ?? null,
     apiKey: (spec.apiKey as string | null | undefined) ?? null,
     headers: spec.headers as Record<string, string> | undefined,
