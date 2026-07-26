@@ -59,19 +59,36 @@ interface AddProviderWizardProps {
 type Selection =
   { kind: 'oauth'; provider: ProviderView } | { kind: 'preset'; preset: ProviderPreset };
 
+type PresetBaseUrls = Partial<Record<AgentKind, string>>;
+
 const AGENT_LABEL: Record<AgentKind, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
 };
 
-function resolveRuntimeBaseUrl(
-  editedUrls: Partial<Record<AgentKind, string>>,
+function presetRuntimeBaseUrl(
+  preset: ProviderPreset,
   agent: AgentKind,
-  fallback: string,
+  edited: PresetBaseUrls,
 ): string {
-  return Object.prototype.hasOwnProperty.call(editedUrls, agent)
-    ? (editedUrls[agent] ?? '').trim()
-    : fallback;
+  const runtime = preset.runtimes[agent];
+  if (!runtime) return '';
+  return runtime.baseUrlEditable
+    ? (edited[agent] ?? runtime.baseUrl).trim()
+    : runtime.baseUrl;
+}
+
+function isValidEditablePresetBaseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:')
+      && !url.username
+      && !url.password
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -265,9 +282,7 @@ export function AddProviderWizard({
   // 预设表单态
   const [name, setName] = useState('');
   const [apiKey, setApiKey] = useState('');
-  const [runtimeBaseUrls, setRuntimeBaseUrls] = useState<
-    Partial<Record<AgentKind, string>>
-  >({});
+  const [presetBaseUrls, setPresetBaseUrls] = useState<PresetBaseUrls>({});
   const [saving, setSaving] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
   const genericDeviceProviderId =
@@ -352,11 +367,11 @@ export function AddProviderWizard({
       setSel({ kind: 'preset', preset });
       setName(presetDisplayName(preset, i18n.language));
       setApiKey('');
-      setRuntimeBaseUrls(
+      setPresetBaseUrls(
         Object.fromEntries(
           (Object.keys(preset.runtimes) as AgentKind[])
             .map((agent) => [agent, preset.runtimes[agent]?.baseUrl ?? '']),
-        ) as Partial<Record<AgentKind, string>>,
+        ) as PresetBaseUrls,
       );
       setStep(2);
     },
@@ -474,6 +489,12 @@ export function AddProviderWizard({
   const startFetch = useCallback(async () => {
     if (!sel || sel.kind !== 'preset') return;
     const preset = sel.preset;
+    const editableBaseUrlsValid = (Object.keys(preset.runtimes) as AgentKind[]).every((agent) => {
+      const rt = preset.runtimes[agent];
+      return !rt?.baseUrlEditable
+        || isValidEditablePresetBaseUrl(presetRuntimeBaseUrl(preset, agent, presetBaseUrls));
+    });
+    if (!editableBaseUrlsValid) return;
     // 预设推荐模型先入清单(预勾);归属 = 预设里列出该模型的全部 runtime。
     const initial = new Map<
       string,
@@ -503,7 +524,7 @@ export function AddProviderWizard({
         try {
           const r = await window.electronAPI.maker.fetchProviderModels({
             agent,
-            baseUrl: resolveRuntimeBaseUrl(runtimeBaseUrls, agent, rt.baseUrl),
+            baseUrl: presetRuntimeBaseUrl(preset, agent, presetBaseUrls),
             modelsUrl: rt.modelsUrl ?? null,
             apiKey: apiKey.trim() || null,
             ...(rt.headers ? { headers: rt.headers } : {}),
@@ -534,7 +555,7 @@ export function AddProviderWizard({
     });
     // 全部端点都失败才算失败(单端失败仍可按另一端 + 预设推荐完成)。
     setFetchState({ status: 'done', failed: !results.some((r) => r.ok) });
-  }, [sel, apiKey, runtimeBaseUrls]);
+  }, [sel, apiKey, presetBaseUrls]);
 
   // ── 完成创建(预设)────────────────────────────────────────────────────
   const handleFinish = useCallback(async () => {
@@ -575,9 +596,9 @@ export function AddProviderWizard({
           });
         if (agentModels.length === 0) continue;
         runtimes[agent] = {
-          baseUrl: resolveRuntimeBaseUrl(runtimeBaseUrls, agent, rt.baseUrl),
-          ...(rt.requestPath ? { requestPath: rt.requestPath } : {}),
+          baseUrl: presetRuntimeBaseUrl(preset, agent, presetBaseUrls),
           ...(rt.wireProtocol ? { wireProtocol: rt.wireProtocol } : {}),
+          ...(rt.requestPath ? { requestPath: rt.requestPath } : {}),
           models: agentModels,
           ...(rt.headers ? { headers: rt.headers } : {}),
           ...(rt.modelsUrl ? { modelsUrl: rt.modelsUrl } : {}),
@@ -611,7 +632,7 @@ export function AddProviderWizard({
     } finally {
       setSaving(false);
     }
-  }, [sel, picks, name, apiKey, runtimeBaseUrls, providers, onDone, t, i18n.language]);
+  }, [sel, picks, name, apiKey, presetBaseUrls, providers, onDone, t, i18n.language]);
 
   // ── 步骤指示(OAuth 路径只有 2 步)─────────────────────────────────────
   const totalSteps = sel?.kind === 'preset' ? 3 : 2;
@@ -651,19 +672,11 @@ export function AddProviderWizard({
     sel?.kind === 'preset'
     && presetAgents.every((agent) => {
       const runtime = sel.preset.runtimes[agent];
-      const value = runtime
-        ? resolveRuntimeBaseUrl(runtimeBaseUrls, agent, runtime.baseUrl)
-        : '';
-      try {
-        const url = new URL(value);
-        return (
-          (url.protocol === 'http:' || url.protocol === 'https:')
-          && !url.username
-          && !url.password
-        );
-      } catch {
-        return false;
-      }
+      return !!runtime
+        && (!runtime.baseUrlEditable
+          || isValidEditablePresetBaseUrl(
+            presetRuntimeBaseUrl(sel.preset, agent, presetBaseUrls),
+          ));
     });
   const presetCanContinue =
     sel?.kind === 'preset'
@@ -1008,6 +1021,8 @@ export function AddProviderWizard({
                   const rt = sel.preset.runtimes[agent];
                   const bridged = agent === 'codex' && rt?.wireProtocol === 'openai-chat';
                   if (rt?.baseUrlEditable) {
+                    const value = presetBaseUrls[agent] ?? rt.baseUrl;
+                    const valid = isValidEditablePresetBaseUrl(value.trim());
                     return (
                       <label key={agent} className="flex flex-col gap-1.5">
                         <span
@@ -1020,20 +1035,26 @@ export function AddProviderWizard({
                         </span>
                         <input
                           type="url"
-                          value={runtimeBaseUrls[agent] ?? rt.baseUrl}
+                          value={value}
                           onChange={(event) =>
-                            setRuntimeBaseUrls((prev) => ({
+                            setPresetBaseUrls((prev) => ({
                               ...prev,
                               [agent]: event.target.value,
                             }))
                           }
+                          aria-invalid={!valid}
                           className="h-9 rounded-full border px-4 font-mono text-12 outline-none focus:ring-2 focus:ring-[var(--focus-ring)]"
                           style={{
-                            borderColor: 'var(--border-default)',
+                            borderColor: valid ? 'var(--border-default)' : 'var(--status-error)',
                             backgroundColor: 'var(--surface-elevated)',
                             color: 'var(--settings-section-title)',
                           }}
                         />
+                        {bridged && (
+                          <span className="text-11" style={{ color: 'var(--text-tertiary)' }}>
+                            {t('settings.providers.wizard.bridgedNote')}
+                          </span>
+                        )}
                       </label>
                     );
                   }

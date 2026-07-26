@@ -9,7 +9,6 @@ import {
   updateCustomProvider,
 } from '../customProviders';
 import type { ProviderView } from '@cindy/model-providers';
-
 afterEach(() => {
   vi.unstubAllGlobals();
 });
