@@ -15,6 +15,7 @@ import { app, BrowserWindow } from 'electron';
 import WebSocket from 'ws';
 import {
   DeviceLinkClient,
+  CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
   DL_SUBSCRIBE_CHANNEL,
   DL_UNSUBSCRIBE_CHANNEL,
   type DeviceLinkConnectionIssue,
@@ -647,6 +648,7 @@ export async function openRemoteLink(deviceId: string): Promise<LinkAcceptPayloa
     controllerName: deviceName(),
     protocolVersion: 1,
     appVersion: app.getVersion(),
+    capabilities: [CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2],
   });
   openLinkInFlight.set(deviceId, request);
   const cleanup = (): void => {
@@ -696,7 +698,11 @@ export async function remoteSubscribe(
   if (!client) throw new Error('[DEVICE_LINK_NOT_CONNECTED] device-link client not initialized');
   return client.invoke(deviceId, {
     channel: DL_SUBSCRIBE_CHANNEL,
-    args: [{ topics, controllerName: deviceName() }],
+    args: [{
+      topics,
+      controllerName: deviceName(),
+      capabilities: [CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2],
+    }],
   });
 }
 

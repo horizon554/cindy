@@ -473,6 +473,21 @@ describe('none (无鉴权自定义代理 buildRouteDecision)', () => {
     });
   });
 
+  it('disabled 的历史远程无鉴权路由直接 fail closed', () => {
+    expect(
+      buildRouteDecision(
+        {
+          upstream: 'https://remote.example/v1',
+          authStrategy: 'none',
+          disabled: true,
+        },
+        KEY,
+        'codex',
+        null,
+      ),
+    ).toBeNull();
+  });
+
   it('本地 Chat 桥也剥掉复制配置里残留的鉴权与账号头', () => {
     expect(
       buildLocalHandlerHeaders({
@@ -555,6 +570,52 @@ describe('resolveSessionRouteDecision — 自定义供应商(resolve 时注入 k
       headerOverride: { authorization: 'Bearer sk-exact' },
       upstreamOverride: 'https://gateway.example/api',
       headerDelete: CODEX_ACCOUNT_HEADER_DELETE,
+    });
+  });
+
+  it('disabled runtime 返回本地错误，不允许 proxy 回落到默认供应商', async () => {
+    const disabled = buildUserProvider({
+      id: 'legacy-remote',
+      name: 'Legacy Remote',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://remote.example/v1',
+          models: [{ id: 'legacy-model', name: 'Legacy Model' }],
+        },
+      },
+      auth: { method: 'none' },
+    });
+    expect(disabled.routing.codex?.disabled).toBe(true);
+    setCustomProviders([disabled]);
+    setSessionProvider('s-user', 'legacy-remote');
+
+    const decision = await Promise.resolve(
+      resolveSessionRouteDecision('s-user', 'codex', KEY, 'legacy-model'),
+    );
+    expect(decision).toEqual({ localHandler: expect.any(Function) });
+
+    const writeHead = vi.fn();
+    const end = vi.fn();
+    await decision!.localHandler!({
+      rawBody: Buffer.from('{}'),
+      parsedBody: { model: 'legacy-model' },
+      ctx: {
+        reqId: 1,
+        method: 'POST',
+        url: '/responses',
+        headers: {},
+      },
+      res: { writeHead, end } as never,
+    });
+    expect(writeHead).toHaveBeenCalledWith(503, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+    });
+    expect(JSON.parse(end.mock.calls[0][0])).toMatchObject({
+      error: {
+        type: 'provider_route_disabled',
+        code: 'provider_route_disabled',
+      },
     });
   });
 

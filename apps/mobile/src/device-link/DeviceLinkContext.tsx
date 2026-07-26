@@ -3,6 +3,7 @@ import { AppState, Platform } from 'react-native';
 import {
   DeviceLinkClient,
   DeviceLinkError,
+  CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2,
   DL_SUBSCRIBE_CHANNEL,
   DL_UNSUBSCRIBE_CHANNEL,
   FILE_BROWSER_EVENT_CHANNEL,
@@ -367,7 +368,7 @@ export function DeviceLinkProvider({ children }: { children: ReactNode }) {
             client,
             deviceId,
             'maker:provider:list',
-            [],
+            [{ capabilities: [CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2] }],
           )
         ).catch(() => { /* 下次进入选择器或重连补齐时继续重试。 */ });
         void refreshDeviceCapabilities(client, deviceId);
@@ -662,6 +663,7 @@ async function sendOpenLink(client: DeviceLinkClient, deviceId: string): Promise
     controllerName: mobileDeviceName(),
     protocolVersion: PROTOCOL_VERSION,
     appVersion: Constants.expoConfig?.version ?? '0.0.0',
+    capabilities: [CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2],
   });
 }
 
@@ -706,7 +708,11 @@ async function sendSubscribe(
   await ensureOnlineForRequest(client);
   const result = await client.invoke(deviceId, {
     channel: DL_SUBSCRIBE_CHANNEL,
-    args: [{ topics, controllerName: mobileDeviceName() }],
+    args: [{
+      topics,
+      controllerName: mobileDeviceName(),
+      capabilities: [CONTROLLER_CAPABILITY_PROVIDER_LOGO_KINDS_V2],
+    }],
   });
   unwrapInvoke(result);
 }

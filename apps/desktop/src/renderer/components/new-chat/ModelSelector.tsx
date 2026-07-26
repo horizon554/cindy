@@ -53,6 +53,7 @@ import {
   visibleModelUnion,
   type ProviderView,
 } from '@cindy/model-providers';
+import { isProviderLogoKind } from '@cindy/model-providers/branding';
 import { getModelPriceQuote } from '../../../shared/modelPriceQuote';
 import type { ModelPricingCatalog } from '../../../shared/regionalMoney';
 import { buildProviderSections } from './sourceSwitch';
@@ -101,6 +102,7 @@ export function ProviderMark({
   providerId,
   name,
   routing,
+  logoKind,
   colorClass = 'text-[var(--model-trigger-text)]',
   withMargin = true,
   dense = false,
@@ -108,6 +110,7 @@ export function ProviderMark({
   providerId: string;
   name?: string;
   routing?: ProviderView['routing'];
+  logoKind?: ProviderView['logoKind'];
   colorClass?: string;
   withMargin?: boolean;
   /** 列表行前缀用 dense:比 trigger 小一档(约 -10%)。两套静态尺寸,JIT 友好。 */
@@ -115,11 +118,12 @@ export function ProviderMark({
 }) {
   const common = cn(withMargin && 'mr-1.5', 'shrink-0', colorClass);
   const markSize = dense ? 12.3 : 13;
-  if (hasProviderLogo(providerId, routing)) {
+  if (isProviderLogoKind(logoKind) || hasProviderLogo(providerId, routing)) {
     return (
       <ProviderLogoMark
         providerId={providerId}
         routing={routing}
+        logoKind={logoKind}
         size={markSize}
         className={
           providerId === 'xd'
@@ -156,6 +160,7 @@ export function ModelIconMark({
   providerId,
   name,
   routing,
+  logoKind,
   colorClass = 'text-[var(--model-trigger-text)]',
   withMargin = true,
   dense = false,
@@ -166,6 +171,7 @@ export function ModelIconMark({
   providerId: string;
   name?: string;
   routing?: ProviderView['routing'];
+  logoKind?: ProviderView['logoKind'];
   colorClass?: string;
   withMargin?: boolean;
   dense?: boolean;
@@ -188,6 +194,7 @@ export function ModelIconMark({
       providerId={providerId}
       name={name}
       routing={routing}
+      logoKind={logoKind}
       colorClass={colorClass}
       withMargin={withMargin}
       dense={dense}
@@ -1070,9 +1077,7 @@ function ModelSelectorContentView({
                         {t(`newChat.modelSelector.pricing.${row.kind}`)}
                       </span>
                       <span className="flex items-center justify-end gap-1.5 tabular-nums">
-                        <span className="text-[var(--model-item-text)]">
-                          {row.value}
-                        </span>
+                        <span className="text-[var(--model-item-text)]">{row.value}</span>
                         {row.originalValue && (
                           <span className="text-[var(--text-tertiary)] line-through">
                             {row.originalValue}
@@ -1227,6 +1232,7 @@ function ModelSelectorContentView({
                   providerId={provider.id}
                   name={provider.name}
                   routing={provider.routing}
+                  logoKind={provider.logoKind}
                   colorClass="text-[var(--text-secondary)]"
                   withMargin={false}
                   dense
@@ -1585,8 +1591,7 @@ export function ModelSelector({
   // 用户既看不到自己存的是什么,也看不到实际会跑什么。unknownModelLabel 让这类调用方
   // 给出诊断性文案(通常是裸 id),行为与本组件接管前一致。
   // unknown label 空串/全空白按缺省处理(否则 ?? 不回落,trigger 渲染成空白)。
-  const unknownLabel =
-    modelId && unknownModelLabel ? unknownModelLabel(modelId).trim() : '';
+  const unknownLabel = modelId && unknownModelLabel ? unknownModelLabel(modelId).trim() : '';
   const displayLabel = fallbackOption?.active
     ? fallbackOption.label
     : (currentModel?.displayName ??
@@ -1794,6 +1799,7 @@ export function ModelSelector({
             providerId={currentProviderId}
             name={disconnectedProvider?.name}
             routing={disconnectedProvider?.routing}
+            logoKind={disconnectedProvider?.logoKind}
             colorClass="text-[var(--error-fg)]"
           />
           <span
@@ -1839,6 +1845,7 @@ export function ModelSelector({
               providerId={activeSourceId}
               name={triggerActiveProvider?.name}
               routing={triggerActiveProvider?.routing}
+              logoKind={triggerActiveProvider?.logoKind}
               colorClass={
                 isCreateAgentVariant ? 'text-[var(--create-agent-control-icon)]' : undefined
               }
