@@ -92,15 +92,16 @@ const DISABLED_PROVIDER_ROUTE_ERROR = 'provider_route_disabled';
  * 已迁移但无法安全执行的历史路由必须由 proxy 原地拒绝，不能返回 null：
  * null 在两个 proxy host 里表示“未命中”，会继续走默认网关/订阅上游。
  */
-function disabledProviderRouteDecision(providerId = 'selected provider'): RoutingDecision {
+function disabledProviderRouteDecision(providerId?: string): RoutingDecision {
   return {
     localHandler: async ({ res }) => {
+      const providerLabel = providerId ? `Provider '${providerId}'` : 'The selected provider';
       const payload = JSON.stringify({
         type: 'error',
         error: {
           type: DISABLED_PROVIDER_ROUTE_ERROR,
           code: DISABLED_PROVIDER_ROUTE_ERROR,
-          message: `Provider '${providerId}' is disabled; update its endpoint or authentication settings before retrying.`,
+          message: `${providerLabel} is disabled; update its endpoint or authentication settings before retrying.`,
         },
       });
       res.writeHead(503, {

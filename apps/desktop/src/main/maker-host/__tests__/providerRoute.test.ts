@@ -473,19 +473,36 @@ describe('none (无鉴权自定义代理 buildRouteDecision)', () => {
     });
   });
 
-  it('disabled 的历史远程无鉴权路由直接 fail closed', () => {
-    expect(
-      buildRouteDecision(
-        {
-          upstream: 'https://remote.example/v1',
-          authStrategy: 'none',
-          disabled: true,
-        },
-        KEY,
-        'codex',
-        null,
-      ),
-    ).toEqual({ localHandler: expect.any(Function) });
+  it('disabled 的历史远程无鉴权路由直接 fail closed', async () => {
+    const decision = buildRouteDecision(
+      {
+        upstream: 'https://remote.example/v1',
+        authStrategy: 'none',
+        disabled: true,
+      },
+      KEY,
+      'codex',
+      null,
+    );
+    expect(decision).toEqual({ localHandler: expect.any(Function) });
+
+    const end = vi.fn();
+    await decision!.localHandler!({
+      rawBody: Buffer.from('{}'),
+      parsedBody: { model: 'legacy-model' },
+      ctx: {
+        reqId: 1,
+        method: 'POST',
+        url: '/responses',
+        headers: {},
+      },
+      res: { writeHead: vi.fn(), end } as never,
+    });
+    expect(JSON.parse(end.mock.calls[0][0])).toMatchObject({
+      error: {
+        message: 'The selected provider is disabled; update its endpoint or authentication settings before retrying.',
+      },
+    });
   });
 
   it('本地 Chat 桥也剥掉复制配置里残留的鉴权与账号头', () => {
