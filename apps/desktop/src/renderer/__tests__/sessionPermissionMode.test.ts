@@ -172,6 +172,40 @@ describe('applySessionPermissionModeChange', () => {
     expect(sessionUpdate).not.toHaveBeenCalled();
   });
 
+  // PermissionSelector 的选项 onClick 无条件回调,点当前选中项也会进来;而 maker-core
+  // 的 setPermissionMode 不管档位变没变都会 dismissAllPending。不短路的话,在权限卡片上
+  // 点开菜单又点回当前档,手里那条 pending 就被顺手结掉了。
+  it('点回当前档:零写入、不弹确认框', async () => {
+    const confirmFullAccess = vi.fn(async () => true);
+
+    const outcome = await applySessionPermissionModeChange({
+      sessionId: SESSION_ID,
+      currentMode: 'bypassPermissions',
+      nextMode: 'bypassPermissions',
+      confirmFullAccess,
+    });
+
+    expect(outcome).toBe('unchanged');
+    expect(confirmFullAccess).not.toHaveBeenCalled();
+    expect(localSetPermissionMode).not.toHaveBeenCalled();
+    expect(remoteSetPermissionMode).not.toHaveBeenCalled();
+    expect(sessionUpdate).not.toHaveBeenCalled();
+  });
+
+  it('点回当前档:远程会话同样零写入', async () => {
+    const outcome = await applySessionPermissionModeChange({
+      sessionId: SESSION_ID,
+      deviceId: 'device-1',
+      currentMode: 'acceptEdits',
+      nextMode: 'acceptEdits',
+      confirmFullAccess: confirmNever,
+    });
+
+    expect(outcome).toBe('unchanged');
+    expect(makerApiForDevice).not.toHaveBeenCalled();
+    expect(remoteSetPermissionMode).not.toHaveBeenCalled();
+  });
+
   it('无 sessionId(新建草稿)只过确认门,不碰 runtime/DB', async () => {
     const outcome = await applySessionPermissionModeChange({
       currentMode: 'ask',

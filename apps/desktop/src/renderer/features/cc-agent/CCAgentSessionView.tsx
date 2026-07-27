@@ -2341,7 +2341,8 @@ export function CCAgentSessionView({
               cancelText: t('newChat.chatInput.fullAccessConfirmation.cancel'),
             }),
         });
-        if (outcome === 'cancelled') return;
+        // unchanged = 点回当前档,一次写入都没发生,没有新状态要回流。
+        if (outcome === 'cancelled' || outcome === 'unchanged') return;
         if (outcome === 'failed') {
           toast.error(t('newChat.chatInput.permissionSwitchFailed'));
           return;

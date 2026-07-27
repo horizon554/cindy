@@ -695,6 +695,11 @@ describe('远程交互接线不变式', () => {
     );
     expect(src).toContain('requiresFullAccessConfirmation(currentMode, nextMode)');
     expect(src).toContain("if (!confirmed) return 'cancelled';");
+    // 同档短路必须在确认门之前:maker-core 的 setPermissionMode 不管档位变没变都会
+    // dismissAllPending,点回当前档就会顺手结掉手里的 pending 请求。
+    const sameModeGuard = src.indexOf("if (currentMode === nextMode) return 'unchanged';");
+    expect(sameModeGuard).toBeGreaterThan(-1);
+    expect(sameModeGuard).toBeLessThan(src.indexOf('requiresFullAccessConfirmation('));
   });
 
   it('composer 与权限卡片共用同一条切档路径,各自负责失败 toast', () => {

@@ -19,10 +19,11 @@ const log = createLogger('sessionPermissionMode');
 
 /**
  * - `ok`        已生效(runtime + 持久化都成功,或无 sessionId 的纯本地草稿态)
+ * - `unchanged` 目标档就是当前档,一次写入都没发生(见下方同档短路)
  * - `cancelled` 用户在 Full access 二次确认里点了取消,什么都没改
  * - `failed`    runtime 或持久化失败,已尽力回滚;调用方负责提示
  */
-export type PermissionModeChangeOutcome = 'ok' | 'cancelled' | 'failed';
+export type PermissionModeChangeOutcome = 'ok' | 'unchanged' | 'cancelled' | 'failed';
 
 export interface ApplySessionPermissionModeChangeParams {
   /** 无 sessionId = 新建对话草稿,只走 confirm 门,不落 runtime/DB。 */
@@ -48,6 +49,13 @@ export async function applySessionPermissionModeChange({
   nextMode,
   confirmFullAccess,
 }: ApplySessionPermissionModeChangeParams): Promise<PermissionModeChangeOutcome> {
+  // 同档短路,必须在确认门之前:PermissionSelector 的选项 onClick 无条件回调(点当前
+  // 选中项也会进来),而 maker-core 的 setPermissionMode 无论档位变没变都会
+  // dismissAllPending —— 不短路的话,用户在权限卡片上点开菜单又点回当前档,手里那条
+  // pending 请求就被"顺手"结掉了(放宽→allow,其它→deny),而他自以为什么都没改。
+  // composer 上同样受益:少一次无谓的 runtime + DB 写。
+  if (currentMode === nextMode) return 'unchanged';
+
   if (requiresFullAccessConfirmation(currentMode, nextMode)) {
     const confirmed = await confirmFullAccess();
     if (!confirmed) return 'cancelled';
