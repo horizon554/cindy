@@ -1238,7 +1238,7 @@
           "nameRequired": "表示名を入力してください",
           "runtimeRequired": "Runtime を 1 つ以上設定してください（ベース URL とモデル）",
           "baseUrlInvalid": "ベース URL は有効な http(s) アドレスである必要があります",
-          "requestPathInvalid": "正確なリクエストパスは 1 つの / で始まり、フラグメントを含めることはできません",
+          "requestPathInvalid": "正確なリクエストパスは 1 つの / で始め、フラグメントや .、.. のパスセグメントを含めないでください。空白や安全でない文字はパーセントエンコードしてください。",
           "modelRequired": "モデルを 1 つ以上追加してください",
           "oauthInvalid": "OAuth 設定が不完全です。すべての項目が必須で、両方のエンドポイントは安全な https URL である必要があります"
         },
