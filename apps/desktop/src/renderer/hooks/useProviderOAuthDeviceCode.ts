@@ -29,9 +29,13 @@ export function useProviderOAuthDeviceCode(providerId: string | null) {
       unsubscribe();
       if (ownedLoginRef.current?.providerId === providerId) {
         ownedLoginRef.current = null;
-        void Promise.resolve(
-          window.electronAPI.maker.providerOAuthCancel(providerId),
-        ).catch(() => undefined);
+        try {
+          void Promise.resolve(
+            window.electronAPI.maker.providerOAuthCancel(providerId),
+          ).catch(() => undefined);
+        } catch {
+          // Cleanup is best-effort; synchronous bridge failures must not escape effect teardown.
+        }
       }
     };
   }, [providerId]);

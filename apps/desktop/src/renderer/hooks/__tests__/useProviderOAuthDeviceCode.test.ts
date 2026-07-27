@@ -92,4 +92,19 @@ describe('useProviderOAuthDeviceCode', () => {
     unmount();
     expect(cancel).toHaveBeenCalledOnce();
   });
+
+  it('ignores a synchronous cancellation failure during cleanup', async () => {
+    cancel.mockImplementationOnce(() => {
+      throw new Error('sync cancellation failure');
+    });
+    const { result, unmount } = renderHook(() => useProviderOAuthDeviceCode('provider-a'));
+
+    result.current.beginOwnedLogin();
+    expect(() => unmount()).not.toThrow();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(cancel).toHaveBeenCalledWith('provider-a');
+  });
 });
