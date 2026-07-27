@@ -92,6 +92,26 @@ describe('createResponsesChatHandler', () => {
     );
   });
 
+  it('trims a long trailing-slash run in linear time before applying the chat path', async () => {
+    const fetchImpl = vi.fn(async () =>
+      streamResponse([
+        { id: 'chat_1', choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]),
+    ) as typeof fetch;
+    const handler = createResponsesChatHandler({
+      upstreamBase: `https://provider.example/v1${'/'.repeat(4_096)}`,
+      buildHeaders: async () => ({}),
+    }, { fetchImpl });
+    const res = new FakeResponse();
+
+    await handler.handle({ parsedBody: { model: 'm', input: 'hi' }, res: res as never });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://provider.example/v1/chat/completions',
+      expect.anything(),
+    );
+  });
+
   it.each([
     ['an invalid upstream base URL', 'ftp://provider.example/v1', '/chat/completions'],
     ['an invalid chat path', 'https://provider.example/v1', '//attacker.example/chat'],

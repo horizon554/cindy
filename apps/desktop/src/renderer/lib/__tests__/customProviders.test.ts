@@ -166,104 +166,39 @@ describe('custom provider credential lifecycle', () => {
     expect(safeStorageStore).not.toHaveBeenCalled();
   });
 
-  it('removes old runtime keys after switching to no authentication', async () => {
-    const safeStorageRemove = vi.fn(async () => ({ success: true }));
-    const safeStorageStore = vi.fn();
-    vi.stubGlobal('window', {
-      electronAPI: {
-        maker: { updateCustomProvider: vi.fn(async () => ({ ok: true })) },
-        safeStorageRemove,
-        safeStorageStore,
-      },
-    });
-
-    await updateCustomProvider({
-      id: 'local',
-      name: 'Local',
-      auth: { method: 'none' },
-      runtimes: {
-        codex: {
-          baseUrl: 'http://127.0.0.1:4000/v1',
-          models: [{ id: 'local-model', name: 'Local Model' }],
-        },
-      },
-    }, {});
-
-    expect(safeStorageRemove).toHaveBeenCalledTimes(2);
-    expect(safeStorageStore).not.toHaveBeenCalled();
-  });
-
-  it('surfaces a failed safe-storage removal instead of reporting a clean auth switch', async () => {
-    const safeStorageRemove = vi.fn(async () => ({
-      success: false,
-      error: 'Codex restart failed',
-    }));
-    vi.stubGlobal('window', {
-      electronAPI: {
-        maker: { updateCustomProvider: vi.fn(async () => ({ ok: true })) },
-        safeStorageRemove,
-        safeStorageStore: vi.fn(),
-      },
-    });
-
-    await expect(updateCustomProvider({
-      id: 'local',
-      name: 'Local',
-      auth: { method: 'none' },
-      runtimes: {
-        codex: {
-          baseUrl: 'http://127.0.0.1:4000/v1',
-          models: [{ id: 'local-model', name: 'Local Model' }],
-        },
-      },
-    }, {})).rejects.toThrow('Codex restart failed');
-  });
-
-  it('stores a replacement API key before committing the auth-mode update', async () => {
-    const calls: string[] = [];
-    const safeStorageStore = vi.fn(async () => {
-      calls.push('store-key');
-      return true;
-    });
-    const update = vi.fn(async () => {
-      calls.push('update-config');
-      return { ok: true };
-    });
+  it('submits replacement keys with the config through one main-process mutation', async () => {
+    const update = vi.fn(async () => ({ ok: true }));
     vi.stubGlobal('window', {
       electronAPI: {
         maker: { updateCustomProvider: update },
-        safeStorageRead: vi.fn(async () => null),
-        safeStorageStore,
-        safeStorageRemove: vi.fn(async () => ({ success: true })),
       },
     });
 
-    await updateCustomProvider(
-      {
-        id: 'switch-to-key',
-        name: 'Switch to key',
-        auth: { method: 'apiKey' },
-        runtimes: {
-          codex: {
-            baseUrl: 'https://api.example/v1',
-            models: [{ id: 'm1', name: 'M1' }],
-          },
+    const config = {
+      id: 'switch-to-key',
+      name: 'Switch to key',
+      auth: { method: 'apiKey' as const },
+      runtimes: {
+        codex: {
+          baseUrl: 'https://api.example/v1',
+          models: [{ id: 'm1', name: 'M1' }],
         },
       },
+    };
+    await updateCustomProvider(
+      config,
       { codex: 'replacement-key' },
     );
 
-    expect(calls).toEqual(['store-key', 'update-config']);
+    expect(update).toHaveBeenCalledWith(config, { codex: 'replacement-key' });
   });
 
-  it('does not commit the auth-mode update when replacement key storage fails', async () => {
-    const update = vi.fn();
+  it('surfaces an atomic main-process update failure', async () => {
     vi.stubGlobal('window', {
       electronAPI: {
-        maker: { updateCustomProvider: update },
-        safeStorageRead: vi.fn(async () => 'old-key'),
-        safeStorageStore: vi.fn(async () => false),
-        safeStorageRemove: vi.fn(async () => ({ success: true })),
+        maker: {
+          updateCustomProvider: vi.fn().mockRejectedValue(new Error('credential rollback failed')),
+        },
       },
     });
 
@@ -282,40 +217,6 @@ describe('custom provider credential lifecycle', () => {
         },
         { codex: 'replacement-key' },
       ),
-    ).rejects.toThrow('Failed to store codex provider credential');
-    expect(update).not.toHaveBeenCalled();
-  });
-
-  it('restores the previous API key when the config update fails', async () => {
-    const safeStorageStore = vi.fn(async () => true);
-    vi.stubGlobal('window', {
-      electronAPI: {
-        maker: {
-          updateCustomProvider: vi.fn().mockRejectedValue(new Error('config update failed')),
-        },
-        safeStorageRead: vi.fn(async () => 'old-key'),
-        safeStorageStore,
-        safeStorageRemove: vi.fn(async () => ({ success: true })),
-      },
-    });
-
-    await expect(
-      updateCustomProvider(
-        {
-          id: 'existing',
-          name: 'Existing',
-          runtimes: {
-            codex: {
-              baseUrl: 'https://api.example/v1',
-              models: [{ id: 'm1', name: 'M1' }],
-            },
-          },
-        },
-        { codex: 'new-key' },
-      ),
-    ).rejects.toThrow('config update failed');
-
-    expect(safeStorageStore).toHaveBeenNthCalledWith(1, 'provider_key_existing_codex', 'new-key');
-    expect(safeStorageStore).toHaveBeenNthCalledWith(2, 'provider_key_existing_codex', 'old-key');
+    ).rejects.toThrow('credential rollback failed');
   });
 });

@@ -505,6 +505,15 @@ describe('deriveModelsDiscoveryUrl', () => {
     );
     expect(deriveModelsDiscoveryUrl('https://api.acme.example/')).toBe('https://api.acme.example/v1/models');
   });
+
+  it('基于 pathname 追加模型端点，保留 query 并丢弃 fragment', () => {
+    expect(deriveModelsDiscoveryUrl('https://api.acme.example/v1?tenant=a#ignored')).toBe(
+      'https://api.acme.example/v1/models?tenant=a',
+    );
+    expect(deriveModelsDiscoveryUrl('https://api.acme.example/root/?tenant=a')).toBe(
+      'https://api.acme.example/root/v1/models?tenant=a',
+    );
+  });
 });
 
 describe('oauth-token 路由分支', () => {

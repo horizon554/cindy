@@ -92,7 +92,7 @@ const DISABLED_PROVIDER_ROUTE_ERROR = 'provider_route_disabled';
  * 已迁移但无法安全执行的历史路由必须由 proxy 原地拒绝，不能返回 null：
  * null 在两个 proxy host 里表示“未命中”，会继续走默认网关/订阅上游。
  */
-function disabledProviderRouteDecision(providerId: string): RoutingDecision {
+function disabledProviderRouteDecision(providerId = 'selected provider'): RoutingDecision {
   return {
     localHandler: async ({ res }) => {
       const payload = JSON.stringify({
@@ -155,7 +155,7 @@ export function buildRouteDecision(
   // routing 只会命中其一，共用一个参数无歧义。
   oauthToken?: string | null,
 ): RoutingDecision | null {
-  if (routing.disabled) return null;
+  if (routing.disabled) return disabledProviderRouteDecision();
   switch (routing.authStrategy) {
     case 'none': {
       // 本机 / 自托管无鉴权代理：仍固定路由到所选 upstream，但显式剥掉子进程自带的

@@ -406,6 +406,11 @@ import {
   mergeDiscoveredModelsIntoConfig,
   updateCustomProviderIfUnchanged,
 } from '../maker-host/custom-provider-store.js';
+import {
+  readCustomProviderKey,
+  removeCustomProviderKey,
+  storeCustomProviderKey,
+} from '../secrets/providerSecretStore.js';
 import { setSessionEffort, setSessionFastMode } from '../maker-host/session-effort-store.js';
 import { getModelVisibilityMirrorSnapshot, setModelVisibilityMirror } from '../maker-host/model-visibility-mirror.js';
 import { setClaudeProxySessionIdResolver } from '../maker-host/anthropic-compat-proxy-host.js';
@@ -3499,6 +3504,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions 
         ...(rollbackCredentials ? { rollbackCredentials } : {}),
       };
     },
+    readCustomProviderKey,
+    storeCustomProviderKey,
+    removeCustomProviderKey,
     oauthLogout: async (providerId) => {
       if (!logoutGenericOAuth(providerId)) {
         throw new Error('failed to remove generic OAuth credentials');

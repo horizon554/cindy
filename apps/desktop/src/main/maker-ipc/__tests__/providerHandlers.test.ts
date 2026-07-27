@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { afterEach, describe, it, expect, vi } from 'vitest';
 
-import type { CustomProviderConfig, ProviderView } from '@cindy/model-providers';
+import type { AgentKind, CustomProviderConfig, ProviderView } from '@cindy/model-providers';
 
 import type { DbClient } from '../../localDb/client/DbClient.js';
 import { clearCurrentDbClient, setCurrentDbClient } from '../../localDb/client/current.js';
@@ -68,6 +68,9 @@ function makeDeps(over: Partial<ProviderHandlerDeps> = {}): ProviderHandlerDeps 
     oauthLogout: vi.fn(async () => {}),
     oauthCancel: vi.fn(() => {}),
     removeOAuthCredentials: vi.fn(() => () => true),
+    readCustomProviderKey: vi.fn(() => null),
+    storeCustomProviderKey: vi.fn(() => true),
+    removeCustomProviderKey: vi.fn(() => ({ success: true })),
     scanLocalCli: vi.fn(async () => []),
     ...over,
   };
@@ -373,6 +376,105 @@ describe('provider:custom:* CRUD handlers', () => {
     expect(savedAuth?.method === 'oauth' ? savedAuth.oauth.clientId : undefined).toBe(
       'winning-client',
     );
+  });
+
+  it('restores a staged API key when the provider config write fails', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const keys = new Map<AgentKind, string>([['codex', 'old-key']]);
+    const storeCalls: string[] = [];
+    registerProviderHandlers(harness, makeDeps({
+      readCustomProviderKey: vi.fn((_providerId, agent) => keys.get(agent) ?? null),
+      storeCustomProviderKey: vi.fn((_providerId, agent, value) => {
+        storeCalls.push(`${agent}:${value}`);
+        keys.set(agent, value);
+        return true;
+      }),
+      removeCustomProviderKey: vi.fn((_providerId, agent) => {
+        keys.delete(agent);
+        return { success: true };
+      }),
+    }));
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, validConfig);
+    raw!.exec(`
+      CREATE TRIGGER fail_custom_provider_update
+      BEFORE UPDATE ON custom_providers
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated write failure');
+      END
+    `);
+
+    await expect(
+      harness.invoke(
+        MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+        { ...validConfig, name: 'Must not persist' },
+        { codex: 'replacement-key' },
+      ),
+    ).rejects.toThrow(/simulated write failure/);
+
+    expect(storeCalls).toEqual(['codex:replacement-key', 'codex:old-key']);
+    expect(keys.get('codex')).toBe('old-key');
+    expect((await listCustomProviders())[0]?.name).toBe(validConfig.name);
+  });
+
+  it('serializes API key staging with config updates across concurrent renderer edits', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const keys = new Map<AgentKind, string>([['codex', 'old-key']]);
+    const storeCalls: string[] = [];
+    let holdRefresh = false;
+    let releaseRefresh!: () => void;
+    let reachedRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const firstReachedRefresh = new Promise<void>((resolve) => {
+      reachedRefresh = resolve;
+    });
+    const refreshCatalog = vi.fn(async () => {
+      if (!holdRefresh) return;
+      reachedRefresh();
+      await refreshGate;
+    });
+    const deps = makeDeps({
+      refreshCatalog,
+      readCustomProviderKey: vi.fn((_providerId, agent) => keys.get(agent) ?? null),
+      storeCustomProviderKey: vi.fn((_providerId, agent, value) => {
+        storeCalls.push(`${agent}:${value}`);
+        keys.set(agent, value);
+        return true;
+      }),
+      removeCustomProviderKey: vi.fn((_providerId, agent) => {
+        keys.delete(agent);
+        return { success: true };
+      }),
+    });
+    registerProviderHandlers(harness, deps);
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, validConfig);
+    holdRefresh = true;
+
+    const first = harness.invoke(
+      MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+      { ...validConfig, name: 'First edit' },
+      { codex: 'first-key' },
+    );
+    await firstReachedRefresh;
+    const second = harness.invoke(
+      MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE,
+      { ...validConfig, name: 'Second edit' },
+      { codex: 'second-key' },
+    );
+    await Promise.resolve();
+
+    expect(storeCalls).toEqual(['codex:first-key']);
+    expect(keys.get('codex')).toBe('first-key');
+
+    releaseRefresh();
+    await expect(first).resolves.toEqual({ ok: true });
+    await expect(second).resolves.toEqual({ ok: true });
+    expect(storeCalls).toEqual(['codex:first-key', 'codex:second-key']);
+    expect(keys.get('codex')).toBe('second-key');
+    expect((await listCustomProviders())[0]?.name).toBe('Second edit');
   });
 
   it('deletes (idempotent) + broadcasts; bad providerId → INVALID_PARAMS', async () => {

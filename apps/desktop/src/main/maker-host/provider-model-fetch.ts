@@ -73,7 +73,9 @@ function withoutCredentialHeaders(
 
 /** 构造列模型请求（纯函数，单测直断言）。鉴权头组合与 buildProbeRequest 同口径。 */
 export function buildModelsFetchRequest(spec: ProviderModelsFetchSpec): { url: string; init: RequestInit } {
-  const headers: Record<string, string> = spec.apiKey
+  const mustStripCredentialHeaders =
+    !!spec.apiKey || spec.authMethod === 'none' || spec.authMethod === 'oauth';
+  const headers: Record<string, string> = mustStripCredentialHeaders
     ? withoutCredentialHeaders(spec.headers)
     : { ...(spec.headers ?? {}) };
   if (spec.agent === 'claude-code') {

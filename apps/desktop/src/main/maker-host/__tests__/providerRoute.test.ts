@@ -485,7 +485,7 @@ describe('none (无鉴权自定义代理 buildRouteDecision)', () => {
         'codex',
         null,
       ),
-    ).toBeNull();
+    ).toEqual({ localHandler: expect.any(Function) });
   });
 
   it('本地 Chat 桥也剥掉复制配置里残留的鉴权与账号头', () => {

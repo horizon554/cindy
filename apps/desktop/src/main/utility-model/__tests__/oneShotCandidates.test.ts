@@ -361,6 +361,46 @@ describe('utility one-shot candidates', () => {
     );
   });
 
+  it('fails closed when an explicitly selected no-auth runtime is disabled', async () => {
+    activeCatalog.mockReturnValue({
+      providers: [{
+        id: 'legacy-remote',
+        name: 'Legacy Remote',
+        source: 'user',
+        agents: ['codex'],
+        auth: { method: 'none' },
+        routing: {
+          codex: {
+            upstream: 'https://remote.example/v1',
+            authStrategy: 'none',
+            disabled: true,
+          },
+        },
+        models: {
+          codex: [{ id: 'legacy-model', name: 'Legacy Model', contextWindow: 100_000 }],
+        },
+      }],
+    } as never);
+
+    const result = await requestUtilityText(makerMock(false), 'generate', {
+      providerId: 'legacy-remote',
+      agentKind: 'codex',
+      model: 'legacy-model',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'no_candidate',
+      attempts: [{
+        providerId: 'legacy-remote',
+        model: 'legacy-model',
+        status: 'skipped',
+        reason: 'endpoint_missing',
+      }],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects base URL userinfo when applying an exact provider request path', async () => {
     activeCatalog.mockReturnValue({
       providers: [{

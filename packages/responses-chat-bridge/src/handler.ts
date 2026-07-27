@@ -35,6 +35,12 @@ function writeSse(res: ServerResponse, event: unknown, sequenceNumber: number): 
   res.write(`event: ${event.type}\ndata: ${JSON.stringify(payload)}\n\n`);
 }
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end -= 1;
+  return value.slice(0, end);
+}
+
 function joinUrl(base: string, path: string): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const queryIndex = normalizedPath.indexOf('?');
@@ -67,7 +73,7 @@ function joinUrl(base: string, path: string): string {
   }
   const pathQuery = queryIndex === -1 ? '' : normalizedPath.slice(queryIndex + 1);
   const baseQuery = url.search.slice(1);
-  url.pathname = `${url.pathname.replace(/\/+$/, '')}${pathname}`;
+  url.pathname = `${trimTrailingSlashes(url.pathname)}${pathname}`;
   url.search = [baseQuery, pathQuery].filter(Boolean).join('&');
   url.hash = '';
   return url.toString();

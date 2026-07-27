@@ -1099,6 +1099,7 @@ export class DesktopCodexAuthAdapter implements AuthAdapter {
     return new Promise<AuthState>((resolve) => {
       const mode: AgentLoginMode = opts?.mode ?? 'browser';
       const proc = spawn(binaryPath, codexLoginArgs(mode), {
+        shell: false,
         env: { ...process.env, CODEX_HOME: this.codexHome },
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',

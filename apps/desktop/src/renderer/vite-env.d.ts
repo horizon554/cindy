@@ -3467,12 +3467,13 @@ interface ElectronAPI {
     // 模型供应商目录（只读）—— 内置目录元数据 + 各供应商实时连接状态。
     listProviders: () => Promise<{ providers: import('@cindy/model-providers').ProviderView[] }>;
 
-    // 自定义供应商配置 CRUD（密钥另走通用 safeStorage IPC，不经这里）。
+    // 自定义供应商配置 CRUD（update 同时提交 runtime 密钥，由 main 原子排队）。
     createCustomProvider: (
       config: import('@cindy/model-providers').CustomProviderConfig,
     ) => Promise<{ ok: true }>;
     updateCustomProvider: (
       config: import('@cindy/model-providers').CustomProviderConfig,
+      keys: Partial<Record<'claude-code' | 'codex', string>>,
     ) => Promise<{ ok: true }>;
     deleteCustomProvider: (providerId: string) => Promise<{ ok: true }>;
     /** 自定义供应商创建模板（目录 presets 段，纯 UI 模板数据）。 */

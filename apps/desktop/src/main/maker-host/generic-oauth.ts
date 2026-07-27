@@ -741,8 +741,14 @@ export async function runGenericOAuthLogin(
  * 此时只追加 `/models`。自定义 OAuth 供应商靠这条推导免去用户手填发现端点。
  */
 export function deriveModelsDiscoveryUrl(baseUrl: string): string {
-  const u = baseUrl.replace(/\/+$/, '');
-  return /\/v\d+$/i.test(u) ? `${u}/models` : `${u}/v1/models`;
+  const url = new URL(baseUrl);
+  url.hash = '';
+  let pathname = url.pathname;
+  while (pathname.length > 1 && pathname.endsWith('/')) pathname = pathname.slice(0, -1);
+  url.pathname = /\/v\d+$/i.test(pathname)
+    ? `${pathname}/models`
+    : `${pathname === '/' ? '' : pathname}/v1/models`;
+  return url.toString();
 }
 
 /**

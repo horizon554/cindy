@@ -274,6 +274,19 @@ async function requestExplicitProviderText(
   }
 
   const routing = provider.routing[agentKind];
+  if (routing?.disabled) {
+    return {
+      ok: false,
+      reason: 'no_candidate',
+      attempts: [{
+        providerId: provider.id,
+        model,
+        transport,
+        status: 'skipped',
+        reason: 'endpoint_missing',
+      }],
+    };
+  }
   if (
     routing?.authStrategy !== 'api-key-header'
     && routing?.authStrategy !== 'oauth-token'

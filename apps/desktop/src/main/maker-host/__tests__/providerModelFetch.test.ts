@@ -28,6 +28,14 @@ describe('buildModelsFetchRequest', () => {
     ).toBe('https://openrouter.ai/api/v1/models');
   });
 
+  it('preserves base URL query parameters while appending the discovery pathname', () => {
+    expect(
+      buildModelsFetchRequest(
+        spec({ agent: 'codex', baseUrl: 'https://openrouter.ai/api/v1?tenant=a#ignored' }),
+      ).url,
+    ).toBe('https://openrouter.ai/api/v1/models?tenant=a');
+  });
+
   it('explicit modelsUrl wins over derivation only when same-host as baseUrl', () => {
     // 同主机（Moonshot 形态：baseUrl …/anthropic，列模型在同 host 的 /v1/models）→ 采用。
     expect(
@@ -69,6 +77,27 @@ describe('buildModelsFetchRequest', () => {
     expect(h['authorization']).toBeUndefined();
     expect(h['x-extra']).toBe('1');
   });
+
+  it.each(['none', 'oauth'] as const)(
+    'strips legacy credential headers for %s auth even without an apiKey',
+    (authMethod) => {
+      const h = buildModelsFetchRequest(spec({
+        authMethod,
+        apiKey: null,
+        headers: {
+          Authorization: 'Bearer legacy',
+          'X-API-Key': 'legacy',
+          'x-extra': '1',
+        },
+      })).init.headers as Record<string, string>;
+
+      expect(h.Authorization).toBeUndefined();
+      expect(h['X-API-Key']).toBeUndefined();
+      expect(h.authorization).toBeUndefined();
+      expect(h['x-api-key']).toBeUndefined();
+      expect(h['x-extra']).toBe('1');
+    },
+  );
 });
 
 describe('fetchProviderModels', () => {

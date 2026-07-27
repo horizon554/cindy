@@ -377,6 +377,39 @@ export function readCustomProviderKey(providerId: string, agent: string): string
   }
 }
 
+/** 写入某自定义供应商 runtime 的 API key；供 main 侧原子配置更新使用。 */
+export function storeCustomProviderKey(
+  providerId: string,
+  agent: string,
+  value: string,
+): boolean {
+  try {
+    return electronSecretIo.write(customProviderSecretStorageKey(providerId, agent), value);
+  } catch (err) {
+    log.warn(
+      { providerId, agent, err: err instanceof Error ? err.message : String(err) },
+      'write custom provider key failed',
+    );
+    return false;
+  }
+}
+
+/** 删除某自定义供应商 runtime 的 API key；不存在视为成功。 */
+export function removeCustomProviderKey(
+  providerId: string,
+  agent: string,
+): { success: boolean; error?: string } {
+  try {
+    return electronSecretIo.remove(customProviderSecretStorageKey(providerId, agent));
+  } catch (err) {
+    log.warn(
+      { providerId, agent, err: err instanceof Error ? err.message : String(err) },
+      'remove custom provider key failed',
+    );
+    return { success: false, error: 'remove_failed' };
+  }
+}
+
 /**
  * 读取某自定义 MCP 服务器的 bearer token(**main 侧 CustomMcpProvider resolve 专用**)。
  * 不存在 / safeStorage 不可用 / 读失败均返回 null。与 renderer 经通用 safe-storage IPC
