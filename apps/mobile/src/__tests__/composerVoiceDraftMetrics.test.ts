@@ -24,7 +24,8 @@ const COMPOSER_PAGES = ['app/sessions/new.tsx', 'app/sessions/[sessionId].tsx'];
 const DRAFT_TEXT_STYLES = ['voiceDraftText', 'voiceDraftListeningText'];
 
 function read(rel: string): string {
-  return readFileSync(join(ROOT, rel), 'utf8');
+  // 归一化换行:Windows checkout 是 CRLF,styleBlock 的 `\n  <name>:` 锚点会全部失配。
+  return readFileSync(join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 }
 
 /**
@@ -91,7 +92,12 @@ describe('composer voice draft text metrics', () => {
    * 不会越过父视图边界。两个页面都要撑,否则各自的听写停止都点不准。
    */
   it('raises the input frame to the touch target while dictating', () => {
-    expect(read(COMPOSER_ROW)).toContain('export const MOBILE_COMPOSER_MIN_TOUCH_TARGET = 44;');
+    const row = read(COMPOSER_ROW);
+    expect(row).toContain('export const MOBILE_COMPOSER_MIN_TOUCH_TARGET = 44;');
+    // 显式 height 会压过 minHeight(manual 定高时 frameHeight 可能小于触控目标),
+    // 数值高度必须先 clamp,否则命中区又被压回 28pt。
+    expect(row).toContain('Math.max(inputFrameHeight, inputFrameMinHeight)');
+    expect(row).toContain('resolvedInputFrameHeight != null && { height: resolvedInputFrameHeight }');
     for (const rel of COMPOSER_PAGES) {
       expect(read(rel), `${rel} 听写期间必须把输入区撑到触控目标`)
         .toContain('inputFrameMinHeight={voiceIsListening ? MOBILE_COMPOSER_MIN_TOUCH_TARGET : undefined}');

@@ -219,6 +219,13 @@ export function MobileComposerInputRow({
 }: MobileComposerInputRowProps) {
   const styles = useThemedStyles(makeMobileComposerInputRowStyles);
   const cardLayout = cardActive === true;
+  // RN 里显式 height 压过 minHeight:manual 定高(用户拖过高度)时 frameHeight 可能小于
+  // inputFrameMinHeight,直接铺开会把听写停止命中区又压回不足 44pt。数值高度在这里
+  // 先 clamp;拖拽中的 Animated 值无法在 JS 侧 clamp(会打断跟手),那一瞬保持动画值,
+  // 松手结算成数值后重新受本 clamp 约束。
+  const resolvedInputFrameHeight = typeof inputFrameHeight === 'number' && inputFrameMinHeight != null
+    ? Math.max(inputFrameHeight, inputFrameMinHeight)
+    : inputFrameHeight;
   // useCallback 稳定引用,避免每次 render 都向原生 TextInputWrapper diff 新函数 prop。
   // images-loading:原生刚检测到图片粘贴意图(数据还在后台读),先画占位;
   // images:原生侧已阻止默认粘贴,上抛进附件链路(占位在此兑现);
@@ -286,7 +293,7 @@ export function MobileComposerInputRow({
           style={[
             styles.inputFrame,
             inputFrameMinHeight != null && { minHeight: inputFrameMinHeight },
-            inputFrameHeight != null && { height: inputFrameHeight },
+            resolvedInputFrameHeight != null && { height: resolvedInputFrameHeight },
           ]}
         >
           {inputElement ?? (onPasteImages && !isExpoGo ? (
