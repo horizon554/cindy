@@ -69,4 +69,33 @@ describe('triggerCodexLoginOnce', () => {
     });
     expect(triggerLogin).toHaveBeenCalledTimes(1);
   });
+
+  it('continues a mode switch when cancellation throws synchronously', async () => {
+    const browser = deferred<{ authenticated: boolean }>();
+    const triggerLogin = vi.fn((_: string, options?: { mode?: string }) =>
+      options?.mode === 'device-code'
+        ? Promise.resolve({ authenticated: true })
+        : browser.promise,
+    );
+    const cancelLogin = vi.fn(() => {
+      throw new Error('bridge unavailable');
+    });
+    Object.assign(window, {
+      electronAPI: {
+        maker: { auth: { triggerLogin, cancelLogin } },
+      },
+    });
+    const { triggerCodexLoginOnce } = await import('../codexAuthLogin');
+
+    const first = triggerCodexLoginOnce('browser');
+    let deviceCode!: Promise<{ authenticated: boolean }>;
+    expect(() => {
+      deviceCode = triggerCodexLoginOnce('device-code');
+    }).not.toThrow();
+
+    browser.resolve({ authenticated: false });
+    await expect(first).resolves.toEqual({ authenticated: false });
+    await expect(deviceCode).resolves.toEqual({ authenticated: true });
+    expect(triggerLogin).toHaveBeenNthCalledWith(2, 'codex', { mode: 'device-code' });
+  });
 });

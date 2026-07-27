@@ -40,9 +40,12 @@ export function triggerCodexLoginOnce(
 
     const previous = pendingCodexLogin.promise;
     const generation = ++loginGeneration;
-    void window.electronAPI.maker.auth.cancelLogin('codex').catch(() => undefined);
-    let queued!: Promise<CodexLoginResult>;
-    queued = previous
+    try {
+      void window.electronAPI.maker.auth.cancelLogin('codex').catch(() => undefined);
+    } catch {
+      // Cancellation is best-effort; synchronous bridge failures must not abort mode switching.
+    }
+    const queued: Promise<CodexLoginResult> = previous
       .catch(() => undefined)
       .then(() =>
         generation === loginGeneration ? invokeCodexLogin(mode) : cancelledLoginResult(),
@@ -55,8 +58,7 @@ export function triggerCodexLoginOnce(
   }
 
   ++loginGeneration;
-  let run!: Promise<CodexLoginResult>;
-  run = invokeCodexLogin(mode).finally(() => {
+  const run: Promise<CodexLoginResult> = invokeCodexLogin(mode).finally(() => {
     if (pendingCodexLogin?.promise === run) pendingCodexLogin = null;
   });
   pendingCodexLogin = { mode, promise: run };
