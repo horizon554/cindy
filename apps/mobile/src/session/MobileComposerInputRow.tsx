@@ -33,7 +33,10 @@ import {
  */
 export const MOBILE_COMPOSER_DRAFT_TEXT_STYLE = COMPOSER_TEXT_STYLE;
 
-/** 单行内容盒高 = 文本行高(两者同源,保证「单行 = 一行文字」)。 */
+/**
+ * 输入区的单行**内容高度**(不含上下内边距) = 单行文字行高:两者同源,保证「单行」
+ * 正好装一行文字。含内边距的单行可视高度是 MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT。
+ */
 export const MOBILE_COMPOSER_INPUT_LINE_HEIGHT = COMPOSER_TEXT_LINE_HEIGHT;
 export const MOBILE_COMPOSER_INPUT_VERTICAL_PADDING = COMPOSER_TEXT_VERTICAL_PADDING;
 export const MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT = COMPOSER_SINGLE_LINE_HEIGHT;

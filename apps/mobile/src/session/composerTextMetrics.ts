@@ -19,14 +19,17 @@ import { lineHeight, spacing, typeScale } from '@/theme/tokens';
 
 /** 输入文本字号(排版阶梯 typeScale.code)。 */
 export const COMPOSER_TEXT_FONT_SIZE = typeScale.code;
-/** 输入文本行高(排版阶梯 lineHeight.body);同时等于单行内容盒高。 */
+/**
+ * 单行文字的行高(排版阶梯 lineHeight.body),**不含内边距**;
+ * 也是 COMPOSER_SINGLE_LINE_HEIGHT 的基数(见下)。
+ */
 export const COMPOSER_TEXT_LINE_HEIGHT = lineHeight.body;
 /** 输入文本左右内边距:三个渲染器必须一致,否则听写与非听写的文字左右错位。 */
 export const COMPOSER_TEXT_HORIZONTAL_PADDING = spacing.xs;
-/** 输入文本上下内边距(内容盒高之外的呼吸)。 */
+/** 输入文本上下内边距(单行行高之外的呼吸)。 */
 export const COMPOSER_TEXT_VERTICAL_PADDING = 3;
 
-/** 单行输入区的可视高度(一行文字 + 上下内边距);原生输入框与 WebView 编辑器同源。 */
+/** 单行输入区的可视高度 = 单行行高 + 上下内边距;原生输入框与 WebView 编辑器同源。 */
 export const COMPOSER_SINGLE_LINE_HEIGHT =
   COMPOSER_TEXT_LINE_HEIGHT + (COMPOSER_TEXT_VERTICAL_PADDING * 2);
 
