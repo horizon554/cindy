@@ -106,6 +106,17 @@ const NOW_MS = Date.parse('2026-07-25T08:00:00.000Z');
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 const RESET_AT_SECONDS = Math.floor((NOW_MS + FIVE_HOURS_MS) / 1000);
 
+function formatResetAtForTest(epochSeconds: number): string {
+  const date = new Date(epochSeconds * 1000);
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(
+    undefined,
+    sameDay
+      ? { hour: 'numeric', minute: '2-digit' }
+      : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' },
+  ).format(date);
+}
+
 function usageSnapshot(): ClaudeSubscriptionUsageSnapshot {
   return {
     subscriptionType: 'pro',
@@ -145,16 +156,13 @@ describe('TodaySpendChip Claude subscription presentation', () => {
     vi.clearAllMocks();
   });
 
-  it('keeps stable chip identities and renders complete reset details in the tooltip', () => {
+  it('keeps reset countdowns in the chip and renders complete reset details in the tooltip', () => {
     renderClaudeUsage(enCommon);
 
     expect(screen.getByText('5h 95% left')).toBeTruthy();
-    expect(screen.getByText('Fable weekly 75% left')).toBeTruthy();
+    expect(screen.getByText('Fable 5h 75% left')).toBeTruthy();
 
-    const resetAt = new Date(RESET_AT_SECONDS * 1000).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    const resetAt = formatResetAtForTest(RESET_AT_SECONDS);
     const tooltipText = screen.getByTestId('usage-tooltip').textContent;
     expect(tooltipText).toContain(
       `Weekly 75% left (25% used) · resets in 5h (${resetAt})`,
@@ -167,10 +175,7 @@ describe('TodaySpendChip Claude subscription presentation', () => {
   it('keeps a space before the Korean reset-time parenthesis', () => {
     renderClaudeUsage(koCommon);
 
-    const resetAt = new Date(RESET_AT_SECONDS * 1000).toLocaleTimeString(undefined, {
-      hour: 'numeric',
-      minute: '2-digit',
-    });
+    const resetAt = formatResetAtForTest(RESET_AT_SECONDS);
     expect(screen.getByTestId('usage-tooltip').textContent).toContain(
       `재설정 (${resetAt})`,
     );
