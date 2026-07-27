@@ -2,11 +2,11 @@
  * sessionPermissionMode.test.ts
  * ---------------------------------------------------------------------------
  * 会话权限档切换的唯一写入路径。原本内联在 ChatInput 里,权限卡片要用同一套语义
- * 才抽出来,所以这里锁死四件事:Full access 二次确认门、远程/本地分支互斥、
- * runtime-first 顺序、持久化失败后的 runtime 回滚。
+ * 才抽出来,所以这里锁死:Full access 二次确认门、远程/本地分支互斥、远程身份只认
+ * 调用方入参(不回查 store)、runtime-first 顺序、持久化失败后的 runtime 回滚。
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const makerApiForDevice = vi.fn<(deviceId: string) => unknown>();
 const remoteSetPermissionMode = vi.fn<(sessionId: string, mode: string) => Promise<void>>();
@@ -44,6 +44,10 @@ const confirmNever = vi.fn(async () => {
   throw new Error('confirmFullAccess should not be called');
 });
 
+// 本文件跑在 node 环境(无 jsdom),自己造 window 来喂 electronAPI。globalThis 在同一
+// worker 进程内跨文件共享,用后必须还原,否则后跑的用例会捡到这个假 window。
+const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+
 beforeEach(() => {
   vi.clearAllMocks();
   remoteSetPermissionMode.mockResolvedValue(undefined);
@@ -52,6 +56,11 @@ beforeEach(() => {
   (globalThis as unknown as { window: unknown }).window = {
     electronAPI: { maker: { setPermissionMode: localSetPermissionMode } },
   };
+});
+
+afterEach(() => {
+  if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow);
+  else delete (globalThis as unknown as { window?: unknown }).window;
 });
 
 describe('applySessionPermissionModeChange', () => {

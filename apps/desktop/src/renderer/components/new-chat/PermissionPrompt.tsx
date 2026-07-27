@@ -158,8 +158,10 @@ export function PermissionPrompt({ permission, onRespond, modeSwitch }: Permissi
       // closest 走可选调用:事件直接派发到 window / document 时 target 不是 Element。
       if (target?.closest?.('[role="dialog"], [role="alertdialog"]')) return;
       // cycle-permission-mode (registry 默认 Shift+Tab, 用户可改绑) —— 补齐卡片期间
-      // 失效的键盘路径: ChatInput 不挂载时它的 TipTap handler 一起没了。轮切只改档,
-      // 不回应当前请求; 可用模式不足 2 个时不消费, Shift+Tab 保持原生焦点导航。
+      // 失效的键盘路径: ChatInput 不挂载时它的 TipTap handler 一起没了。
+      // 轮切与点 chip 走同一条切档路径, 因此同样会由 maker-core 结掉当前 pending
+      // (放宽→allow, 其它→deny, 见文件顶注) —— 这里只是不自己 onRespond。
+      // 可用模式不足 2 个时不消费, Shift+Tab 保持原生焦点导航。
       const cycle = modeSwitchRef.current;
       if (
         cycle &&
