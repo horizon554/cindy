@@ -102,6 +102,30 @@ describe('createProviderService', () => {
     expect((await svc.listProviders())[0]?.connected).toBe(false);
   });
 
+  it('keeps a no-auth provider disconnected when its declared runtime has no routing descriptor', async () => {
+    const base = BUNDLED_CATALOG.providers[0];
+    const missingRouteProvider = {
+      ...base,
+      id: 'missing-route-no-auth',
+      name: 'Missing route no-auth',
+      auth: { method: 'none' as const },
+      routing: {},
+    };
+    const svc = createProviderService({
+      getCatalog: () => ({ version: 'missing-route-no-auth-test', providers: [missingRouteProvider] }),
+      connection: {
+        xd: () => false,
+        anthropic: () => false,
+        openai: () => false,
+        xai: () => false,
+      },
+    });
+
+    const providers = await svc.listProviders();
+    expect(providers[0]?.connected).toBe(false);
+    expect(connectedProvidersForAgent(providers, base.agents[0]!)).toHaveLength(0);
+  });
+
   it('does not promote a disabled runtime when another runtime keeps a no-auth provider connected', async () => {
     const base = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'xd')!;
     const mixedProvider = {
