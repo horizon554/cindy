@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { customProviderSecretStorageKey } from '@/../shared/providerSecrets';
+
 import {
   appendDiscoveredCustomProviderModels,
   createCustomProvider,
@@ -164,6 +166,57 @@ describe('custom provider credential lifecycle', () => {
     }, { codex: 'must-not-be-stored' });
 
     expect(safeStorageStore).not.toHaveBeenCalled();
+  });
+
+  it('rolls back a newly created provider and partial keys when credential storage fails', async () => {
+    const create = vi.fn(async () => ({ ok: true }));
+    const removeProvider = vi.fn(async () => ({ ok: true }));
+    const safeStorageStore = vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const safeStorageRemove = vi.fn(async () => true);
+    vi.stubGlobal('window', {
+      electronAPI: {
+        maker: {
+          createCustomProvider: create,
+          deleteCustomProvider: removeProvider,
+        },
+        safeStorageStore,
+        safeStorageRemove,
+      },
+    });
+    const config = {
+      id: 'partial-create',
+      name: 'Partial create',
+      auth: { method: 'apiKey' as const },
+      runtimes: {
+        'claude-code': {
+          baseUrl: 'https://api.example/v1',
+          models: [{ id: 'claude-model', name: 'Claude model' }],
+        },
+        codex: {
+          baseUrl: 'https://api.example/v1',
+          models: [{ id: 'codex-model', name: 'Codex model' }],
+        },
+      },
+    };
+
+    await expect(createCustomProvider(config, {
+      'claude-code': 'first-key',
+      codex: 'second-key',
+    })).rejects.toThrow('Failed to store codex provider credential');
+
+    expect(create).toHaveBeenCalledWith(config);
+    expect(removeProvider).toHaveBeenCalledWith(config.id);
+    expect(safeStorageRemove).toHaveBeenCalledTimes(2);
+    expect(safeStorageRemove).toHaveBeenNthCalledWith(
+      1,
+      customProviderSecretStorageKey(config.id, 'claude-code'),
+    );
+    expect(safeStorageRemove).toHaveBeenNthCalledWith(
+      2,
+      customProviderSecretStorageKey(config.id, 'codex'),
+    );
   });
 
   it('submits replacement keys with the config through one main-process mutation', async () => {

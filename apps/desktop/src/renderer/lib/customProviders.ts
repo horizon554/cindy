@@ -5,7 +5,8 @@
  * 本地加密，与内置 XD 网关 key 同机制；main 路由 resolve 时按 (id, agent) 读出注入鉴权头）。
  *
  * 顺序约定：
- *   - create：先写配置（IPC 在重名 / 非法时 reject，避免误覆盖既有同 id 的 key），成功后存各 runtime 的密钥。
+ *   - create：先写配置（IPC 在重名 / 非法时 reject，避免误覆盖既有同 id 的 key），成功后存各 runtime 的密钥；
+ *     密钥写入失败时尽力回滚新配置与所有可能已写入的 runtime 密钥。
  *   - update：配置 + 密钥一次提交给 main，由 main 的 per-provider queue 原子暂存 / 回滚。
  *   - delete：先删配置，再清所有 runtime 的密钥（幂等）。
  */
@@ -135,13 +136,35 @@ async function saveKeys(config: CustomProviderConfig, keys: RuntimeKeys): Promis
   }
 }
 
-/** 新建：先写配置（reject 时不碰密钥），成功后存各 runtime 密钥（非空才存）。 */
+async function removeKeysBestEffort(providerId: string): Promise<void> {
+  for (const agent of ALL_AGENTS) {
+    try {
+      await window.electronAPI.safeStorageRemove(customProviderSecretStorageKey(providerId, agent));
+    } catch {
+      /* 无配置时孤儿 .enc 不可达；清理失败不应掩盖原始创建错误。 */
+    }
+  }
+}
+
+/** 新建：先写配置；密钥保存失败时尽力回滚配置与所有可能已写入的 runtime 密钥。 */
 export async function createCustomProvider(
   config: CustomProviderConfig,
   keys: RuntimeKeys,
 ): Promise<void> {
   await window.electronAPI.maker.createCustomProvider(config);
-  if (!config.auth || config.auth.method === 'apiKey') await saveKeys(config, keys);
+  if (!config.auth || config.auth.method === 'apiKey') {
+    try {
+      await saveKeys(config, keys);
+    } catch (error) {
+      try {
+        await window.electronAPI.maker.deleteCustomProvider(config.id);
+      } catch {
+        /* 回滚是 best-effort；保留原始密钥写入错误给调用方。 */
+      }
+      await removeKeysBestEffort(config.id);
+      throw error;
+    }
+  }
 }
 
 /** 编辑：main 在同一 provider mutation queue 内提交配置与 runtime 密钥。 */
@@ -155,11 +178,5 @@ export async function updateCustomProvider(
 /** 删除：先删配置，再清所有 runtime 密钥（幂等，失败忽略）。 */
 export async function deleteCustomProvider(providerId: string): Promise<void> {
   await window.electronAPI.maker.deleteCustomProvider(providerId);
-  for (const agent of ALL_AGENTS) {
-    try {
-      await window.electronAPI.safeStorageRemove(customProviderSecretStorageKey(providerId, agent));
-    } catch {
-      /* 密钥清理失败无害：孤儿 .enc 不会被任何 provider 引用。 */
-    }
-  }
+  await removeKeysBestEffort(providerId);
 }
