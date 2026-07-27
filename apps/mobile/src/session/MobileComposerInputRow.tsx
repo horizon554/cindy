@@ -45,6 +45,11 @@ export const MOBILE_COMPOSER_INPUT_MAX_HEIGHT = (MOBILE_COMPOSER_INPUT_LINE_HEIG
   + (MOBILE_COMPOSER_INPUT_VERTICAL_PADDING * 2);
 export const MOBILE_COMPOSER_CONTROL_SIZE = 34;
 export const MOBILE_COMPOSER_TOOL_GAP = 6;
+/**
+ * 触控目标下限(mobile-design-guide「主操作命中区 ≥ 44×44」,iOS HIG 同值)。
+ * 语音听写期间「点输入区停止听写」的命中层用它撑起 inputFrame(见 inputFrameMinHeight)。
+ */
+export const MOBILE_COMPOSER_MIN_TOUCH_TARGET = 44;
 const isExpoGo =
   Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 /** 语音按钮 absolute 锚点距 composer 内容区右缘的距离(voiceButtonAnchor.right);
@@ -103,6 +108,12 @@ export interface MobileComposerInputRowProps {
    * null / undefined 走内容自动增长（现状行为）。
    */
   inputFrameHeight?: number | Animated.Value | null;
+  /**
+   * 输入区（inputFrame）的最小高度。给语音听写用：听写期间「点输入区停止听写」的命中层
+   * 盖在 inputFrame 上，而单行听写时 inputFrame 只有 28pt，不满足触控目标 44pt；
+   * hitSlop 解决不了——RN 的命中区不会越过父视图边界，必须让父容器本身够高。
+   */
+  inputFrameMinHeight?: number;
   /** Rich composer replacement for the plain TextInput. */
   inputElement?: ReactNode;
   inputOverlay?: ReactNode;
@@ -176,6 +187,7 @@ export function MobileComposerInputRow({
   floatingVoiceButton,
   floatingVoiceButtonStyle,
   inputFrameHeight,
+  inputFrameMinHeight,
   inputElement,
   inputOverlay,
   inputRef,
@@ -273,6 +285,7 @@ export function MobileComposerInputRow({
         <Animated.View
           style={[
             styles.inputFrame,
+            inputFrameMinHeight != null && { minHeight: inputFrameMinHeight },
             inputFrameHeight != null && { height: inputFrameHeight },
           ]}
         >

@@ -251,6 +251,7 @@ import {
   MOBILE_COMPOSER_INPUT_MAX_HEIGHT,
   MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT,
   MOBILE_COMPOSER_INPUT_VERTICAL_PADDING,
+  MOBILE_COMPOSER_MIN_TOUCH_TARGET,
   MOBILE_COMPOSER_TOOL_GAP,
   MobileComposerInputRow,
   VoiceMicWaveCaret,
@@ -483,20 +484,6 @@ const SESSION_ACTION_TEST_IDS = {
 } satisfies Record<SessionActionStripActionId, string>;
 const COMPOSER_CONTROL_HIT_SLOP = { bottom: 8, left: 8, right: 8, top: 8 };
 const COMPOSER_INPUT_SINGLE_LINE_CONTENT_HEIGHT = MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT;
-/**
- * 听写草稿覆盖层(「点输入区停止听写」的命中层)把热区补到 44pt 触控目标。
- *
- * 它 absoluteFill 在 inputFrame 上,单行听写时只有 MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT
- * (28pt)高,不满足 mobile-design-guide「主操作命中区 ≥ 44×44」;差额在上下均分补齐。
- * 只补竖直方向:水平方向输入区本就撑满整行。溢出的热区落在 composer 卡片自身的内边距里,
- * 不会吃掉相邻控件——grabber(zIndex 3)与语音按钮(zIndex 2)都在本层之上,命中优先。
- */
-const COMPOSER_VOICE_DRAFT_HIT_SLOP = (() => {
-  const deficit = Math.max(0, 44 - MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT);
-  // 奇数差额时上多下少,两侧之和恒等于 deficit(两侧都取 ceil 会补过头)。
-  const top = Math.ceil(deficit / 2);
-  return { bottom: deficit - top, left: 0, right: 0, top };
-})();
 const COMPOSER_INPUT_MULTILINE_CONTENT_THRESHOLD = 34;
 const COMPOSER_INPUT_LINE_HEIGHT = MOBILE_COMPOSER_INPUT_LINE_HEIGHT;
 const COMPOSER_INPUT_VERTICAL_PADDING = MOBILE_COMPOSER_INPUT_VERTICAL_PADDING;
@@ -1840,7 +1827,6 @@ export default function SessionScreen() {
     <Pressable
       accessibilityLabel={t('session.common.voiceStopRecording')}
       accessibilityRole="button"
-      hitSlop={COMPOSER_VOICE_DRAFT_HIT_SLOP}
       // onPressIn 给手指「触摸即停」的即时手感;onPress 是无障碍激活(VoiceOver /
       // TalkBack 的 activate 只走 onPress,不会派发 onPressIn)的唯一入口,两者都要挂。
       // handler 幂等:finishVoiceRecording 有 voiceStopInFlight 门,重复调用是 no-op。
@@ -7129,6 +7115,9 @@ export default function SessionScreen() {
                     floatingVoiceButtonStyle={composerFloatingVoiceButtonStyle}
                     cursorColor={colors.inputCaret}
                     inputFrameHeight={composerResize.frameHeight}
+                    // 听写期间把输入区撑到 44pt 触控目标:命中层盖在 inputFrame 上,
+                    // hitSlop 越不过父边界(见常量注释)。
+                    inputFrameMinHeight={voiceIsListening ? MOBILE_COMPOSER_MIN_TOUCH_TARGET : undefined}
                     inputElement={(
                       <ComposerRichInput
                         ref={composerInputRef}

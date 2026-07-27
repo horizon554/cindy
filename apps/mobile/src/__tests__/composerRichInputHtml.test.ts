@@ -116,12 +116,10 @@ describe('mobile composer rich input HTML', () => {
     // 无障碍激活(VoiceOver / TalkBack)只走 onPress,不会派发 onPressIn:两者都必须挂,
     // 否则读屏用户按下这个「停止录音」按钮不会有任何反应。
     expect(overlaySource).toContain('onPress={handleComposerInputPressIn}');
-    // 单行听写时覆盖层只有 28pt 高,热区要补到 44pt(mobile-design-guide 触控目标)。
-    expect(overlaySource).toContain('hitSlop={COMPOSER_VOICE_DRAFT_HIT_SLOP}');
-    expect(screenSource).toContain('const COMPOSER_VOICE_DRAFT_HIT_SLOP = (() => {');
-    expect(screenSource).toContain('Math.max(0, 44 - MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT)');
-    // 两侧之和恒等于差额:奇数时不能两边都取 ceil，否则热区补过头。
-    expect(screenSource).toContain('return { bottom: deficit - top, left: 0, right: 0, top };');
+    // 单行听写时 inputFrame 只有 28pt,命中层必须靠父容器撑到 44pt 触控目标——
+    // hitSlop 无效(RN 的命中区不会越过父视图边界),所以不许再用它顶替。
+    expect(overlaySource).not.toContain('hitSlop');
+    expect(screenSource).toContain('inputFrameMinHeight={voiceIsListening ? MOBILE_COMPOSER_MIN_TOUCH_TARGET : undefined}');
     expect(overlaySource).toContain('testID="session.voiceDraftOverlay"');
     // 草稿滚动层本身不吃触摸,交给外层覆盖层。
     expect(overlaySource).toContain('pointerEvents="none"');

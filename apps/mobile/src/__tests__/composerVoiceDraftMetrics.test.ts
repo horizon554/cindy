@@ -85,6 +85,19 @@ describe('composer voice draft text metrics', () => {
     }
   });
 
+  /**
+   * 听写期间「点输入区停止听写」的命中层盖在 inputFrame 上,单行时只有 28pt;
+   * 触控目标要 ≥44pt(mobile-design-guide),且只能靠父容器撑起——RN 的 hitSlop
+   * 不会越过父视图边界。两个页面都要撑,否则各自的听写停止都点不准。
+   */
+  it('raises the input frame to the touch target while dictating', () => {
+    expect(read(COMPOSER_ROW)).toContain('export const MOBILE_COMPOSER_MIN_TOUCH_TARGET = 44;');
+    for (const rel of COMPOSER_PAGES) {
+      expect(read(rel), `${rel} 听写期间必须把输入区撑到触控目标`)
+        .toContain('inputFrameMinHeight={voiceIsListening ? MOBILE_COMPOSER_MIN_TOUCH_TARGET : undefined}');
+    }
+  });
+
   it('forbids page-level font overrides on the composer input', () => {
     for (const rel of COMPOSER_PAGES) {
       expect(read(rel), `${rel} 不得再用页面样式覆盖输入框字号 / 行高`)
