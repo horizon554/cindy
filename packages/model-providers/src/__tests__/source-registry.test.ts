@@ -349,6 +349,18 @@ describe('registry visibility & sources(运行时注入 fixture)', () => {
       .toEqual(['xd']);
   });
 
+  it('agent selectors and model sources exclude a declared agent with no routing descriptor', () => {
+    const catalog = runtimeCatalog();
+    const xd = catalog.providers.find((provider) => provider.id === 'xd')!;
+    delete xd.routing.codex;
+    const missingRouteViews = buildRegistry(catalog, { xd: true });
+
+    expect(providersForAgent(missingRouteViews, 'codex').map((provider) => provider.id))
+      .not.toContain('xd');
+    expect(connectedProvidersForAgent(missingRouteViews, 'codex')).toEqual([]);
+    expect(sourcesForModel(missingRouteViews, 'gpt-5.5', 'codex')).toEqual([]);
+  });
+
   it('providerOffersModel / getModel (agent-scoped)', () => {
     const xd = views.find((p) => p.id === 'xd')!;
     expect(providerOffersModel(xd, 'gpt-5.5', 'codex')).toBe(true);

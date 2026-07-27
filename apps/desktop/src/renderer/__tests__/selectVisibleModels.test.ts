@@ -27,6 +27,7 @@ function provider(id: string, agent: AgentKind, modelIds: string[]): ProviderVie
     id,
     name: id,
     agents: [agent],
+    routing: { [agent]: {} },
     models: {
       [agent]: modelIds.map((mid) => ({
         id: mid,

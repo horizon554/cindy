@@ -32,7 +32,8 @@ export function buildRegistry(catalog: Catalog, connected: ConnectionState): Pro
 
 /** 该供应商的指定 runtime 是否可参与选择 / 路由。 */
 function hasEnabledAgentRuntime(provider: Provider, agent: AgentKind): boolean {
-  return provider.agents.includes(agent) && provider.routing?.[agent]?.disabled !== true;
+  const routing = provider.routing?.[agent];
+  return provider.agents.includes(agent) && routing !== undefined && routing.disabled !== true;
 }
 
 /** 该 agent 兼容的所有供应商（不论连接与否）—— 供应商页「可用」列表用。 */
