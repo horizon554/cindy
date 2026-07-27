@@ -120,6 +120,8 @@ describe('mobile composer rich input HTML', () => {
     expect(overlaySource).toContain('hitSlop={COMPOSER_VOICE_DRAFT_HIT_SLOP}');
     expect(screenSource).toContain('const COMPOSER_VOICE_DRAFT_HIT_SLOP = (() => {');
     expect(screenSource).toContain('Math.max(0, 44 - MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT)');
+    // 两侧之和恒等于差额:奇数时不能两边都取 ceil，否则热区补过头。
+    expect(screenSource).toContain('return { bottom: deficit - top, left: 0, right: 0, top };');
     expect(overlaySource).toContain('testID="session.voiceDraftOverlay"');
     // 草稿滚动层本身不吃触摸,交给外层覆盖层。
     expect(overlaySource).toContain('pointerEvents="none"');

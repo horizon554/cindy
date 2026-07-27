@@ -493,8 +493,9 @@ const COMPOSER_INPUT_SINGLE_LINE_CONTENT_HEIGHT = MOBILE_COMPOSER_INPUT_SINGLE_L
  */
 const COMPOSER_VOICE_DRAFT_HIT_SLOP = (() => {
   const deficit = Math.max(0, 44 - MOBILE_COMPOSER_INPUT_SINGLE_LINE_HEIGHT);
-  const vertical = Math.ceil(deficit / 2);
-  return { bottom: vertical, left: 0, right: 0, top: vertical };
+  // 奇数差额时上多下少,两侧之和恒等于 deficit(两侧都取 ceil 会补过头)。
+  const top = Math.ceil(deficit / 2);
+  return { bottom: deficit - top, left: 0, right: 0, top };
 })();
 const COMPOSER_INPUT_MULTILINE_CONTENT_THRESHOLD = 34;
 const COMPOSER_INPUT_LINE_HEIGHT = MOBILE_COMPOSER_INPUT_LINE_HEIGHT;
