@@ -676,9 +676,12 @@ describe('远程交互接线不变式', () => {
 
   // 切档语义已从 ChatInput 抽到 lib/sessionPermissionMode.ts —— 权限卡片顶替
   // composer 期间 ChatInput 不挂载,卡片上的同款入口必须走同一条路径,不变式跟着搬家。
-  it('setPermissionMode 远程经隧道(makerApiFor),本机才走本机 IPC', () => {
+  it('setPermissionMode 远程按 deviceId 直连隧道,本机才走本机 IPC', () => {
     const src = read('lib/sessionPermissionMode.ts');
-    expect(src).toContain('makerApiFor(sessionId).setPermissionMode');
+    // 按 deviceId 直连:makerApiFor(sessionId) 会回查 store 路由,relay 重连窗口内
+    // 索引已 clear,远程写入会静默退化成本机 IPC。身份只认调用方入参。
+    expect(src).toContain('makerApiForDevice(deviceId).setPermissionMode');
+    expect(src).not.toContain('getSessionDeviceId');
     const runtimeSet = src.indexOf(
       'await window.electronAPI.maker.setPermissionMode(sessionId, nextMode);',
     );

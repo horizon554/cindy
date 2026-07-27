@@ -5,7 +5,10 @@
  * 卡片顶替 composer 时 ChatInput 不挂载,composer 上的权限 chip 和 Shift+Tab 轮切
  * 一起失效,用户在连续授权里没法切到自动放行。这里锁死补上的那条路:
  *   - 不传 modeSwitch 时卡片与改造前一致(chip 不出现);
- *   - chip 与 Shift+Tab 都只改档,**不回应当前 pending** —— 放行与否仍归用户;
+ *   - 本组件自己**不** onRespond —— 当前 pending 由 maker-core 的 dismissAllPending
+ *     按新档结掉(放宽→allow,其它→deny),渲染层不得再叠一次回应;
+ *   - 远程断链(disabled)时 chip 与快捷键一起停用;
+ *   - 模态(Full access 二次确认)里的按键不穿透成 Allow/Deny;
  *   - 原有 Enter / Ctrl+Enter / Esc 语义不被轮切分支挤掉。
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -68,7 +71,7 @@ describe('PermissionPrompt modeSwitch', () => {
     expect(screen.getByTestId('permission-chip').textContent).toBe('acceptEdits');
   });
 
-  it('Shift+Tab 轮到下一档,且不回应当前请求', () => {
+  it('Shift+Tab 轮到下一档,渲染层自身不 onRespond(pending 归 maker-core 结)', () => {
     const onRespond = vi.fn();
     const onPermissionModeChange = vi.fn();
     render(
@@ -108,6 +111,57 @@ describe('PermissionPrompt modeSwitch', () => {
     pressCyclePermissionMode();
 
     expect(onPermissionModeChange).not.toHaveBeenCalled();
+  });
+
+  it('远程断链(disabled)时快捷键轮切一并停用', () => {
+    const onPermissionModeChange = vi.fn();
+    render(
+      <PermissionPrompt
+        permission={PERMISSION}
+        onRespond={vi.fn()}
+        modeSwitch={{
+          permissionMode: 'ask',
+          onPermissionModeChange,
+          vendorKey: 'cc',
+          cycleOptions: CYCLE_OPTIONS,
+          disabled: true,
+        }}
+      />,
+    );
+
+    pressCyclePermissionMode();
+
+    expect(onPermissionModeChange).not.toHaveBeenCalled();
+  });
+
+  // 切 Full access 会在卡片仍挂载时弹二次确认框。确认框聚焦的是普通 <button>,
+  // 不挡就会让确认框上的 Enter/Esc 顺带回答掉这条工具请求。
+  it('模态内的 Enter / Esc 不穿透到卡片动作', () => {
+    const onRespond = vi.fn();
+    render(
+      <PermissionPrompt
+        permission={PERMISSION}
+        onRespond={onRespond}
+        modeSwitch={{
+          permissionMode: 'ask',
+          onPermissionModeChange: vi.fn(),
+          vendorKey: 'cc',
+          cycleOptions: CYCLE_OPTIONS,
+        }}
+      />,
+    );
+
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'alertdialog');
+    const cancelButton = document.createElement('button');
+    dialog.appendChild(cancelButton);
+    document.body.appendChild(dialog);
+
+    fireEvent.keyDown(cancelButton, { key: 'Enter', code: 'Enter', bubbles: true });
+    fireEvent.keyDown(cancelButton, { key: 'Escape', code: 'Escape', bubbles: true });
+
+    expect(onRespond).not.toHaveBeenCalled();
+    document.body.removeChild(dialog);
   });
 
   it('没有 modeSwitch 时 Shift+Tab 不做任何事', () => {

@@ -2309,29 +2309,49 @@ export function CCAgentSessionView({
   // 权限卡片内的档位切换 —— 卡片顶替 composer 期间 ChatInput 不挂载,composer 上的
   // 权限 chip 与 Shift+Tab 轮切一起失效,用户就没法在连续授权里切到自动放行。
   // 与 ChatInput 共用 applySessionPermissionModeChange,语义(确认门 / 远程分支 /
-  // runtime-first / 回滚)只此一份。切档不回应当前 pending —— 卡片留在原地等用户决定。
+  // runtime-first / 回滚)只此一份。注意:切档会由 maker-core 的 dismissAllPending
+  // 连带结掉当前这条 pending(放宽→allow,其它→deny),与 composer 上切档同语义。
+  //
+  // 当前档走 ref 而非 useCallback 闭包:confirm 弹窗 + runtime + 落库是多次 await,
+  // 期间 session 分片可能已被上一次切换刷新,闭包里的旧值会让确认门与回滚基准漂移。
+  const sessionPermissionModeRef = useRef<PermissionMode>('ask');
+  sessionPermissionModeRef.current = (session?.permissionMode as PermissionMode) ?? 'ask';
+  // 防重入:连点档位或狂按轮切快捷键会并发起多条 runtime + DB 写,最终档位取决于
+  // 异步完成顺序(且失败回滚会滚到错档)。in-flight 期间后续请求直接 no-op ——
+  // 与下面 compactRequestInFlightRef 同一套约定。
+  const permissionModeChangeInFlightRef = useRef(false);
   const handlePermissionCardModeChange = useCallback(
     async (nextMode: PermissionMode) => {
-      const outcome = await applySessionPermissionModeChange({
-        sessionId,
-        currentMode: (session?.permissionMode as PermissionMode) ?? 'ask',
-        nextMode,
-        confirmFullAccess: () =>
-          confirmDialog({
-            title: t('newChat.chatInput.fullAccessConfirmation.title'),
-            description: t('newChat.chatInput.fullAccessConfirmation.description'),
-            confirmText: t('newChat.chatInput.fullAccessConfirmation.confirm'),
-            cancelText: t('newChat.chatInput.fullAccessConfirmation.cancel'),
-          }),
-      });
-      if (outcome === 'cancelled') return;
-      if (outcome === 'failed') {
-        toast.error(t('newChat.chatInput.permissionSwitchFailed'));
-        return;
+      if (permissionModeChangeInFlightRef.current) return;
+      permissionModeChangeInFlightRef.current = true;
+      try {
+        const outcome = await applySessionPermissionModeChange({
+          sessionId,
+          // 粘滞身份:relay 重连时 store 索引会被 clear(),但本视图仍按远程渲染
+          // (见 remoteDeviceId 定义处)。身份必须与渲染判定同源,否则远程切档会
+          // 误落本机分支。
+          deviceId: remoteDeviceId,
+          currentMode: sessionPermissionModeRef.current,
+          nextMode,
+          confirmFullAccess: () =>
+            confirmDialog({
+              title: t('newChat.chatInput.fullAccessConfirmation.title'),
+              description: t('newChat.chatInput.fullAccessConfirmation.description'),
+              confirmText: t('newChat.chatInput.fullAccessConfirmation.confirm'),
+              cancelText: t('newChat.chatInput.fullAccessConfirmation.cancel'),
+            }),
+        });
+        if (outcome === 'cancelled') return;
+        if (outcome === 'failed') {
+          toast.error(t('newChat.chatInput.permissionSwitchFailed'));
+          return;
+        }
+        handlePermissionModeDidChange();
+      } finally {
+        permissionModeChangeInFlightRef.current = false;
       }
-      handlePermissionModeDidChange();
     },
-    [confirmDialog, handlePermissionModeDidChange, session?.permissionMode, sessionId, t],
+    [confirmDialog, handlePermissionModeDidChange, remoteDeviceId, sessionId, t],
   );
 
   // 防双击重入:ConfirmDialogProvider 是队列语义,弹窗 mount 前的连续点击会入队
@@ -3110,6 +3130,9 @@ export function CCAgentSessionView({
                       vendorKey: isCodex ? 'codex' : 'cc',
                       deviceId: remoteDeviceId,
                       cycleOptions: sessionCaps?.permissionModes ?? [],
+                      // 远程断链/被控端离线时切档必失败(与 composer 的
+                      // disabled={remoteSessionUnavailable} 同一判定),不给假入口。
+                      disabled: remoteSessionUnavailable,
                     }}
                   />
                 ) : pendingAskUser ? (

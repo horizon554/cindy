@@ -4730,6 +4730,8 @@ export function ChatInput({
     async (newMode: PermissionMode) => {
       const outcome = await applySessionPermissionModeChange({
         sessionId,
+        // 与 composer 其它远程写入同源取值(prop 优先, 回退 store 索引)。
+        deviceId: sessionId ? (deviceLinkDeviceId ?? getSessionDeviceId(sessionId)) : undefined,
         currentMode: activePermissionModeRef.current,
         nextMode: newMode,
         confirmFullAccess: () =>
@@ -4748,7 +4750,7 @@ export function ChatInput({
       // SSoT: notify parent so it refreshes `session.permissionMode` → props update.
       onPermissionModeDidChange?.(newMode);
     },
-    [sessionId, onPermissionModeDidChange, t, confirmDialog],
+    [sessionId, deviceLinkDeviceId, onPermissionModeDidChange, t, confirmDialog],
   );
   useEffect(() => {
     handlePermissionModeChangeRef.current = handlePermissionModeChange;

@@ -12,15 +12,22 @@
  *   Ctrl+Enter  → Always allow for session
  *   Esc         → Deny
  *   Shift+Tab   → cycle permission mode (only with `modeSwitch`; combo is
- *                 user-rebindable via the `cycle-permission-mode` registry)
+ *                 user-rebindable via the `cycle-permission-mode` registry;
+ *                 see the note below — cycling settles the pending request)
  *
  * `modeSwitch` (optional): while this card is up, ChatInput is unmounted, so the
  * composer's permission chip *and* its Shift+Tab cycling both disappear — the
  * user gets stuck answering prompts one by one with no way to reach "auto
- * approve". Passing `modeSwitch` puts that same chip on the card. It is a pure
- * setting: switching modes never answers the pending request, which stays up for
- * the user to Allow/Deny. Omit the prop and this component renders exactly as
- * before.
+ * approve". Passing `modeSwitch` puts that same chip on the card. Omit the prop
+ * and this component renders exactly as before.
+ *
+ * IMPORTANT — switching modes DOES settle the pending request. This component
+ * never calls `onRespond` itself, but maker-core settles every in-flight
+ * interaction on a mode change (`dismissAllPending` in the claude-code / codex
+ * agents): loosening to Auto / Full access resolves it as **allow**, any other
+ * target resolves it as **deny**. That is pre-existing behaviour shared with the
+ * composer's chip, not something this card introduces — but the card puts the
+ * control right next to Allow/Deny, so the copy must not imply "settings only".
  */
 
 import { useCallback, useEffect, useMemo, useRef } from 'react';
@@ -46,6 +53,8 @@ export interface PermissionPromptModeSwitch {
   deviceId?: string;
   /** Shift+Tab 轮切候选 —— 与下拉同一份 capabilities.permissionModes,顺序一致。 */
   cycleOptions: readonly PermissionModeDescriptor[];
+  /** 远程断链等只读态:chip 置灰,轮切快捷键一并停用(否则给出必失败的假入口)。 */
+  disabled?: boolean;
 }
 
 interface PermissionPromptProps {
@@ -142,12 +151,19 @@ export function PermissionPrompt({ permission, onRespond, modeSwitch }: Permissi
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+      // 模态里的按键一律不穿透到卡片:切 Full access 会在卡片仍挂载时弹二次确认,
+      // 而确认框聚焦的是普通 <button>(不在上面的排除列表里)且不 stopPropagation ——
+      // 不挡的话在确认框上按 Enter 会顺带 Allow once、按 Esc 会顺带 Deny,
+      // 等于用键盘替用户回答了这条工具请求。
+      // closest 走可选调用:事件直接派发到 window / document 时 target 不是 Element。
+      if (target?.closest?.('[role="dialog"], [role="alertdialog"]')) return;
       // cycle-permission-mode (registry 默认 Shift+Tab, 用户可改绑) —— 补齐卡片期间
       // 失效的键盘路径: ChatInput 不挂载时它的 TipTap handler 一起没了。轮切只改档,
       // 不回应当前请求; 可用模式不足 2 个时不消费, Shift+Tab 保持原生焦点导航。
       const cycle = modeSwitchRef.current;
       if (
         cycle &&
+        !cycle.disabled &&
         !e.repeat &&
         getAppShortcutCombos('cycle-permission-mode').some((combo) =>
           matchesKeyboardEvent(e, combo),
@@ -218,13 +234,15 @@ export function PermissionPrompt({ permission, onRespond, modeSwitch }: Permissi
         )}
       >
         {modeSwitch && (
-          // 设置而非动作:切档只改会话后续行为,当前这条请求仍留给用户 Allow/Deny。
+          // 切档改的是会话后续行为,但 maker-core 会连带结掉当前这条 pending
+          // (放宽→allow,其它→deny,见文件顶注)。本组件不自己 onRespond。
           <div className="mr-auto flex min-w-0 items-center">
             <PermissionSelector
               permissionMode={modeSwitch.permissionMode}
               onPermissionModeChange={modeSwitch.onPermissionModeChange}
               vendorKey={modeSwitch.vendorKey}
               deviceId={modeSwitch.deviceId}
+              disabled={modeSwitch.disabled}
             />
           </div>
         )}

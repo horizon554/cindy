@@ -33,7 +33,7 @@ describe('composer morph scope', () => {
     expect(modelSelector).toContain('<PopoverTrigger asChild>{trigger}</PopoverTrigger>');
   });
 
-  it('PermissionSelector / ExtraDirsButton 仅 composer 位使用,恒走脱身上浮 morph(无 opt-in、无 Radix 回退)', () => {
+  it('PermissionSelector / ExtraDirsButton 仅 composer 位置使用,恒走脱身上浮 morph(无 opt-in、无 Radix 回退)', () => {
     expect(permissionSelector).not.toContain('useMorphPopover');
     expect(extraDirsButton).not.toContain('useMorphPopover');
     expect(permissionSelector).toContain('<MorphPopover');

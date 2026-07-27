@@ -8,17 +8,16 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const getSessionDeviceId = vi.fn<(sessionId: string) => string | undefined>();
+const makerApiForDevice = vi.fn<(deviceId: string) => unknown>();
 const remoteSetPermissionMode = vi.fn<(sessionId: string, mode: string) => Promise<void>>();
 const localSetPermissionMode = vi.fn<(sessionId: string, mode: string) => Promise<void>>();
 const sessionUpdate = vi.fn<(sessionId: string, patch: unknown) => Promise<void>>();
 
-vi.mock('@/features/device-link/remoteProjectsStore', () => ({
-  getSessionDeviceId: (sessionId: string) => getSessionDeviceId(sessionId),
-}));
-
 vi.mock('@/lib/makerTransport', () => ({
-  makerApiFor: () => ({ setPermissionMode: remoteSetPermissionMode }),
+  makerApiForDevice: (deviceId: string) => {
+    makerApiForDevice(deviceId);
+    return { setPermissionMode: remoteSetPermissionMode };
+  },
 }));
 
 vi.mock('@/lib/sessionService', () => ({
@@ -47,7 +46,6 @@ const confirmNever = vi.fn(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  getSessionDeviceId.mockReturnValue(undefined);
   remoteSetPermissionMode.mockResolvedValue(undefined);
   localSetPermissionMode.mockResolvedValue(undefined);
   sessionUpdate.mockResolvedValue(undefined);
@@ -74,18 +72,36 @@ describe('applySessionPermissionModeChange', () => {
     expect(remoteSetPermissionMode).not.toHaveBeenCalled();
   });
 
-  it('device-link 远程会话纯镜像:只走隧道,不写本机库', async () => {
-    getSessionDeviceId.mockReturnValue('device-1');
-
+  it('device-link 远程会话纯镜像:按调用方给的 deviceId 直连隧道,不写本机库', async () => {
     const outcome = await applySessionPermissionModeChange({
       sessionId: SESSION_ID,
+      deviceId: 'device-1',
       currentMode: 'ask',
       nextMode: 'acceptEdits',
       confirmFullAccess: confirmNever,
     });
 
     expect(outcome).toBe('ok');
+    expect(makerApiForDevice).toHaveBeenCalledWith('device-1');
     expect(remoteSetPermissionMode).toHaveBeenCalledWith(SESSION_ID, 'acceptEdits');
+    expect(localSetPermissionMode).not.toHaveBeenCalled();
+    expect(sessionUpdate).not.toHaveBeenCalled();
+  });
+
+  // relay 瞬时重连会 clear() 掉 store 里的 session→device 映射,而视图仍按远程渲染
+  // (lastRemoteDeviceIdRef 粘滞)。身份必须由调用方给死:本模块若自己回查 store,
+  // 这一刻就会拿到空值、把远程 sessionId 灌进本机 IPC(必失败 + 污染本机记录)。
+  it('身份只认入参:重连期间 store 索引为空也不退回本机分支', async () => {
+    const outcome = await applySessionPermissionModeChange({
+      sessionId: SESSION_ID,
+      deviceId: 'sticky-device',
+      currentMode: 'ask',
+      nextMode: 'bypassPermissions',
+      confirmFullAccess: vi.fn(async () => true),
+    });
+
+    expect(outcome).toBe('ok');
+    expect(makerApiForDevice).toHaveBeenCalledWith('sticky-device');
     expect(localSetPermissionMode).not.toHaveBeenCalled();
     expect(sessionUpdate).not.toHaveBeenCalled();
   });
