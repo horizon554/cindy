@@ -120,6 +120,15 @@ describe('mobile composer rich input HTML', () => {
     // hitSlop 无效(RN 的命中区不会越过父视图边界),所以不许再用它顶替。
     expect(overlaySource).not.toContain('hitSlop');
     expect(screenSource).toContain('inputFrameMinHeight={voiceIsListening ? MOBILE_COMPOSER_MIN_TOUCH_TARGET : undefined}');
+
+    // hidden 的富文本编辑器必须同时从两端的无障碍树里摘掉:opacity: 0 不隐藏读屏焦点,
+    // 而它的 focus 已不再停听写,焦点留在那里会让读屏用户卡在「按了没反应」的输入框上。
+    const inputSource = readFileSync(
+      resolve(process.cwd(), 'src/session/ComposerRichInput.tsx'),
+      'utf8',
+    ).replace(/\r\n/g, '\n');
+    expect(inputSource).toContain('accessibilityElementsHidden={hidden}');
+    expect(inputSource).toContain("importantForAccessibility={hidden ? 'no-hide-descendants' : 'auto'}");
     expect(overlaySource).toContain('testID="session.voiceDraftOverlay"');
     // 草稿滚动层本身不吃触摸,交给外层覆盖层。
     expect(overlaySource).toContain('pointerEvents="none"');
