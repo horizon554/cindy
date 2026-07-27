@@ -534,6 +534,8 @@ interface ClaudeWindowUsage {
   label: string;
   used: string;
   remaining: string;
+  /** tooltip 用的相对 reset 倒计时;无数据 / 已过期 → null。 */
+  resetIn: string | null;
   /** tooltip 用的精确 reset 时间点;无数据 → null。 */
   resetAt: string | null;
 }
@@ -541,6 +543,8 @@ interface ClaudeWindowUsage {
 function toClaudeWindowUsage(
   label: string,
   window: ClaudeUsageWindow | null | undefined,
+  nowMs: number,
+  t: TFunction,
 ): ClaudeWindowUsage | null {
   if (!window || typeof window.utilization !== 'number' || !Number.isFinite(window.utilization)) {
     return null;
@@ -550,6 +554,7 @@ function toClaudeWindowUsage(
     label,
     used: formatPercent(usedPercent),
     remaining: formatPercent(100 - usedPercent),
+    resetIn: formatCompactTimeUntilReset(window.resetsAt, nowMs, t),
     resetAt: formatResetAt(window.resetsAt),
   };
 }
@@ -638,6 +643,7 @@ function buildClaudeSubscriptionTooltipNode(
   modelId: string | null | undefined,
   sessionValueMoney: RegionalMoney | null,
   t: TFunction,
+  nowMs: number,
   usageDashboardLabel: string | null,
   latestTurnUsage: LatestTurnUsageSummary | null,
 ): React.ReactNode {
@@ -660,16 +666,23 @@ function buildClaudeSubscriptionTooltipNode(
   }
 
   // 窗口明细: 5h → 总周限 → 全部分模型周限 (含非当前模型, 用户能看到谁先见底)。
-  // tooltip 保留精确 reset 时间点 (chip 上是倒计时, 两层信息互补)。
+  // chip 显示 reset 倒计时;tooltip 额外保留窗口身份、相对倒计时和精确 reset 时间点。
   const windows: ClaudeWindowUsage[] = [];
-  const fiveHour = toClaudeWindowUsage('5h', snapshot.fiveHour);
+  const fiveHour = toClaudeWindowUsage('5h', snapshot.fiveHour, nowMs, t);
   if (fiveHour) windows.push(fiveHour);
-  const sevenDay = toClaudeWindowUsage(t('todaySpend.claude.weeklyLabel'), snapshot.sevenDay);
+  const sevenDay = toClaudeWindowUsage(
+    t('todaySpend.claude.weeklyLabel'),
+    snapshot.sevenDay,
+    nowMs,
+    t,
+  );
   if (sevenDay) windows.push(sevenDay);
   for (const scoped of snapshot.scoped ?? []) {
     const usage = toClaudeWindowUsage(
       t('todaySpend.claude.modelWeeklyLabel', { model: scoped.modelDisplayName }),
       scoped,
+      nowMs,
+      t,
     );
     if (usage) windows.push(usage);
   }
@@ -679,10 +692,16 @@ function buildClaudeSubscriptionTooltipNode(
       remaining: window.remaining,
       used: window.used,
     });
-    lines.push(window.resetAt
-      ? `${base} · ${t('todaySpend.claude.resetAt', { at: window.resetAt })}`
-      : base,
-    );
+    let resetLabel: string | null = null;
+    if (window.resetAt && window.resetIn) {
+      resetLabel = t('todaySpend.claude.resetInAt', {
+        countdown: window.resetIn,
+        at: window.resetAt,
+      });
+    } else if (window.resetAt) {
+      resetLabel = t('todaySpend.claude.resetAt', { at: window.resetAt });
+    }
+    lines.push(resetLabel ? `${base} · ${resetLabel}` : base);
   }
 
   // tooltip 比 chip 宽一档: allowed_warning (服务端综合全部窗口的模糊信号) 也提示 ——
@@ -1289,7 +1308,7 @@ export function TodaySpendChip({
     );
   } else if (isClaudeSubscription) {
     // Claude 订阅形态 (方案 B): chip 显示「剩余时长 剩余%」倒计时段 + 本会话价值,
-    // 倒计时由 windowLabelNowMs 驱动 (常态 60s tick, 最后一分钟逐秒); tooltip 保留精确时间。
+    // 倒计时由 windowLabelNowMs 驱动;tooltip 保留窗口身份、相对倒计时与精确时间。
     const chipSegments = [...windowSegments];
     if (sessionEstimatedValueMoney) {
       chipSegments.push(t('todaySpend.claude.sessionValueLabel', {
@@ -1304,6 +1323,7 @@ export function TodaySpendChip({
       modelId,
       sessionEstimatedValueMoney,
       t,
+      windowLabelNowMs,
       usageDashboardLabel,
       latestTurnUsage,
     );

@@ -189,6 +189,7 @@ describe('TodaySpendChip dashboard routing', () => {
     expect(source).toContain('todaySpend.claude.weeklyLabel');
     expect(source).toContain('todaySpend.claude.windowLine');
     expect(source).toContain('todaySpend.claude.resetAt');
+    expect(source).toContain('todaySpend.claude.resetInAt');
     // chip 周限段: scoped 命中时倒计时前带模型名标注口径 (「Fable 7天 剩余 78%」)
     expect(source).toContain('weekly.modelDisplayName ? `${weekly.modelDisplayName} ${countdown}` : countdown');
     expect(source).toContain('todaySpend.claude.sessionValueLabel');
