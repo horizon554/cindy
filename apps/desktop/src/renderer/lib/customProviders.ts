@@ -135,15 +135,6 @@ async function saveKeys(config: CustomProviderConfig, keys: RuntimeKeys): Promis
   }
 }
 
-async function removeKey(providerId: string, agent: AgentKind): Promise<void> {
-  const result = await window.electronAPI.safeStorageRemove(
-    customProviderSecretStorageKey(providerId, agent),
-  );
-  if (!result.success) {
-    throw new Error(result.error || `Failed to remove ${agent} provider credential`);
-  }
-}
-
 /** 新建：先写配置（reject 时不碰密钥），成功后存各 runtime 密钥（非空才存）。 */
 export async function createCustomProvider(
   config: CustomProviderConfig,

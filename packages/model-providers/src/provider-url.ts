@@ -47,7 +47,7 @@ export function isLoopbackProviderUrl(value: unknown): value is string {
       return false;
     }
     const hostname = url.hostname.toLowerCase();
-    if (hostname === 'localhost' || hostname === '[::1]') return true;
+    if (hostname === 'localhost' || hostname === '[::1]' || hostname === '::1') return true;
     const octets = hostname.split('.');
     return (
       octets.length === 4
