@@ -1,4 +1,6 @@
 import { BrowserWindow, ipcMain } from 'electron';
+import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
+import { normalizeGatewayModelsPayload } from './modelsResponse.js';
 
 import { createLogger } from '../logger.js';
 import * as authManager from '../authManager.js';
@@ -175,16 +177,13 @@ async function runModelsSync(
   authenticatedUserId: string,
   myAttempt: number,
 ): Promise<void> {
-  let payload: { models: ModelAccessGatewayModel[] };
+  let payload: unknown;
   try {
     const request = buildModelsSyncRequest(() =>
       getClientEndpoint('modelAccessApiBaseUrl'),
     );
     payload = await withModelsSyncOverallDeadline(
-      serverApiFetch<{ models: ModelAccessGatewayModel[] }>(
-        request.path,
-        request.options,
-      ),
+      serverApiFetch<unknown>(request.path, request.options),
     );
   } catch (err) {
     log.warn('xd gateway models fetch failed (keeping last valid list)', {
@@ -193,8 +192,14 @@ async function runModelsSync(
     return;
   }
   if (myGen !== authGeneration) return; // 响应归属旧账号,丢弃
-  const models = (payload.models ?? [])
-    .filter((m) => typeof m?.id === 'string' && m.id);
+  const models = normalizeGatewayModelsPayload(
+    payload,
+    CURRENT_CINDY_REGION === 'global' ? 'USD' : 'CNY',
+  );
+  if (models === null) {
+    log.warn('xd gateway models response invalid; keeping last valid list');
+    return;
+  }
   if (models.length === 0) {
     log.warn('xd gateway models fetch returned empty list; clearing current list');
     applyGatewayModels([], authenticatedUserId);
