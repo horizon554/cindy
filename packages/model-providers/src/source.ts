@@ -298,7 +298,7 @@ export function mergeWithBundled(primary: Catalog): Catalog {
   const defaults: Catalog['defaults'] = primary.version === '3'
     ? { ...BUNDLED_CATALOG.defaults }
     : primary.defaults ?? BUNDLED_CATALOG.defaults;
-  if (primary.version === '3' && primary.defaults) {
+  if (primary.version === '3' && primary.defaults && defaults) {
     for (const agent of Object.keys(primary.defaults) as AgentKind[]) {
       defaults[agent] = {
         ...BUNDLED_CATALOG.defaults?.[agent],

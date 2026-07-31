@@ -477,6 +477,7 @@ import {
   connectedProvidersForAgent,
   effectiveSourceIdForModel,
   isModelSelectableForNewRoute,
+  type Effort,
   type ProviderView,
 } from '@cindy/model-providers';
 import {
@@ -485,8 +486,13 @@ import {
   normalizeSessionProviderId,
   setSessionProvider,
 } from '../maker-host/session-provider-store.js';
-import { getActiveCatalog, setDiscoveredProviderModels } from '../maker-host/active-catalog.js';
+import {
+  getActiveCatalog,
+  setDiscoveredProviderModels,
+  setResolvedProviderModels,
+} from '../maker-host/active-catalog.js';
 import { testProviderConnection } from '../maker-host/provider-diagnostics.js';
+import { resolveProviderModels } from '../model-access/modelResolve.js';
 import { fetchProviderModels } from '../maker-host/provider-model-fetch.js';
 import {
   beginProviderRouteMutation,
@@ -510,7 +516,7 @@ import {
 import {
   cancelGenericOAuthLogin,
   deriveModelsDiscoveryUrl,
-  discoverGenericOAuthModels,
+  discoverGenericOAuthModelsDetailed,
   logoutGenericOAuth,
   removeGenericOAuthCredentialsReversibly,
   runGenericOAuthLogin,
@@ -4698,6 +4704,37 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     listPresets: () => getActiveCatalog().presets ?? [],
     testConnection: (input) => testProviderConnection(input),
     fetchModels: (spec) => fetchProviderModels(spec),
+    resolveFetchedModels: (spec, result) => {
+      if (
+        process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1'
+        || !spec.requestId
+        // An unsaved form has no canonical provider identity. Do not derive one from a hostname:
+        // the model-access knowledge base is keyed by provider id, and a host can represent
+        // multiple independent providers (or a user can move the endpoint without changing id).
+        || !spec.savedProviderId
+        || !result.models
+        // resolve 契约(MODEL_ACCESS_AGENTS)只覆盖 claude-code/codex;pi 无知识库通道,
+        // 保持发现结果原样展示,不发起 resolve。
+        || (spec.agent !== 'claude-code' && spec.agent !== 'codex')
+      ) return;
+      const models = result.models;
+      void resolveProviderModels({
+        providerId: spec.savedProviderId,
+        agent: spec.agent,
+        wireProtocol: spec.wireProtocol,
+        models,
+      }).then((resolved) => {
+        if (!resolved) return;
+        const byId = new Map(resolved.entry.models.map((model) => [model.id, model]));
+        broadcastToAllWindows(MAKER_PUSH.PROVIDER_MODELS_RESOLVED, {
+          requestId: spec.requestId,
+          models: models.map((model) => {
+            const metadata = byId.get(model.id);
+            return metadata ? { ...model, ...metadata, id: model.id } : model;
+          }),
+        });
+      }).catch(() => undefined);
+    },
     // 重新发现会用订阅凭证发起真实上游请求，限主页面 sender（子 frame / WebView 拒绝）。
     assertTrustedSender: (event) =>
       assertTrustedAppRendererEvent(event as Parameters<typeof assertTrustedAppRendererEvent>[0]),
@@ -4774,10 +4811,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         // 自定义供应商的发现结果 additions-only 持久化进配置（重启后仍在）;内置供应商走
         // 内存 augment（静态目录 first-wins）。任何一步失败都只降级为纯静态,不影响登录结果。
         try {
-          const fetched = new Map<
-            string,
-            { id: string; name: string; contextWindow?: number }[] | null
-          >();
+          const fetched = new Map<string, Awaited<ReturnType<typeof discoverGenericOAuthModelsDetailed>>>();
           let customChanged = false;
           for (const agent of provider.agents) {
             if (!isCurrent()) break;
@@ -4786,15 +4820,92 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             if (!url) continue;
             // 去重键含 agent:发现请求头按 wire 分派(cc 带 anthropic-version),同 URL 不同 wire 不能共用响应。
             const key = `${agent}\n${url}`;
-            if (!fetched.has(key)) fetched.set(key, await discoverGenericOAuthModels(providerId, oauth, url, agent));
+            if (!fetched.has(key)) fetched.set(key, await discoverGenericOAuthModelsDetailed(providerId, oauth, url, agent));
             if (!isCurrent()) break;
             const models = fetched.get(key);
             if (!models || models.length === 0) continue;
+            if (
+              process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE !== '1'
+              && (agent === 'claude-code' || agent === 'codex')
+            ) {
+              void resolveProviderModels({
+                providerId,
+                agent,
+                wireProtocol: provider.routing[agent]?.wireProtocol,
+                models,
+              }).then((metadata) => {
+                if (!metadata || !isCurrent()) return;
+                const overlay = metadata.entry.models.map((m) => ({
+                  id: m.id,
+                  name: m.name,
+                  contextWindow: m.contextWindow,
+                  maxOutput: m.maxOutput,
+                  description: m.description,
+                  family: m.family,
+                  group: m.group ?? `custom:${providerId}`,
+                  category: m.category,
+                  mode: m.mode,
+                  sortOrder: m.sortOrder,
+                  efforts: m.efforts,
+                  defaultEffort: m.defaultEffort,
+                  supportsFastMode: m.supportsFastMode,
+                  defaultEnabled: m.defaultEnabled,
+                }));
+                setResolvedProviderModels(
+                  providerId,
+                  agent,
+                  metadata.entry.models.map((model) => model.id),
+                  overlay,
+                  metadata.knowledgeRevision,
+                  models.map((model) => model.id),
+                );
+              }).catch(() => undefined);
+            }
+            const effectiveModels: Array<{
+              id: string;
+              name: string;
+              contextWindow: number;
+              contextWindowVerified?: boolean;
+              maxOutput?: number;
+              description?: string;
+              family?: string;
+              group: string;
+              category?: string;
+              mode?: string;
+              modalities?: { input: string[]; output: string[] };
+              capabilities?: Record<string, unknown>;
+              sortOrder?: number;
+              efforts: Effort[];
+              defaultEffort: Effort | null;
+              supportsFastMode?: boolean;
+              defaultEnabled?: boolean;
+            }> = models.map((model) => {
+              const reported = model.providerReported;
+              return {
+                id: model.id,
+                name: model.name,
+                // 端点上报的窗口值优先,缺省才落 200K 保守默认(review P1):
+                // 之前无条件写死 200K,发现的 1M 模型仍会显示并按 200K 压缩。
+                contextWindow: reported?.contextWindow ?? 200_000,
+                ...(reported?.contextWindow !== undefined
+                  ? { contextWindowVerified: true }
+                  : {}),
+                ...(reported?.maxOutput !== undefined ? { maxOutput: reported.maxOutput } : {}),
+                ...(reported?.modalities ? { modalities: reported.modalities } : {}),
+                ...(reported?.capabilities ? { capabilities: reported.capabilities } : {}),
+                ...(reported?.mode ? { mode: reported.mode } : {}),
+                efforts: [],
+                defaultEffort: null,
+                group: `custom:${providerId}`,
+                defaultEnabled: false,
+              };
+            });
+            if (!isCurrent()) break;
             if (provider.source === 'user') {
               const cfg = await getCustomProvider(providerId);
               if (!isCurrent()) break;
               if (cfg) {
-                const nextCfg = mergeDiscoveredModelsIntoConfig(cfg, agent, models);
+                const nextCfg = mergeDiscoveredModelsIntoConfig(cfg, agent, effectiveModels);
                 if (nextCfg) {
                   const applied = await updateCustomProviderIfUnchanged(providerId, cfg, nextCfg);
                   if (!isCurrent()) break;
@@ -4803,25 +4914,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               }
             } else {
               if (!isCurrent()) break;
-              setDiscoveredProviderModels(
-                providerId,
-                agent,
-                models.map((m) => ({
-                  id: m.id,
-                  name: m.name,
-                  // 端点上报的窗口值优先,缺省才落 200K 保守默认(review P1):
-                  // 之前无条件写死 200K,发现的 1M 模型仍会显示并按 200K 压缩。
-                  contextWindow: m.contextWindow ?? 200_000,
-                  // 只有端点真给了才算已核实,可以拿去收敛运行期上报窗口;落 200K
-                  // 兜底的不标记 —— 否则 resolveVerifiedContextWindow 会拒收缺失
-                  // 标记的条目,inflate 的运行期值压不下来(review P1)。
-                  ...(m.contextWindow !== undefined ? { contextWindowVerified: true } : {}),
-                  efforts: [],
-                  defaultEffort: null,
-                  group: `custom:${providerId}`,
-                  defaultEnabled: false,
-                })),
-              );
+              const additions = effectiveModels.map((m) => ({
+                id: m.id,
+                name: m.name,
+                contextWindow: m.contextWindow,
+                maxOutput: m.maxOutput,
+                description: m.description,
+                family: m.family,
+                group: m.group ?? `custom:${providerId}`,
+                category: m.category,
+                mode: m.mode,
+                sortOrder: m.sortOrder,
+                efforts: m.efforts,
+                defaultEffort: m.defaultEffort,
+                supportsFastMode: m.supportsFastMode,
+                defaultEnabled: m.defaultEnabled,
+              }));
+              setDiscoveredProviderModels(providerId, agent, additions);
             }
           }
           if (customChanged && isCurrent()) await refreshCustomProvidersIntoCatalog();

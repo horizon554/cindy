@@ -733,6 +733,8 @@ export const MAKER_PUSH = {
    * 模型选择器 live 刷新）。无 payload；收到即重拉 listProviders。
    */
   PROVIDER_CHANGED: 'maker:provider:changed',
+  /** 自定义供应商表单的异步 resolve 元数据回填。 */
+  PROVIDER_MODELS_RESOLVED: 'maker:provider:models-resolved',
   /** 通用 OAuth Device Grant 的短期验证码进度（仅 renderer 展示，不落盘/不进日志）。 */
   PROVIDER_OAUTH_PROGRESS: 'maker:provider:oauth:progress',
   /**

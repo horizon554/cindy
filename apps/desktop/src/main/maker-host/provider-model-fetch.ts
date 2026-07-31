@@ -21,7 +21,7 @@ import {
   classifyProviderError,
   type ProviderErrorCode,
 } from '../../shared/providerErrors.js';
-import { deriveModelsDiscoveryUrl, parseModelsListResponse } from './generic-oauth.js';
+import { deriveModelsDiscoveryUrl, parseModelsListResponseDetailed } from './generic-oauth.js';
 import { outboundFetch } from './outbound-fetch.js';
 
 /** 拉取超时（与 test-connection 探测同量级）。 */
@@ -32,6 +32,8 @@ const MAX_ERROR_BODY_BYTES = 16 * 1024;
 /** 一次「获取模型列表」的完整参数（表单值内存透传，不落盘）。 */
 export interface ProviderModelsFetchSpec {
   agent: AgentKind;
+  /** Opaque renderer request identity used only for asynchronous metadata prefill. */
+  requestId?: string;
   /** 上游 wire protocol；用于区分 Codex 原生 OpenAI 与 Anthropic Messages 桥。 */
   wireProtocol?: ProviderWireProtocol;
   baseUrl: string;
@@ -54,8 +56,23 @@ export interface ProviderModelsFetchSpec {
 /** 结构化结果（查询型返回：renderer 需要 code 渲染分类文案，不走 throwIpcError）。 */
 export interface ProviderModelsFetchResult {
   ok: boolean;
-  /** 拉到的模型清单（ok=true 时给出；已按 id 去重;contextWindow 为端点声明的上下文长度,尽力提取）。 */
-  models?: { id: string; name: string; contextWindow?: number }[];
+  /** 拉到的模型清单（ok=true 时给出；已按 id 去重）。 */
+  models?: Array<{
+    id: string;
+    name: string;
+    providerReported?: import('./generic-oauth.js').ProviderReportedModelHints;
+    contextWindow?: number;
+    maxOutput?: number;
+    description?: string;
+    family?: string;
+    group?: string;
+    category?: string;
+    mode?: string;
+    sortOrder?: number;
+    efforts?: import('@cindy/model-providers').Effort[];
+    defaultEffort?: import('@cindy/model-providers').Effort | null;
+    supportsFastMode?: boolean;
+  }>;
   /** 失败分类码（ok=false 时给出）。 */
   code?: ProviderErrorCode;
   /** HTTP 状态码（网络层失败时缺省）。 */
@@ -176,7 +193,7 @@ export async function fetchProviderModels(
   } catch {
     return { ok: false, code: 'UNKNOWN', status: res.status, detail: 'models response is not JSON' };
   }
-  const models = parseModelsListResponse(json);
+  const models = parseModelsListResponseDetailed(json);
   if (!models || models.length === 0) {
     // 端点 200 但响应不是可识别的模型列表（或为空）——按「模型不存在」类引导用户手填。
     return { ok: false, code: 'UNKNOWN', status: res.status, detail: 'no models found in response' };

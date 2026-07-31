@@ -229,6 +229,11 @@ export interface ProviderHandlerDeps {
   testConnection(input: ProviderTestInput): Promise<ProviderTestResult>;
   /** 获取模型列表（生产 = fetchProviderModels；单测注入 stub 不联网）。 */
   fetchModels(spec: ProviderModelsFetchSpec): Promise<ProviderModelsFetchResult>;
+  /** Resolve form metadata and publish it without delaying the current IPC result. */
+  resolveFetchedModels?(
+    spec: ProviderModelsFetchSpec,
+    result: ProviderModelsFetchResult,
+  ): void;
   /** 内置四家的模型真源刷新；生产按 providerId 分派到既有 discovery 机制。 */
   refreshBuiltinModels(providerId: BuiltinRefreshableProviderId): Promise<void>;
   /** Renderer 自动刷新提示；Main 侧负责静默失败、冷却和跨窗口去重。 */
@@ -440,6 +445,10 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
     )
   ) return null;
   if (spec.apiKey !== undefined && spec.apiKey !== null && typeof spec.apiKey !== 'string') return null;
+  if (spec.requestId !== undefined && (
+    typeof spec.requestId !== 'string'
+    || !/^[A-Za-z0-9_-]{1,128}$/.test(spec.requestId)
+  )) return null;
   if (spec.wireProtocol !== undefined) {
     const allowed = spec.agent === 'claude-code'
       ? ['anthropic-messages']
@@ -458,6 +467,7 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
     baseUrl: spec.baseUrl,
     authMethod: spec.authMethod as ProviderModelsFetchSpec['authMethod'],
     modelsUrl: (spec.modelsUrl as string | null | undefined) ?? null,
+    requestId: spec.requestId as string | undefined,
     apiKey: (spec.apiKey as string | null | undefined) ?? null,
     headers: spec.headers as Record<string, string> | undefined,
     ...(typeof spec.savedProviderId === 'string' ? { savedProviderId: spec.savedProviderId } : {}),
@@ -1529,7 +1539,11 @@ export function registerProviderHandlers(
         }
       }
     }
-    return deps.fetchModels(parsed);
+    const result = await deps.fetchModels(parsed);
+    if (result.ok && result.models && result.models.length > 0) {
+      deps.resolveFetchedModels?.(parsed, result);
+    }
+    return result;
   });
 
   // 本机 CLI 扫描：查询型；任何失败降级空数组（检测建议是增强,不是功能依赖,

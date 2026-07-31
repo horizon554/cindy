@@ -792,12 +792,12 @@ export function deriveModelsDiscoveryUrl(baseUrl: string): string {
  * （含 GET /v1/models）都强制要求 `anthropic-version`，缺失直接 400 → 发现静默失败；
  * 与 provider-diagnostics.buildProbeRequest 的 cc 分支同口径。
  */
-export async function discoverGenericOAuthModels(
+export async function discoverGenericOAuthModelsDetailed(
   providerId: string,
   oauth: OAuthProviderDescriptor,
   discoveryUrl?: string,
   agent?: AgentKind,
-): Promise<{ id: string; name: string; contextWindow?: number }[] | null> {
+): Promise<DetailedModelListEntry[] | null> {
   const url = discoveryUrl ?? oauth.modelsDiscoveryUrl;
   if (!url) return null;
   const token = readCachedGenericOAuthAccessToken(providerId, oauth);
@@ -820,7 +820,22 @@ export async function discoverGenericOAuthModels(
   } catch {
     return null;
   }
-  return parseModelsListResponse(json);
+  return parseModelsListResponseDetailed(json);
+}
+
+export async function discoverGenericOAuthModels(
+  providerId: string,
+  oauth: OAuthProviderDescriptor,
+  discoveryUrl?: string,
+  agent?: AgentKind,
+): Promise<{ id: string; name: string }[] | null> {
+  const detailed = await discoverGenericOAuthModelsDetailed(
+    providerId,
+    oauth,
+    discoveryUrl,
+    agent,
+  );
+  return detailed?.map(({ id, name }) => ({ id, name })) ?? null;
 }
 
 export interface ProviderReportedModelHints {

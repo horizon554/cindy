@@ -10,6 +10,8 @@ import {
   setActiveCatalogChangedListener,
   setAnthropicDiscoveredModels,
   setDiscoveredCodexModels,
+  setDiscoveredProviderModels,
+  setResolvedProviderModels,
 } from '../active-catalog.js';
 
 describe('active catalog revision', () => {
@@ -18,6 +20,8 @@ describe('active catalog revision', () => {
     setActiveCatalog(BUNDLED_CATALOG);
     setAnthropicDiscoveredModels([]);
     setDiscoveredCodexModels([]);
+    setDiscoveredProviderModels('xai', 'codex', []);
+    setResolvedProviderModels('xai', 'codex', [], [], 'reset');
   });
 
   it('invalidates the merged catalog before notifying one monotonic revision', () => {
@@ -68,6 +72,75 @@ describe('active catalog revision', () => {
     expect(listener).toHaveBeenCalledOnce();
     expect(listener.mock.results[0]?.value).toMatchObject({ revision: start + 1 });
     expect(listener.mock.results[0]?.value.ids).toContain('claude-opus-next');
+  });
+
+  it('resolved overlay changes fields without adding, deleting, or reordering discovery membership', () => {
+    const discovery = [
+      {
+        id: 'xai/resolved-a',
+        name: 'Fallback A',
+        contextWindow: 200_000,
+        efforts: [],
+        defaultEffort: null,
+      },
+      {
+        id: 'xai/plain-b',
+        name: 'Plain B',
+        contextWindow: 200_000,
+        efforts: [],
+        defaultEffort: null,
+      },
+    ];
+    setDiscoveredProviderModels('xai', 'codex', discovery);
+    setResolvedProviderModels(
+      'xai',
+      'codex',
+      ['xai/resolved-a'],
+      [
+        {
+          ...discovery[0],
+          name: 'Resolved A',
+          contextWindow: 1_000_000,
+          efforts: ['high'],
+          defaultEffort: 'high',
+          group: 'grok',
+        },
+        {
+          id: 'xai/must-not-be-added',
+          name: 'Must Not Be Added',
+          contextWindow: 1,
+          efforts: [],
+          defaultEffort: null,
+        },
+      ],
+      'knowledge-r1',
+      getActiveCatalog().providers.find((provider) => provider.id === 'xai')!.models.codex!
+        .map((model) => model.id),
+    );
+
+    const models = getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
+      .models.codex!;
+    expect(models.filter((model) => discovery.some((item) => item.id === model.id)).map((m) => m.id))
+      .toEqual(['xai/resolved-a', 'xai/plain-b']);
+    expect(models.some((model) => model.id === 'xai/must-not-be-added')).toBe(false);
+    expect(models.find((model) => model.id === 'xai/resolved-a')).toMatchObject({
+      name: 'Resolved A',
+      contextWindow: 1_000_000,
+      source: 'resolved',
+      knowledgeRevision: 'knowledge-r1',
+    });
+    expect(models.find((model) => model.id === 'xai/plain-b')).not.toHaveProperty('source');
+
+    setDiscoveredProviderModels('xai', 'codex', [...discovery, {
+      id: 'xai/newer-c',
+      name: 'Newer C',
+      contextWindow: 200_000,
+      efforts: [],
+      defaultEffort: null,
+    }]);
+    const refreshed = getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
+      .models.codex!;
+    expect(refreshed.find((model) => model.id === 'xai/resolved-a')).not.toHaveProperty('source');
   });
 
   it('refreshes one provider model snapshot without replacing live routing or other providers', () => {

@@ -171,6 +171,8 @@ export interface ModelAccessGatewayModel extends ModelGroupPricing {
    * @cindy/model-providers classifyModel / isChatEligible。
    */
   mode?: string;
+  family?: string;
+  category?: string;
   /**
    * Gateway 原生价格币种,是该账号计价与记账的权威来源;旧版服务端未下发时才按
    * 运行区域回退。它不保证等于构建区域 —— 结算币种由服务端按账号所属租户下发,
@@ -182,6 +184,17 @@ export interface ModelAccessGatewayModel extends ModelGroupPricing {
   name?: string;
   group?: string;
   description?: string;
+  /** Optional metadata returned by resolve/model-access v2. */
+  capabilities?: {
+    reasoning?: boolean;
+    toolCall?: boolean;
+    attachment?: boolean;
+    temperature?: boolean;
+    [key: string]: unknown;
+  };
+  releaseDate?: string;
+  status?: 'active' | 'alpha' | 'deprecated';
+  knowledgeRevision?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
   /** 输入 / 输出模态(服务端由 Gateway architecture 归一化而来)。 */
@@ -200,4 +213,6 @@ export interface ModelAccessGatewayModel extends ModelGroupPricing {
   icon?: string;
   /** per-tab 能力覆盖(基线字段之上按 agent 应用)。 */
   perAgent?: Partial<Record<'claude-code' | 'codex', ModelAccessAgentOverride>>;
+  /** View-only marker for strictly parsed schema-v2 catalog entries. */
+  source?: 'resolved';
 }

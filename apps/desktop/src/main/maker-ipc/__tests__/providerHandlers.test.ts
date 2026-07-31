@@ -2244,6 +2244,20 @@ describe('provider:models-fetch handler', () => {
     });
   });
 
+  it('returns provider models immediately while dispatching async resolve', async () => {
+    const harness = new IpcHarness();
+    const resolveFetchedModels = vi.fn(() => undefined);
+    registerProviderHandlers(harness, makeDeps({ resolveFetchedModels }));
+
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_MODELS_FETCH, {
+      requestId: 'form_request_1',
+      agent: 'codex',
+      baseUrl: 'https://models.example/v1',
+      authMethod: 'apiKey',
+    })).resolves.toEqual({ ok: true, models: [{ id: 'm1', name: 'M1' }] });
+    expect(resolveFetchedModels).toHaveBeenCalledOnce();
+  });
+
   it('preserves the Codex Anthropic Messages wire protocol for API-key discovery', async () => {
     const harness = new IpcHarness();
     const fetchModels = vi.fn(async () => ({ ok: true as const, models: [] }));

@@ -243,8 +243,13 @@ export interface CatalogModel {
    * 厂商分组 id —— 决定模型在选择器右栏的分组归属（替代渲染层按 id 前缀硬猜）。
    * 当前取值与渲染层 ModelCategory 对齐：'anthropic' | 'gpt' | 'gpt-budget' | 'google' | 'china'。
    * 缺省时渲染层回退到 id 前缀归类（categorize）。新增未知分组需在渲染层补 i18n 标签。
-   */
+  */
   group?: string;
+  /**
+   * 能力分类（与展示 group 分离）。Gateway/resolve 可用它判断 chat、embedding、image 等
+   * 类型；缺省时由 classification.ts 采用保守的 id 兜底。
+   */
+  category?: string;
   /**
    * Gateway 原生模型能力类型(issue #882:'chat' / 'embedding' / 'image_generation' /
    * 'audio_speech' / ... ,字段值不改名,原样透传)。是否为聊天模型、进哪个
@@ -378,6 +383,10 @@ export interface CatalogModel {
    * 与「隐藏」(defaultEnabled/visibility override,仅陈列过滤、点名与兜底仍可用)不同。
    */
   disabled?: boolean;
+  /** View-only provenance set by the active catalog, never carried by catalog data. */
+  source?: 'resolved' | 'fallback';
+  /** Knowledge-base revision for resolved view entries. */
+  knowledgeRevision?: string;
 }
 
 /** 供应商定义。 */

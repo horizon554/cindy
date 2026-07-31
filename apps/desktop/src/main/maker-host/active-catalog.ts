@@ -69,6 +69,21 @@ let discoveredCodex: CatalogModel[] = [];
  * 空/坏数据绝不抹掉静态兜底。由 generic-oauth 的 models 发现流程写入。
  */
 const discoveredByProvider = new Map<string, Partial<Record<AgentKind, CatalogModel[]>>>();
+/**
+ * Resolve metadata overlay, keyed independently from additions-only discovery membership.
+ * A successful resolve may enrich existing entries, but it is never allowed to add, remove, or
+ * reorder the provider/agent membership snapshot it was generated from.
+ */
+type ResolvedProviderModels = {
+  knowledgeRevision: string;
+  modelIdsKey: string;
+  allModelIdsKey?: string;
+  models: CatalogModel[];
+};
+const resolvedByProvider = new Map<
+  string,
+  Partial<Record<AgentKind, ResolvedProviderModels>>
+>();
 /** 单 tab 能力覆盖块(shared/modelAccess ModelAccessAgentOverride 同形)。 */
 export interface XdGatewayAgentOverride {
   contextWindow?: number;
@@ -103,6 +118,8 @@ export interface XdGatewayModelInfo {
   name?: string;
   group?: string;
   description?: string;
+  family?: string;
+  category?: string;
   contextWindow?: number;
   maxOutputTokens?: number;
   efforts?: string[];
@@ -114,6 +131,13 @@ export interface XdGatewayModelInfo {
   defaultEnabled?: boolean;
   /** 展示图标 id(AI Gateway 设定;缺省 / 未知值渲染层回落来源供应商标)。 */
   icon?: string;
+  /** Resolved metadata is view-only and carries the server knowledge revision. */
+  source?: 'resolved';
+  knowledgeRevision?: string;
+  cost?: CatalogModel['cost'];
+  capabilities?: CatalogModel['capabilities'];
+  releaseDate?: string;
+  status?: CatalogModel['status'];
   modalities?: { input: string[]; output: string[] };
   /** per-tab 能力覆盖。 */
   perAgent?: Partial<Record<AgentKind, XdGatewayAgentOverride>>;
@@ -254,6 +278,46 @@ function markChanged(): void {
   effectiveRegistryMetaIndex = null;
   revision += 1;
   changedListener?.(revision);
+}
+
+const MODEL_ID_SEPARATOR = '\u0000';
+
+function applyResolvedOverlay(
+  p: Provider,
+  agent: AgentKind,
+  resolved: ResolvedProviderModels,
+): Provider {
+  const existing = p.models[agent] ?? [];
+  const existingIds = existing.map((model) => model.id);
+  if (
+    resolved.allModelIdsKey !== undefined
+    && existingIds.join(MODEL_ID_SEPARATOR) !== resolved.allModelIdsKey
+  ) {
+    return p;
+  }
+  const resolvedIds = new Set(resolved.models.map((model) => model.id));
+  if (
+    existingIds
+      .filter((id) => resolvedIds.has(id))
+      .join(MODEL_ID_SEPARATOR) !== resolved.modelIdsKey
+  ) {
+    return p;
+  }
+  const overlay = new Map(resolved.models.map((model) => [model.id, model]));
+  let changed = false;
+  const models = existing.map((model) => {
+    const replacement = overlay.get(model.id);
+    if (!replacement) return model;
+    changed = true;
+    return {
+      ...model,
+      ...replacement,
+      id: model.id,
+      source: 'resolved' as const,
+      knowledgeRevision: resolved.knowledgeRevision,
+    };
+  });
+  return changed ? { ...p, models: { ...p.models, [agent]: models } } : p;
 }
 
 /** additions-only:静态同 id first-wins；Codex 投影可显式要求按 sortOrder 稳定重排。 */
@@ -686,7 +750,16 @@ function computeMerged(): Catalog {
           ...(defaultEnabled !== undefined ? { defaultEnabled } : {}),
           ...(gm.icon !== undefined ? { icon: gm.icon } : {}),
           ...(cost ? { cost } : {}),
+          ...(gm.family !== undefined ? { family: gm.family } : {}),
+          ...(gm.category !== undefined ? { category: gm.category } : {}),
+          ...(gm.capabilities !== undefined ? { capabilities: gm.capabilities } : {}),
           ...(gm.modalities !== undefined ? { modalities: gm.modalities } : {}),
+          ...(gm.releaseDate !== undefined ? { releaseDate: gm.releaseDate } : {}),
+          ...(gm.status !== undefined ? { status: gm.status } : {}),
+          ...(gm.source !== undefined ? { source: gm.source } : {}),
+          ...(gm.knowledgeRevision !== undefined
+            ? { knowledgeRevision: gm.knowledgeRevision }
+            : {}),
         };
         models[agent]!.push(merged);
       }
@@ -718,6 +791,24 @@ function computeMerged(): Catalog {
     }
     return { ...p, models };
   });
+
+  // Resolve is an enrichment pass only. It is deliberately applied after the upstream model
+  // plane has finished membership, local override, bridge, Pi, and XD projection decisions;
+  // snapshot keys prevent a stale response from changing membership or ordering.
+  if (process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE !== '1' && resolvedByProvider.size > 0) {
+    providers = providers.map((p) => {
+      const byAgent = resolvedByProvider.get(p.id);
+      if (!byAgent) return p;
+      let next = p;
+      for (const [agent, resolved] of Object.entries(byAgent) as [
+        AgentKind,
+        ResolvedProviderModels,
+      ][]) {
+        if (resolved) next = applyResolvedOverlay(next, agent, resolved);
+      }
+      return next;
+    });
+  }
 
   if (providers === b.providers) return b; // 无 augment、无 custom → 原样返回
   return { ...b, providers }; // spread 保留 presets 等目录顶层字段
@@ -831,6 +922,29 @@ export function setDiscoveredProviderModels(
   const byAgent = discoveredByProvider.get(providerId) ?? {};
   byAgent[agent] = [...models];
   discoveredByProvider.set(providerId, byAgent);
+  markChanged();
+}
+
+/**
+ * Overlay resolved metadata onto existing membership. The setter is deliberately incapable of
+ * changing the model id list; computeMerged only applies matching ids after the model plane.
+ */
+export function setResolvedProviderModels(
+  providerId: string,
+  agent: AgentKind,
+  modelIds: readonly string[],
+  models: CatalogModel[],
+  knowledgeRevision: string,
+  allModelIds?: readonly string[],
+): void {
+  const byAgent = resolvedByProvider.get(providerId) ?? {};
+  byAgent[agent] = {
+    models: [...models],
+    modelIdsKey: modelIds.join(MODEL_ID_SEPARATOR),
+    ...(allModelIds ? { allModelIdsKey: allModelIds.join(MODEL_ID_SEPARATOR) } : {}),
+    knowledgeRevision,
+  };
+  resolvedByProvider.set(providerId, byAgent);
   markChanged();
 }
 

@@ -1,6 +1,6 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
-import { normalizeGatewayModelsPayload } from './modelsResponse.js';
+import { isStrictlyResolvedGatewayModels, normalizeGatewayModelsPayload } from './modelsResponse.js';
 
 import { createLogger } from '../logger.js';
 import * as authManager from '../authManager.js';
@@ -168,8 +168,14 @@ function applyGatewayModels(
   // contextLength / supportedEndpoints / reasoning / supportsServiceTier / architecture
   // 一次归一化成 contextWindow / agents / efforts / supportsFastMode / modalities,
   // 同一含义只下发一个字段。这里直接用下发值，唯一事实源在服务端。
+  // 整包严格通过 resolve 校验时为每个条目打 source='resolved' 来源标记，
+  // 供下游（UI/诊断）区分“服务端已补全”与“透传原始网关数据”。
+  const resolvedSource = isStrictlyResolvedGatewayModels(models);
+  const effective = resolvedSource
+    ? models.map((model) => ({ ...model, source: 'resolved' as const }))
+    : models;
   // active-catalog 统一收口会原地刷新 Maker capabilities，再广播同一 revision。
-  setXdGatewayModels(models);
+  setXdGatewayModels(effective);
 }
 
 async function runModelsSync(

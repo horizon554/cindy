@@ -6,6 +6,13 @@ import {
 
 import type { ModelAccessGatewayModel } from '../../shared/modelAccess.js';
 
+/** Non-enumerable provenance on the parsed array keeps each wire model entry byte-for-byte intact. */
+export function isStrictlyResolvedGatewayModels(
+  models: readonly ModelAccessGatewayModel[],
+): boolean {
+  return (models as readonly ModelAccessGatewayModel[] & { resolvedSource?: unknown }).resolvedSource === true;
+}
+
 /** Parse ListModels v2 or the pre-S3 unversioned envelope without replacing last-good data. */
 export function normalizeGatewayModelsPayload(
   payload: unknown,
@@ -19,10 +26,12 @@ export function normalizeGatewayModelsPayload(
   ) {
     const parsed = parseListModelsResponseV2(payload);
     if (!parsed.ok) return null;
-    return parsed.value.models.map((model) => ({
+    const models = parsed.value.models.map((model) => ({
       ...(model as unknown as ModelAccessGatewayModel),
       currency: isModelCurrency(model.currency) ? model.currency : fallbackCurrency,
     }));
+    Object.defineProperty(models, 'resolvedSource', { value: true, enumerable: false });
+    return models;
   }
 
   // Before S3, the server sent the unversioned { models: [...] } envelope. Keep this

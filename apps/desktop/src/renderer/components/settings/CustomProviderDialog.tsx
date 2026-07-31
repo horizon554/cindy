@@ -639,9 +639,37 @@ export function CustomProviderDialog({
     const reuseSaved = Boolean(
       initial?.id && savedBaseline && modelFetchCanReuseSavedCredentials(rf, savedBaseline, authMode),
     );
+    const requestId = `custom_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    let stopResolved: (() => void) | undefined;
     setFetchingModels((prev) => ({ ...prev, [agent]: true }));
     try {
+      stopResolved = window.electronAPI.maker.onProviderModelsResolved((payload) => {
+        if (payload.requestId !== requestId) return;
+        stopResolved?.();
+        stopResolved = undefined;
+        if (
+          providerModelFetchRequestSignature(rtRef.current[agent], authModeRef.current) !==
+          requestSig
+        ) return;
+        const contextById = new Map(
+          payload.models
+            .filter((model) => model.contextWindow !== undefined)
+            .map((model) => [model.id, model.contextWindow!]),
+        );
+        setPicker((currentPicker) => {
+          if (!currentPicker || currentPicker.agent !== agent) return currentPicker;
+          return {
+            ...currentPicker,
+            models: currentPicker.models.map((model) => {
+              if (model.contextWindow !== undefined) return model;
+              const contextWindow = contextById.get(model.id);
+              return contextWindow === undefined ? model : { ...model, contextWindow };
+            }),
+          };
+        });
+      });
       const result = await window.electronAPI.maker.fetchProviderModels({
+        requestId,
         agent,
         baseUrl,
         authMethod: authMode,
@@ -699,9 +727,13 @@ export function CustomProviderDialog({
         // 请求期间切过 Tab 也不会在错误上下文里确认。
         setActiveTab(agent);
       } else {
+        stopResolved?.();
+        stopResolved = undefined;
         toast.error(t(`providerError.${result.code ?? 'UNKNOWN'}`));
       }
     } catch (e) {
+      stopResolved?.();
+      stopResolved = undefined;
       if (
         providerModelFetchRequestSignature(rtRef.current[agent], authModeRef.current) !== requestSig
       )

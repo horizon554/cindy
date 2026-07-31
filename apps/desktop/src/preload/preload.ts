@@ -503,6 +503,7 @@ const fanOutMakerAuthStateChanged = createIpcFanOut('maker:auth:state-changed');
 const fanOutMakerAuthLoginProgress = createIpcFanOut('maker:auth:login-progress');
 // 自定义供应商增删改广播 → 各 useProviders 实例 refetch（设置页列表 + 对话模型选择器 live 刷新）。
 const fanOutMakerProvidersChanged = createIpcFanOut('maker:provider:changed');
+const fanOutMakerProviderModelsResolved = createIpcFanOut('maker:provider:models-resolved');
 const fanOutMakerProviderOAuthProgress = createIpcFanOut('maker:provider:oauth:progress');
 // 自定义 MCP 服务器增删改广播 → 设置页 McpServersSection refetch。
 const fanOutMakerMcpChanged = createIpcFanOut('maker:mcp:changed');
@@ -4355,6 +4356,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
      * 结构化结果：ok=true 带 models；失败 code 走 providerError.* i18n。
      */
     fetchProviderModels: (input: {
+      requestId?: string;
       agent: 'claude-code' | 'codex' | 'pi';
       baseUrl: string;
       authMethod: 'apiKey' | 'oauth' | 'none';
@@ -4369,7 +4371,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
       savedProviderId?: string;
     }): Promise<{
       ok: boolean;
-      models?: { id: string; name: string; contextWindow?: number }[];
+      models?: Array<{
+        id: string;
+        name: string;
+        providerReported?: import('../main/maker-host/generic-oauth').ProviderReportedModelHints;
+        contextWindow?: number;
+        maxOutput?: number;
+        description?: string;
+        family?: string;
+        group?: string;
+        category?: string;
+        mode?: string;
+        sortOrder?: number;
+        efforts?: import('@cindy/model-providers').Effort[];
+        defaultEffort?: import('@cindy/model-providers').Effort | null;
+        supportsFastMode?: boolean;
+      }>;
       code?: import('../shared/providerErrors').ProviderErrorCode;
       status?: number;
       detail?: string;
@@ -4394,6 +4411,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }> => ipcRenderer.invoke('maker:provider:models-rediscover', providerId),
     /** 自定义供应商变更广播订阅（返回 off）。 */
     onProvidersChanged: fanOutMakerProvidersChanged,
+    onProviderModelsResolved: fanOutMakerProviderModelsResolved,
 
     // 自定义 MCP 服务器配置 CRUD（可选 bearer token 另走通用 safeStorage IPC，不经这里）。
     listCustomMcpServers: (): Promise<{
