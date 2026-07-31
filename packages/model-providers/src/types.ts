@@ -41,7 +41,20 @@ export type CodexCompatibilityWireProtocol = Extract<
   'anthropic-messages' | 'openai-chat'
 >;
 
-/** 供应商来源：内置 vs 用户自定义（自定义本轮不实现，类型先留位）。 */
+/** Per-agent provider default model identifiers. */
+export interface ProviderDefaults {
+  /** Default model for a normal session on this agent runtime. */
+  sessionModel?: string;
+  /** Default model for one-shot / utility work on this agent runtime. */
+  oneShotModel?: string;
+  /** Default model for title generation on this agent runtime. */
+  titleModel?: string;
+}
+
+/** Catalog-wide defaults keyed by agent runtime. */
+export type CatalogDefaults = Partial<Record<AgentKind, ProviderDefaults>>;
+
+/** 供应商来源：内置 vs 用户自定义。 */
 export type ProviderSource = 'builtin' | 'user';
 
 /** 用户连接该供应商的鉴权方式（决定设置页的连接 UI）。
@@ -394,6 +407,13 @@ export interface Provider {
   titleModel?: string;
   /** ★路由描述符，按 agent 索引（供应商可同时供多个 agent）。 */
   routing: Partial<Record<AgentKind, RoutingDescriptor>>;
+  /** Provider-level cold-start defaults; catalog-level defaults may override them. */
+  defaults?: Partial<Record<AgentKind, ProviderDefaults>>;
+  /**
+   * Offline / first-boot display models used only before this provider has ever produced a
+   * dynamic or resolved model list. A successful resolve, including an empty list, supersedes it.
+   */
+  fallbackModels?: Partial<Record<AgentKind, CatalogModel[]>>;
   /**
    * ★该供应商提供的模型清单，**按 agent 分组**（同 id 在不同 agent 下元数据可不同，
    * 如 gpt-5.5 cc=1M / codex=272k）。`agents` 里声明的每个 agent 都应有对应数组（见 catalog.ts 校验）。
@@ -523,6 +543,8 @@ export interface Catalog {
   /** 目录版本号（语义随意，仅用于诊断 / 缓存比对）。 */
   version: string;
   providers: Provider[];
+  /** Catalog-wide cold-start defaults take precedence over provider-level defaults. */
+  defaults?: CatalogDefaults;
   /**
    * 自定义供应商创建模板（可选）。容错语义：解析时逐条校验、坏条目丢弃（见 catalog.ts
    * `sanitizePresets`），绝不因预设数据错误导致整份远端目录回退 bundled。

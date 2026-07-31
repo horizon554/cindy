@@ -519,6 +519,118 @@ export function sortPresetsForLocale(presets: ProviderPreset[], locale: string):
   });
 }
 
+function validateCatalogDefaults(value: unknown, label: string): void {
+  assert(value && typeof value === 'object' && !Array.isArray(value), `${label} must be an object`);
+  for (const [agent, rawDefaults] of Object.entries(value as Record<string, unknown>)) {
+    assert(isAgentKind(agent), `${label}.${agent} has invalid agent`);
+    assert(
+      rawDefaults && typeof rawDefaults === 'object' && !Array.isArray(rawDefaults),
+      `${label}.${agent} must be an object`,
+    );
+    for (const field of ['sessionModel', 'oneShotModel', 'titleModel'] as const) {
+      const model = (rawDefaults as Record<string, unknown>)[field];
+      if (model !== undefined) {
+        assert(typeof model === 'string' && model.length > 0, `${label}.${agent}.${field} invalid`);
+      }
+    }
+  }
+}
+
+function parseV3Catalog(input: Record<string, unknown>): Catalog {
+  assert(input.version === '3', 'catalog.version must be 3 for registry v3');
+  assert(Array.isArray(input.providers), 'catalog.providers missing');
+
+  const providerEntries: Provider[] = [];
+  const presetEntries: unknown[] = Array.isArray(input.presets) ? [...input.presets] : [];
+  const seenProviderIds = new Set<string>();
+
+  for (const [index, value] of input.providers.entries()) {
+    assert(value && typeof value === 'object' && !Array.isArray(value), `catalog.providers[${index}] must be an object`);
+    const entry = value as Record<string, unknown>;
+    if (entry.source === 'preset') {
+      const { source: _source, ...preset } = entry;
+      presetEntries.push(preset);
+      continue;
+    }
+
+    assert(typeof entry.id === 'string' && /^[a-zA-Z0-9_-]+$/.test(entry.id), `provider.id invalid at catalog.providers[${index}]`);
+    assert(!seenProviderIds.has(entry.id), `duplicate provider.id '${entry.id}'`);
+    seenProviderIds.add(entry.id);
+    validateV3Provider(entry);
+    providerEntries.push(entry as unknown as Provider);
+  }
+
+  if (input.defaults !== undefined) validateCatalogDefaults(input.defaults, 'catalog.defaults');
+  let modelRegistry: Catalog['modelRegistry'];
+  if (input.modelRegistry !== undefined) {
+    const registry = parseModelRegistry(input.modelRegistry);
+    assert(registry.ok, registry.ok ? '' : registry.error);
+    modelRegistry = registry.value;
+  }
+  const presets = sanitizePresets(presetEntries);
+  return {
+    version: '3',
+    providers: providerEntries,
+    ...(input.defaults !== undefined ? { defaults: input.defaults as Catalog['defaults'] } : {}),
+    ...(presets.length > 0 ? { presets } : {}),
+    ...(modelRegistry ? { modelRegistry } : {}),
+  };
+}
+
+/** Validate only fields present in a v3 registry delta. */
+function validateV3Provider(entry: Record<string, unknown>): void {
+  if (entry.name !== undefined) {
+    assert(typeof entry.name === 'string' && entry.name.length > 0, `provider '${String(entry.id)}' name invalid`);
+  }
+  if (entry.source !== undefined) {
+    assert(entry.source === 'builtin' || entry.source === 'user', `provider '${String(entry.id)}' source invalid`);
+  }
+  if (entry.agents !== undefined) {
+    assert(Array.isArray(entry.agents) && entry.agents.every(isAgentKind), `provider '${String(entry.id)}' agents invalid`);
+  }
+  if (entry.auth !== undefined) {
+    assert(entry.auth && typeof entry.auth === 'object' && !Array.isArray(entry.auth), `provider '${String(entry.id)}' auth invalid`);
+    const auth = entry.auth as Record<string, unknown>;
+    assert(auth.method === 'oauth' || auth.method === 'apiKey' || auth.method === 'managed' || auth.method === 'none', `provider '${String(entry.id)}' auth.method invalid`);
+  }
+  if (entry.routing !== undefined) {
+    assert(entry.routing && typeof entry.routing === 'object' && !Array.isArray(entry.routing), `provider '${String(entry.id)}' routing invalid`);
+    for (const [agent, rawRoute] of Object.entries(entry.routing as Record<string, unknown>)) {
+      assert(isAgentKind(agent), `provider '${String(entry.id)}' routing agent invalid`);
+      assert(rawRoute && typeof rawRoute === 'object' && !Array.isArray(rawRoute), `provider '${String(entry.id)}' routing[${agent}] invalid`);
+      const route = rawRoute as Record<string, unknown>;
+      if (route.upstream !== undefined) {
+        let valid = false;
+        try {
+          const url = new URL(String(route.upstream));
+          valid = (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password;
+        } catch {
+          valid = false;
+        }
+        assert(valid, `provider '${String(entry.id)}' routing[${agent}].upstream invalid`);
+      }
+      if (route.authStrategy !== undefined) assert(typeof route.authStrategy === 'string' && route.authStrategy.length > 0, `provider '${String(entry.id)}' routing[${agent}].authStrategy invalid`);
+      if (route.wireProtocol !== undefined) assert(isWireProtocol(route.wireProtocol), `provider '${String(entry.id)}' routing[${agent}].wireProtocol invalid`);
+    }
+  }
+  for (const field of ['models', 'fallbackModels'] as const) {
+    if (entry[field] === undefined) continue;
+    assert(entry[field] && typeof entry[field] === 'object' && !Array.isArray(entry[field]), `provider '${String(entry.id)}' ${field} invalid`);
+    for (const [agent, list] of Object.entries(entry[field] as Record<string, unknown>)) {
+      assert(isAgentKind(agent), `provider '${String(entry.id)}' ${field} agent invalid`);
+      assert(Array.isArray(list), `provider '${String(entry.id)}' ${field}[${agent}] must be an array`);
+      for (const model of list) validateModel(model as CatalogModel, String(entry.id));
+    }
+  }
+  if (entry.defaults !== undefined) {
+    validateCatalogDefaults(entry.defaults, `provider '${String(entry.id)}' defaults`);
+  }
+  if (entry.titleModel !== undefined) assert(typeof entry.titleModel === 'string' && entry.titleModel.length > 0, `provider '${String(entry.id)}' titleModel invalid`);
+  if (entry.models !== undefined && entry.agents !== undefined && entry.auth !== undefined && entry.routing !== undefined) {
+    validateProvider(entry as unknown as Provider);
+  }
+}
+
 /**
  * 把任意来源（远端 / 本地文件文本 / 对象）解析校验成 Catalog。
  * 失败抛错——调用方决定回退兜底。
@@ -526,12 +638,14 @@ export function sortPresetsForLocale(presets: ProviderPreset[], locale: string):
 export function parseCatalog(input: string | unknown): Catalog {
   const obj: unknown = typeof input === 'string' ? JSON.parse(input) : input;
   assert(obj && typeof obj === 'object', 'root is not an object');
-  const allowedRootFields = new Set(['version', 'providers', 'presets', 'modelRegistry']);
+  const allowedRootFields = new Set(['version', 'providers', 'defaults', 'presets', 'modelRegistry']);
   const unknownRootField = Object.keys(obj).find((field) => !allowedRootFields.has(field));
   assert(!unknownRootField, `catalog.${unknownRootField} is not allowed`);
   const catalog = obj as Catalog;
   assert(typeof catalog.version === 'string', 'catalog.version missing');
+  if (catalog.version === '3') return parseV3Catalog(obj as Record<string, unknown>);
   assert(Array.isArray(catalog.providers) && catalog.providers.length > 0, 'catalog.providers missing/empty');
+  if (catalog.defaults !== undefined) validateCatalogDefaults(catalog.defaults, 'catalog.defaults');
   for (const p of catalog.providers) validateProvider(p);
   validateModelConsistency(catalog);
   // presets 容错清洗（坏条目丢弃，不让预设错误拖垮整份目录）。

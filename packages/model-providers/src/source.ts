@@ -193,6 +193,36 @@ function backfillPresetContextWindows(
 }
 
 /**
+ * Registry v3 providers are deltas over the bundled provider identity cards. Keep this
+ * compatibility merge deliberately narrow: upstream's Catalog/LKG and modelRegistry remain the
+ * authoritative load path, while a v3 snapshot may still omit sibling runtime fields. Explicit
+ * empty arrays/objects are preserved as intentional values.
+ */
+function mergeV3Provider(bundled: Provider, delta: Partial<Provider>): Provider {
+  const merged: Provider = { ...bundled, ...delta };
+  if (delta.routing !== undefined) {
+    merged.routing = { ...bundled.routing, ...delta.routing };
+  }
+  if (delta.models !== undefined) {
+    merged.models = { ...bundled.models, ...delta.models };
+  }
+  if (delta.fallbackModels !== undefined) {
+    merged.fallbackModels = { ...bundled.fallbackModels, ...delta.fallbackModels };
+  }
+  if (delta.defaults !== undefined) {
+    const defaults: NonNullable<Provider['defaults']> = { ...bundled.defaults };
+    for (const agent of Object.keys(delta.defaults) as AgentKind[]) {
+      defaults[agent] = {
+        ...bundled.defaults?.[agent],
+        ...delta.defaults[agent],
+      };
+    }
+    merged.defaults = defaults;
+  }
+  return merged;
+}
+
+/**
  * 把远端 / 本地目录与内置 bundled 合并：以输入目录为主，bundled 补它缺失的
  * provider（按 id），并给旧目录中同 id provider 补缺失的 access 与图像能力元数据。
  * primary 明确提供的值（包括显式空图像清单）永远优先，不被 bundled 覆盖。
@@ -205,24 +235,27 @@ export function mergeWithBundled(primary: Catalog): Catalog {
   const bundledById = new Map(BUNDLED_CATALOG.providers.map((p) => [p.id, p]));
   const withBundledMetadata = primary.providers.map((p) => {
     const bundled = bundledById.get(p.id);
-    const bundledAccess = bundled ? legacyAccessFor(p, bundled) : undefined;
+    const mergedProvider = primary.version === '3' && bundled
+      ? mergeV3Provider(bundled, p as Partial<Provider>)
+      : p;
+    const bundledAccess = bundled ? legacyAccessFor(mergedProvider, bundled) : undefined;
     if (!bundled) return p;
     const inheritImage =
-      p.id === 'xai' &&
-      p.imageModels === undefined &&
+      mergedProvider.id === 'xai' &&
+      mergedProvider.imageModels === undefined &&
       bundled.imageModels !== undefined &&
       bundledAccess !== undefined &&
-      allowsBundledImageInheritance(p.access, bundledAccess);
-    if (!(p.access === undefined && bundledAccess !== undefined) && !inheritImage) {
-      return p;
+      allowsBundledImageInheritance(mergedProvider.access, bundledAccess);
+    if (!(mergedProvider.access === undefined && bundledAccess !== undefined) && !inheritImage) {
+      return mergedProvider;
     }
     return {
-      ...p,
-      ...(p.access === undefined && bundledAccess !== undefined ? { access: bundledAccess } : {}),
+      ...mergedProvider,
+      ...(mergedProvider.access === undefined && bundledAccess !== undefined ? { access: bundledAccess } : {}),
       ...(inheritImage
         ? {
             imageModels: bundled.imageModels,
-            ...(p.imageDefaults === undefined && bundled.imageDefaults !== undefined
+            ...(mergedProvider.imageDefaults === undefined && bundled.imageDefaults !== undefined
               ? { imageDefaults: bundled.imageDefaults }
               : {}),
           }
@@ -261,10 +294,22 @@ export function mergeWithBundled(primary: Catalog): Catalog {
     ? merged.map((provider) =>
         provider.id === 'xai' ? (bundledById.get('xai') ?? provider) : provider,
       )
-    : merged;
+      : merged;
+  const defaults: Catalog['defaults'] = primary.version === '3'
+    ? { ...BUNDLED_CATALOG.defaults }
+    : primary.defaults ?? BUNDLED_CATALOG.defaults;
+  if (primary.version === '3' && primary.defaults) {
+    for (const agent of Object.keys(primary.defaults) as AgentKind[]) {
+      defaults[agent] = {
+        ...BUNDLED_CATALOG.defaults?.[agent],
+        ...primary.defaults[agent],
+      };
+    }
+  }
   return {
     version: primary.version,
     providers,
+    ...(defaults ? { defaults } : {}),
     ...(presets && presets.length > 0 ? { presets } : {}),
     ...(selectedRegistry.modelRegistry ? { modelRegistry: selectedRegistry.modelRegistry } : {}),
   };

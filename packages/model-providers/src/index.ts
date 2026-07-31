@@ -13,6 +13,8 @@ export type {
   CodexCompatibilityWireProtocol,
   Effort,
   ProviderSource,
+  ProviderDefaults,
+  CatalogDefaults,
   AuthMethod,
   ProviderAccess,
   AuthStrategy,
