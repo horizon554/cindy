@@ -509,10 +509,7 @@ export interface GenericOAuthLoginOptions {
 }
 
 // 同一时刻每个 provider 只允许一个登录流。
-const activeLogins = new Map<
-  string,
-  { abort: AbortController; close: () => void }
->();
+const activeLogins = new Map<string, { abort: AbortController; close: () => void }>();
 
 /** 取消某供应商进行中的登录。 */
 export function cancelGenericOAuthLogin(providerId: string): void {
@@ -574,9 +571,9 @@ async function runDeviceCodeGrant(
     typeof authorization?.device_code === 'string' ? authorization.device_code : '';
   const userCode = typeof authorization?.user_code === 'string' ? authorization.user_code : '';
   const verificationUrl =
-    safeVerificationUrl(authorization?.verification_uri_complete)
-    ?? safeVerificationUrl(authorization?.verification_uri)
-    ?? safeVerificationUrl(authorization?.verification_url);
+    safeVerificationUrl(authorization?.verification_uri_complete) ??
+    safeVerificationUrl(authorization?.verification_uri) ??
+    safeVerificationUrl(authorization?.verification_url);
   const expiresInSeconds = positiveNumber(authorization?.expires_in);
   if (!deviceCode || !userCode || !verificationUrl || !expiresInSeconds) {
     throw new Error('invalid_device_authorization_response');
@@ -623,9 +620,9 @@ async function runDeviceCodeGrant(
     });
     const payload = await readJsonObject(response);
     if (
-      response.ok
-      && typeof payload?.access_token === 'string'
-      && payload.access_token.length > 0
+      response.ok &&
+      typeof payload?.access_token === 'string' &&
+      payload.access_token.length > 0
     ) {
       return payload as unknown as TokenResponse;
     }
@@ -639,9 +636,7 @@ async function runDeviceCodeGrant(
     if (error === 'access_denied') throw new Error('device_access_denied');
     if (error === 'expired_token') throw new Error('device_code_expired');
     throw new Error(
-      error
-        ? `device_token_error_${error}`
-        : `device_token_exchange_failed_${response.status}`,
+      error ? `device_token_error_${error}` : `device_token_exchange_failed_${response.status}`,
     );
   }
   throw new Error('device_code_expired');
@@ -658,8 +653,7 @@ export async function runGenericOAuthLogin(
 ): Promise<GenericOAuthLoginResult> {
   cancelGenericOAuthLogin(provider.id);
 
-  const listener =
-    oauth.flow === 'device-code' ? null : new CallbackListener(provider.name);
+  const listener = oauth.flow === 'device-code' ? null : new CallbackListener(provider.name);
   const abort = new AbortController();
   activeLogins.set(provider.id, {
     abort,
@@ -829,71 +823,171 @@ export async function discoverGenericOAuthModels(
   return parseModelsListResponse(json);
 }
 
+export interface ProviderReportedModelHints {
+  contextWindow?: number;
+  maxOutput?: number;
+  modalities?: { input: string[]; output: string[] };
+  capabilities?: Record<string, unknown>;
+  mode?: string;
+  type?: string;
+}
+
+export interface DetailedModelListEntry {
+  id: string;
+  name: string;
+  providerReported?: ProviderReportedModelHints;
+}
+
+function positiveHintNumber(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  const normalized = Math.floor(value);
+  return normalized > 0 && Number.isSafeInteger(normalized) ? normalized : undefined;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = value.filter(
+    (item): item is string => typeof item === 'string' && item.length > 0,
+  );
+  return values.length > 0 ? values : undefined;
+}
+
+function readModalities(
+  item: Record<string, unknown>,
+): { input: string[]; output: string[] } | undefined {
+  const direct = item.modalities;
+  const architecture = item.architecture;
+  const architectureRecord =
+    architecture && typeof architecture === 'object' && !Array.isArray(architecture)
+      ? (architecture as Record<string, unknown>)
+      : undefined;
+  const modalitiesRecord =
+    direct && typeof direct === 'object' && !Array.isArray(direct)
+      ? (direct as Record<string, unknown>)
+      : undefined;
+  const input =
+    stringArray(modalitiesRecord?.input) ??
+    stringArray(modalitiesRecord?.input_modalities) ??
+    stringArray(item.input_modalities) ??
+    stringArray(item.inputModalities) ??
+    stringArray(architectureRecord?.input_modalities) ??
+    stringArray(architectureRecord?.inputModalities);
+  const output =
+    stringArray(modalitiesRecord?.output) ??
+    stringArray(modalitiesRecord?.output_modalities) ??
+    stringArray(item.output_modalities) ??
+    stringArray(item.outputModalities) ??
+    stringArray(architectureRecord?.output_modalities) ??
+    stringArray(architectureRecord?.outputModalities);
+  return input && output ? { input, output } : undefined;
+}
+
+function readCapabilities(item: Record<string, unknown>): Record<string, unknown> | undefined {
+  const direct = item.capabilities;
+  const capabilities: Record<string, unknown> =
+    direct && typeof direct === 'object' && !Array.isArray(direct)
+      ? { ...(direct as Record<string, unknown>) }
+      : {};
+  const supportedParameters =
+    stringArray(item.supported_parameters) ?? stringArray(item.supportedParameters);
+  if (supportedParameters) {
+    capabilities.supportedParameters = supportedParameters;
+    if (supportedParameters.includes('tools') || supportedParameters.includes('tool_choice')) {
+      capabilities.toolCall = true;
+    }
+    if (
+      supportedParameters.includes('reasoning') ||
+      supportedParameters.includes('reasoning_effort')
+    ) {
+      capabilities.reasoning = true;
+    }
+    if (supportedParameters.includes('temperature')) capabilities.temperature = true;
+  }
+  return Object.keys(capabilities).length > 0 ? capabilities : undefined;
+}
+
 /**
- * 解析 OpenAI / Anthropic「列模型」响应的三种形状（`{data:[{id}]}` / `{models:[{id}]}` /
- * 字符串数组）为去重后的 `{id, name, contextWindow?}[]`；无法识别返回 null。显示名优先取
- * 条目的 `display_name`（Anthropic 形状）/ `name` 字段，缺省回退 id。
- * contextWindow 尽力从常见字段读取（OpenRouter `context_length` / 通用 `context_window` /
- * Moonshot 等 `max_context_length` / Anthropic 兼容端点 `max_input_tokens`,与
- * model-discovery/anthropic.ts 认的字段对齐），无或非法时缺省——缺省的模型仍会
- * 回落保守默认(#386)。
- * 纯函数——OAuth 自动发现（本模块）与 API key 表单「获取模型列表」（provider-model-fetch）共用。
+ * Parse model discovery responses while retaining upstream capability hints for resolve.
+ * It accepts the common `{data:[...]}` / `{models:[...]}` envelopes and bare arrays.
  */
-export function parseModelsListResponse(
-  json: unknown,
-): { id: string; name: string; contextWindow?: number }[] | null {
+export function parseModelsListResponseDetailed(json: unknown): DetailedModelListEntry[] | null {
   const list = (() => {
     if (!json || typeof json !== 'object') return null;
     const o = json as { data?: unknown; models?: unknown };
     if (Array.isArray(o.data)) return o.data;
     if (Array.isArray(o.models)) return o.models;
-    return null;
+    return Array.isArray(json) ? json : null;
   })();
   if (!list) return null;
-  const out: { id: string; name: string; contextWindow?: number }[] = [];
+  const out: DetailedModelListEntry[] = [];
   const seen = new Set<string>();
   for (const item of list) {
-    const id =
-      typeof item === 'string'
-        ? item
-        : item && typeof item === 'object' && typeof (item as { id?: unknown }).id === 'string'
-          ? (item as { id: string }).id
-          : null;
+    const record =
+      item && typeof item === 'object' && !Array.isArray(item)
+        ? (item as Record<string, unknown>)
+        : undefined;
+    const id = typeof item === 'string' ? item : nonEmptyString(record?.id);
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    const rec =
-      item && typeof item === 'object'
-        ? (item as {
-            display_name?: unknown;
-            name?: unknown;
-            context_length?: unknown;
-            context_window?: unknown;
-            max_context_length?: unknown;
-            max_input_tokens?: unknown;
-          })
-        : null;
-    const name =
-      rec && typeof rec.display_name === 'string' && rec.display_name.length > 0
-        ? rec.display_name
-        : rec && typeof rec.name === 'string' && rec.name.length > 0
-          ? rec.name
-          : id;
-    const rawWindow = rec
-      ? [rec.context_length, rec.context_window, rec.max_context_length, rec.max_input_tokens].find(
-          // Math.floor(v) > 0 而非 v > 0:0 < v < 1(如 context_length: 0.5)会通过
-          // v > 0 但取整成 contextWindow: 0——按取整后的值校验才不会漏这个区间
-          // (review P2)。Number.isSafeInteger(Math.floor(v)) 拒绝超出安全整数范围的
-          // 异常值(如 context_length: 1e20)——这类值会通过取整后为正的校验,但落盘后
-          // Main 的正数校验反而会因为超界而拒绝整份供应商配置,内置 OAuth 发现分支则会
-          // 把这个失真值当真实窗口注入目录(review P2)。
-          (v) => typeof v === 'number' && Number.isFinite(v) && Math.floor(v) > 0 && Number.isSafeInteger(Math.floor(v)),
-        )
-      : undefined;
-    out.push({
-      id,
-      name,
-      ...(typeof rawWindow === 'number' ? { contextWindow: Math.floor(rawWindow) } : {}),
-    });
+    const name = nonEmptyString(record?.display_name) ?? nonEmptyString(record?.name) ?? id;
+    if (!record) {
+      out.push({ id, name });
+      continue;
+    }
+    const providerReported: ProviderReportedModelHints = {};
+    const contextWindow =
+      positiveHintNumber(record.contextWindow) ??
+      positiveHintNumber(record.context_window) ??
+      positiveHintNumber(record.context_length) ??
+      positiveHintNumber(record.max_context_length) ??
+      positiveHintNumber(record.maxContextLength) ??
+      positiveHintNumber(record.contextLength) ??
+      positiveHintNumber(record.max_input_tokens) ??
+      positiveHintNumber(record.maxInputTokens);
+    const maxOutput =
+      positiveHintNumber(record.maxOutput) ??
+      positiveHintNumber(record.max_output) ??
+      positiveHintNumber(record.max_output_tokens) ??
+      positiveHintNumber(record.maxOutputTokens) ??
+      positiveHintNumber(record.max_completion_tokens) ??
+      positiveHintNumber(record.maxCompletionTokens);
+    if (contextWindow !== undefined) providerReported.contextWindow = contextWindow;
+    if (maxOutput !== undefined) providerReported.maxOutput = maxOutput;
+    const modalities = readModalities(record);
+    if (modalities) providerReported.modalities = modalities;
+    const capabilities = readCapabilities(record);
+    if (capabilities) providerReported.capabilities = capabilities;
+    const mode = nonEmptyString(record.mode);
+    const type = nonEmptyString(record.type);
+    if (mode !== undefined) providerReported.mode = mode;
+    if (type !== undefined) providerReported.type = type;
+    out.push(
+      Object.keys(providerReported).length > 0 ? { id, name, providerReported } : { id, name },
+    );
   }
   return out;
+}
+
+/**
+ * Parse OpenAI / Anthropic model-list responses into the legacy discovery shape.
+ * `contextWindow` is kept for existing callers; richer upstream facts remain in
+ * `parseModelsListResponseDetailed()` for the model-access resolve pipeline.
+ * 纯函数——OAuth 自动发现（本模块）与 API key 表单「获取模型列表」（provider-model-fetch）共用。
+ */
+export function parseModelsListResponse(
+  json: unknown,
+): { id: string; name: string; contextWindow?: number }[] | null {
+  const detailed = parseModelsListResponseDetailed(json);
+  if (!detailed) return null;
+  return detailed.map(({ id, name, providerReported }) => ({
+    id,
+    name,
+    ...(providerReported?.contextWindow !== undefined
+      ? { contextWindow: providerReported.contextWindow }
+      : {}),
+  }));
 }
