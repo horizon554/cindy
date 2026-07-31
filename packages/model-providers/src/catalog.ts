@@ -6,6 +6,7 @@
  * ① OSS `cfg/providers.json` 的发布物 ② dev 直读的仓库文件。anthropic/openai/xd
  * 的模型清单运行时动态注入(见 apps/desktop maker-host active-catalog),不再进目录文件。
  * 所有跨端模型元数据统一进入严格版本化的 `modelRegistry`;目录顶层不接受旁路元数据块。
+ * 服务端旧 OSS 冻结文件可能仍带 cindyModelMeta 信封;客户端 Registry v3 不再读取或透传它。
  */
 
 import { parseModelRegistry } from '@cindy/model-access-protocol';

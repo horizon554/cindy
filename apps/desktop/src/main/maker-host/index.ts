@@ -21,6 +21,7 @@ import {
   getActiveCatalog,
   setActiveCatalogChangedListener,
   setDiscoveredCodexModels,
+  setResolvedProviderModels,
 } from './active-catalog.js';
 import {
   createCodexModelBackfillCoordinator,
@@ -96,6 +97,7 @@ import {
 import {
   clearAnthropicDiscoveredModels,
   setAnthropicDiscoveryFailureListener,
+  setAnthropicModelsAppliedListener,
 } from './model-discovery/anthropic.js';
 import {
   buildDesktopClaudeRuntimeConfig,
@@ -184,6 +186,7 @@ import {
   getDesktopMcpToolApprovalPolicy,
 } from './mcp-tool-approval-policy.js';
 import { mapCodexAppServerModelsToCatalog } from './codex-model-discovery.js';
+import { resolveProviderModels } from '../model-access/modelResolve.js';
 import { prepareSharedProjectSkillLinks } from './shared-global-skills.js';
 import { DESKTOP_CAPABILITY_ROUTING_POLICY } from './capability-routing.js';
 export { withRehydrateCloseSuppressed };
@@ -255,6 +258,37 @@ setActiveCatalogChangedListener((revision) => {
  * **之前**就取走了 provider 快照(15s 超时那条路径尤其明显)。不主动通知,设置页会一直
  * 停在「正在发现」而不是讲明失败理由(PR #548 review)。
  */
+setAnthropicModelsAppliedListener((models) => {
+  if (process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1' || models.length === 0) return;
+  const ids = models.map((model) => model.id);
+  const requestModels = models.map((model) => ({
+    id: model.id,
+    name: model.name,
+    ...(model.contextWindowVerified ? { providerReported: { contextWindow: model.contextWindow } } : {}),
+  }));
+  for (const agent of ['claude-code', 'codex'] as const) {
+    void resolveProviderModels({
+      providerId: 'anthropic',
+      agent,
+      wireProtocol: agent === 'codex' ? 'anthropic-messages' : undefined,
+      models: requestModels,
+    }).then((resolved) => {
+      if (!resolved) return;
+      setResolvedProviderModels(
+        'anthropic',
+        agent,
+        resolved.entry.models.map((model) => model.id),
+        resolved.entry.models.map((model) => ({
+          ...model,
+          ...(agent === 'codex' ? { supportsFastMode: false } : {}),
+        })),
+        resolved.knowledgeRevision,
+        ids,
+      );
+    }).catch(() => undefined);
+  }
+});
+
 setAnthropicDiscoveryFailureListener(() => {
   try {
     // 复用既有的「刷 capabilities + 广播」收口:清单确实没变,这一步只是把 provider
@@ -1006,7 +1040,35 @@ export function getMaker(): Maker {
       resolveVerifiedContextWindow: (providerId, modelId) =>
         resolveVerifiedContextWindow(getDesktopSelectableCatalog(), 'codex', providerId, modelId),
       onCodexLocalModelsListed: (models) => {
-        setDiscoveredCodexModels(mapCodexAppServerModelsToCatalog(models));
+        const discovered = mapCodexAppServerModelsToCatalog(models);
+        setDiscoveredCodexModels(discovered);
+        if (process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE !== '1' && discovered.length > 0) {
+          const ids = discovered.map((model) => model.id);
+          const requestModels = discovered.map((model) => ({ id: model.id, name: model.name }));
+          for (const agent of ['codex', 'claude-code'] as const) {
+            void resolveProviderModels({ providerId: 'openai', agent, models: requestModels })
+              .then((resolved) => {
+                if (!resolved) return;
+                const models = resolved.entry.models.map((model) => ({
+                  ...model,
+                  ...(agent === 'claude-code'
+                    ? { id: `chatgpt/${model.id}`, supportsFastMode: false }
+                    : {}),
+                }));
+                const resolvedIds = models.map((model) => model.id);
+                const allIds = agent === 'claude-code' ? ids.map((id) => `chatgpt/${id}`) : ids;
+                setResolvedProviderModels(
+                  'openai',
+                  agent,
+                  resolvedIds,
+                  models,
+                  resolved.knowledgeRevision,
+                  allIds,
+                );
+              })
+              .catch(() => undefined);
+          }
+        }
       },
       // 「后端不可达」终局升级时读一次本次请求的出站路径判定,把通用猜测换成实测事实。
       // 快照的 proxy 字段在 resolver 侧已脱敏,可直接进用户可见的错误消息。

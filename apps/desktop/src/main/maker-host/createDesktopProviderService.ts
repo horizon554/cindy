@@ -46,6 +46,7 @@ import {
   setCustomProviders,
   setDiscoveredCodexModels,
   setLocalCatalogOverrides,
+  setResolvedProviderModels,
 } from './active-catalog.js';
 import { readModelCatalogOverrides } from './model-catalog-override-store.js';
 import {
@@ -88,6 +89,7 @@ import {
   resetGrokOAuthMemoryCache,
 } from './grok-oauth-login.js';
 import { getAuthState } from '../authManager.js';
+import { resolveProviderModels } from '../model-access/modelResolve.js';
 import { getActiveAppSession } from '../appSessionState.js';
 import {
   filterProviderCatalogForAccount,
@@ -103,6 +105,37 @@ import { hasLegacyOwnerNamespaceClaim } from '../ownerNamespaceMigration.js';
 import { broadcastReferenceModelPricing } from '../usage/referenceModelPricing.js';
 
 const log = createLogger('provider-service');
+
+function resolveDiscoveredCodexModels(models: Catalog['providers'][number]['models']['codex']): void {
+  if (!models || models.length === 0 || process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1') return;
+  const requestModels = models.map((model) => ({
+    id: model.id,
+    name: model.name,
+    ...(model.contextWindowVerified ? { providerReported: { contextWindow: model.contextWindow } } : {}),
+  }));
+  const ids = models.map((model) => model.id);
+  for (const agent of ['codex', 'claude-code'] as const) {
+    void resolveProviderModels({ providerId: 'openai', agent, models: requestModels })
+      .then((resolved) => {
+        if (!resolved) return;
+        const overlay = resolved.entry.models.map((model) => ({
+          ...model,
+          ...(agent === 'claude-code' ? { id: `chatgpt/${model.id}`, supportsFastMode: false } : {}),
+        }));
+        const overlayIds = overlay.map((model) => model.id);
+        const allIds = agent === 'claude-code' ? ids.map((id) => `chatgpt/${id}`) : ids;
+        setResolvedProviderModels(
+          'openai',
+          agent,
+          overlayIds,
+          overlay,
+          resolved.knowledgeRevision,
+          allIds,
+        );
+      })
+      .catch(() => undefined);
+  }
+}
 
 /**
  * electron net.request GET → 文本。非 200 / 超时 / 网络错均 reject，
@@ -473,7 +506,10 @@ export function ensureActiveCatalogLoaded(): Promise<Catalog> {
         // Claude bridge。null 表示没读到有效 cache,保留现值 / 静态兜底;[] 表示合法空快照。
         try {
           const discovered = await readCodexDiscoveredModels();
-          if (discovered !== null) setDiscoveredCodexModels(discovered);
+          if (discovered !== null) {
+            setDiscoveredCodexModels(discovered);
+            resolveDiscoveredCodexModels(discovered);
+          }
         } catch {
           /* 读/映射失败:保持现值,不影响启动 */
         }
@@ -663,7 +699,10 @@ export async function refreshDiscoveredCodexModels(
     return;
   }
   const discovered = await readCodexDiscoveredModelsForAuthRefresh();
-  if (shouldApply()) setDiscoveredCodexModels(discovered);
+  if (shouldApply()) {
+    setDiscoveredCodexModels(discovered);
+    resolveDiscoveredCodexModels(discovered);
+  }
 }
 
 /**
