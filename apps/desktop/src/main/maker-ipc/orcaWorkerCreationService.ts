@@ -66,6 +66,8 @@ export interface OrcaWorkerProviderSnapshot {
   effortMetaByModel?: Readonly<
     Record<string, { efforts: readonly string[]; defaultEffort: string | null }>
   >;
+  /** 该来源下按目录字段优先、id 兜底判定为预算档的模型；缺省时 service 保留前缀兜底。 */
+  budgetModels?: readonly string[];
   /** true 表示该来源必须写入 session provider store 才能注入自己的 API key/OAuth token。 */
   requiresExplicitRoute?: boolean;
   /**
@@ -404,6 +406,18 @@ export function budgetModelRequiresApiKey(agent: AgentKind, model: string, hasAp
   return agent === 'codex' && model.startsWith('codex/') && !hasApiKey;
 }
 
+function catalogBudgetModelRequiresApiKey(
+  agent: AgentKind,
+  model: string,
+  hasApiKey: boolean,
+  budgetModels?: readonly string[],
+): boolean {
+  if (budgetModels !== undefined) {
+    return agent === 'codex' && budgetModels.includes(model) && !hasApiKey;
+  }
+  return budgetModelRequiresApiKey(agent, model, hasApiKey);
+}
+
 export function budgetModelRequiresApiKeyMessage(model: string): string {
   return `模型 "${model}"（codex/ 路由）需要先在设置里连接 Cindy AI 才能使用。`;
 }
@@ -653,7 +667,12 @@ export function createOrcaWorkerCreationService(deps: OrcaWorkerCreationDeps): O
     // codex/ 预算模型依赖 Cindy AI API key；XD/default 路由即使因 provider 缺失，
     // 也要先返回这条可操作的凭证错误，避免被下方通用的精确路由失败遮蔽。
     if (
-      budgetModelRequiresApiKey(params.agent, resolved.model, deps.readClaudeApiKey() != null)
+      catalogBudgetModelRequiresApiKey(
+        params.agent,
+        resolved.model,
+        deps.readClaudeApiKey() != null,
+        routeProvider?.budgetModels,
+      )
       && (budgetRouteProviderId === null || budgetRouteProviderId === 'xd')
     ) {
       return {

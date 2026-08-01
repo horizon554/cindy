@@ -370,6 +370,14 @@ export interface AgentDeps {
    * product policy.
    */
   capabilityRouting?: CapabilityRoutingPolicy;
+  /**
+   * Resolve the exact provider route auth strategy for credential-family selection. The host owns
+   * provider identity; missing/unknown results make agents retain their legacy provider/id fallback.
+   */
+  resolveAuthStrategy?: (
+    providerId: string | null | undefined,
+    modelId: string,
+  ) => string | null;
 
   /**
    * 解析某条**具体路由**上该模型已核实的上下文窗口上限（host 注入）；没有则返回 null。

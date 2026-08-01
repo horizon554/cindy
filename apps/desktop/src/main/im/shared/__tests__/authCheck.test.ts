@@ -94,6 +94,29 @@ describe('checkImRouteAuth', () => {
     expect(message).not.toContain('/new');
   });
 
+  it('fails closed for unknown or disabled provider auth routes', async () => {
+    const unknown = provider({ id: 'unknown', strategy: 'future-strategy' as never });
+    const disabled = provider({
+      id: 'disabled',
+      strategy: 'gateway-key',
+      routing: {
+        'claude-code': {
+          upstream: 'https://example.test',
+          authStrategy: 'gateway-key',
+          disabled: true,
+        },
+      },
+    });
+    await expect(checkImRouteAuth(row({ providerId: 'unknown' }), [unknown], deps())).resolves.toEqual({
+      ok: false,
+      missing: 'provider-disconnected',
+    });
+    await expect(checkImRouteAuth(row({ providerId: 'disabled' }), [disabled], deps())).resolves.toEqual({
+      ok: false,
+      missing: 'provider-disconnected',
+    });
+  });
+
   it('reports gateway-key when a gateway route has no XD key', async () => {
     const providerSnapshot = [provider({ id: 'xd', strategy: 'gateway-key' })];
 

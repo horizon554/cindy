@@ -389,6 +389,7 @@ function createProviderAwareGuardianReviewerTransform(
  * 请求的 `tools`。插件搜索是增强项，不能作为该基础能力的前置条件，因此在明确走
  * Cindy Gateway 的 GPT-5.6 请求中补回标准 `web_search` 工具；已有声明保持原样。
  */
+// TODO(unified-model-catalog): replace the GPT-5.6 web_search heuristic only after supportsWebSearch lands; keep the Gateway safety gates intact.
 function createGatewayNativeWebSearchTransform(): RequestTransform {
   return (body, ctx) => {
     if (!isPlainObject(body) || typeof body.model !== 'string') return null;
@@ -535,15 +536,20 @@ export function chatBridgeCapabilitiesForRoute(
   upstream: string,
   realModel: string,
   fallback: ChatBridgeCapabilities = CHAT_BRIDGE_DEFAULT_CAPABILITIES,
+  declaredImageInput?: boolean,
 ): ChatBridgeCapabilities {
-  if (!isVerifiedImageChatRoute(upstream, realModel)) return fallback;
+  if (!isVerifiedImageChatRoute(upstream, realModel, declaredImageInput)) return fallback;
   return {
     ...fallback,
     imageInput: 'image_url',
   };
 }
 
-function isVerifiedImageChatRoute(upstream: string, realModel: string): boolean {
+function isVerifiedImageChatRoute(
+  upstream: string,
+  realModel: string,
+  declaredImageInput?: boolean,
+): boolean {
   let url: URL;
   try {
     url = new URL(upstream);
@@ -552,6 +558,8 @@ function isVerifiedImageChatRoute(upstream: string, realModel: string): boolean 
   }
   if (url.protocol !== 'https:') return false;
   const host = url.hostname.toLowerCase();
+  const trustedHost = MOONSHOT_CHAT_HOSTS.has(host) || VOLCENGINE_ARK_CHAT_HOST_RE.test(host);
+  if (declaredImageInput !== undefined) return declaredImageInput && trustedHost;
   if (realModel === 'kimi-k3') return MOONSHOT_CHAT_HOSTS.has(host);
   if (isDoubaoVisionModel(realModel)) return VOLCENGINE_ARK_CHAT_HOST_RE.test(host);
   if (isQwenImageChatModel(realModel)) return DASHSCOPE_CODING_CHAT_HOSTS.has(host);
@@ -591,10 +599,17 @@ function createChatBridgeDecision(
         googleThoughtSignaturePlaceholder: true,
     }
     : CHAT_BRIDGE_DEFAULT_CAPABILITIES;
+  const catalogModel = getActiveCatalog().providers
+    .find((provider) => provider.id === route.providerId)
+    ?.models.codex?.find((model) => model.id === wireModel);
+  const declaredImageInput = catalogModel?.modalities
+    ? catalogModel.modalities.input.includes('image')
+    : undefined;
   const capabilities = chatBridgeCapabilitiesForRoute(
     route.routing.upstream,
     realModel,
     baseCapabilities,
+    declaredImageInput,
   );
   const onUpstreamError = route.providerSource === 'user'
     ? ({ status, body }: { status: number; body: string }): void => {

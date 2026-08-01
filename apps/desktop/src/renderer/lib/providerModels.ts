@@ -12,7 +12,9 @@
  */
 
 import {
+  actualSourceIdForModel,
   getModel,
+  isAgentSelectableModel,
   isModelSelectableForNewRoute,
   isModelVisible,
   providerOffersModel,
@@ -63,6 +65,38 @@ function toDescriptor(m: CatalogModel): ModelDescriptor {
   if (m.supportsFastMode !== undefined) d.supportsFastMode = m.supportsFastMode;
   if (m.mode !== undefined) d.mode = m.mode;
   return d;
+}
+
+
+export interface SessionModelCatalogMetadata {
+  sourceAccess?: ProviderView['access'];
+  group?: string;
+  category?: string;
+}
+
+/**
+ * Resolve metadata from the exact session route. Missing provider snapshots preserve callers' legacy
+ * id-based behavior; an explicit but stale source never borrows metadata from a different provider.
+ */
+export function resolveSessionModelCatalogMetadata(params: {
+  providers: ProviderView[];
+  providerId: string | null | undefined;
+  modelId: string;
+  agentKind: AgentKind;
+}): SessionModelCatalogMetadata | undefined {
+  const { providers, providerId, modelId, agentKind } = params;
+  if (providers.length === 0) return undefined;
+  const sourceId = actualSourceIdForModel(providers, providerId, modelId, agentKind);
+  if (!sourceId) return undefined;
+  const provider = providers.find((candidate) => candidate.id === sourceId);
+  if (!provider) return undefined;
+  const model = getModel(provider, modelId, agentKind);
+  if (!model) return undefined;
+  return {
+    ...(provider.access !== undefined ? { sourceAccess: provider.access } : {}),
+    ...(model.group !== undefined ? { group: model.group } : {}),
+    ...(model.category !== undefined ? { category: model.category } : {}),
+  };
 }
 
 /**

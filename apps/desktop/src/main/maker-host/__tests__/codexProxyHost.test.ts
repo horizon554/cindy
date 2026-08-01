@@ -493,6 +493,19 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
   });
 
+  it('uses declared image modality but still requires a trusted host', async () => {
+    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    expect(
+      chatBridgeCapabilitiesForRoute('https://api.moonshot.cn/v1', 'opaque-model', undefined, true).imageInput,
+    ).toBe('image_url');
+    expect(
+      chatBridgeCapabilitiesForRoute('https://api.moonshot.cn/v1', 'kimi-k3', undefined, false).imageInput,
+    ).toBeUndefined();
+    expect(
+      chatBridgeCapabilitiesForRoute('https://api.deepseek.com/v1', 'opaque-model', undefined, true).imageInput,
+    ).toBeUndefined();
+  });
+
   it.each([
     ['https://coding.dashscope.aliyuncs.com/v1', 'qwen3.7-plus'],
     ['https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3.7-plus'],

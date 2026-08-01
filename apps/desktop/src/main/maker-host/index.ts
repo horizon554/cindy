@@ -790,6 +790,15 @@ export function getMaker(): Maker {
       capabilityAdditions: {
         availableModels: deriveAvailableModels(getDesktopSelectableCatalog(), 'claude-code'),
       },
+      resolveAuthStrategy: (providerId, modelId) => {
+        if (!providerId) return null;
+        const provider = getDesktopSelectableCatalog().providers.find(
+          (candidate) => candidate.id === providerId,
+        );
+        return provider?.models['claude-code']?.some((model) => model.id === modelId)
+          ? (provider.routing['claude-code']?.authStrategy ?? null)
+          : null;
+      },
       // SDK PreToolUse / PostToolUse 等 in-process hook 注入点。host 自己定义 hook
       // 实现 (./claude-hooks/*.ts), maker-core 不感知具体逻辑。
       //
@@ -1033,6 +1042,15 @@ export function getMaker(): Maker {
       // 「XD 网关已连接」gate 可见性（ModelSelector onlyConnected / CreateWorkerPopover / ScheduleChips）。
       capabilityAdditions: {
         availableModels: deriveAvailableModels(getDesktopSelectableCatalog(), 'codex'),
+      },
+      resolveAuthStrategy: (providerId, modelId) => {
+        if (!providerId) return null;
+        const provider = getDesktopSelectableCatalog().providers.find(
+          (candidate) => candidate.id === providerId,
+        );
+        return provider?.models.codex?.some((model) => model.id === modelId)
+          ? (provider.routing.codex?.authStrategy ?? null)
+          : null;
       },
       // 把 app-server 上报的上下文窗口收敛到该**路由**真实上限。每次调用读 live 目录:
       // 模型发现 / 切账号 / 自定义 provider 增删改都要即时反映。按 providerId 定夺而不是

@@ -42,6 +42,7 @@ import type { AgentCredentialMode } from '../../interfaces/auth-adapter.js';
 import type {
   Capabilities,
   EffortDescriptor,
+  ModelDescriptor,
   PermissionModeDescriptor,
 } from '../../types/capabilities.js';
 import type {
@@ -259,7 +260,13 @@ function statusTextForItem(item: { type?: string; command?: string; tool?: strin
  * 把 minimal 收敛到 low。max / ultra 直接透传，不再静默降级为 xhigh(issue #352)。
  * 某模型是否真支持某档位由目录 efforts 与 UI/reconcile 门控保证。
  */
-function clampEffortForCodex(model: string, e: Effort): CodexEffort {
+function clampEffortForCodex(
+  descriptor: ModelDescriptor | undefined,
+  model: string,
+  e: Effort,
+): CodexEffort {
+  if (e === 'minimal' && descriptor && descriptor.efforts.includes('minimal')) return e;
+  if (e === 'minimal' && !descriptor && CODEX_MINIMAL_EFFORT_MODELS.has(model)) return e;
   if (e === 'minimal' && !CODEX_MINIMAL_EFFORT_MODELS.has(model)) return 'low';
   return e;
 }
@@ -2775,6 +2782,8 @@ export class CodexAgent extends BaseAgent {
 
     /** Phase 3: mutable 配置, 下一个 turn/start 透传; resume 时也透传一次。 */
     let mutableModel = opts.model;
+    const descriptorForMutableModel = (): ModelDescriptor | undefined =>
+      this.capabilities.availableModels.find((descriptor) => descriptor.id === mutableModel);
     /**
      * 运行时 provider 路由(会话创建时取 opts.providerId,setModel 可带新值覆盖)。
      * host 侧的 provider route 与它必须同步,窗口上限按 (provider, model) 解析。
@@ -2860,6 +2869,7 @@ export class CodexAgent extends BaseAgent {
           agentKind: 'codex',
           providerId: opts.providerId,
           model: opts.model,
+          authStrategy: this.deps.resolveAuthStrategy?.(opts.providerId, opts.model),
         });
     const currentHostKey = hostKey(opts.remoteHostId);
     let releaseHostBindingLease: (() => void) | null = null;
@@ -2939,6 +2949,7 @@ export class CodexAgent extends BaseAgent {
           agentKind: 'codex',
           providerId: opts.providerId,
           model: opts.model,
+          authStrategy: this.deps.resolveAuthStrategy?.(opts.providerId, opts.model),
         }) ?? this.hostEffectiveCredentialModes.get(currentHostKey)
       : credentialMode ?? this.hostEffectiveCredentialModes.get(currentHostKey);
     const approvalsReviewerProtocolSupported =
@@ -3405,7 +3416,7 @@ export class CodexAgent extends BaseAgent {
           mode: 'plan',
           settings: {
             model: mutableModel,
-            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort),
+            reasoning_effort: clampEffortForCodex(descriptorForMutableModel(), mutableModel, mutableEffort),
             developer_instructions: null,
           },
         };
@@ -3416,7 +3427,7 @@ export class CodexAgent extends BaseAgent {
           mode: 'default',
           settings: {
             model: mutableModel,
-            reasoning_effort: clampEffortForCodex(mutableModel, mutableEffort),
+            reasoning_effort: clampEffortForCodex(descriptorForMutableModel(), mutableModel, mutableEffort),
             developer_instructions: developerInstructions,
           },
         };
@@ -8004,7 +8015,7 @@ export class CodexAgent extends BaseAgent {
           threadId,
           input: turnInput,
           ...turnWorkspaceConfig,
-          effort: clampEffortForCodex(mutableModel, mutableEffort),
+          effort: clampEffortForCodex(descriptorForMutableModel(), mutableModel, mutableEffort),
           // 强制 reasoning summary='auto' — 不依赖用户 ~/.codex/config.toml 写没写
           // model_reasoning_summary, 让 thinking 文本在所有用户机器上一致流式出。
           // (v2.rs:5801-5803 turn/start 的 summary 会 override server config)
@@ -8401,7 +8412,7 @@ export class CodexAgent extends BaseAgent {
               } else if (resumeServiceTierGeneration !== serviceTierMutationGeneration) {
                 void pushThreadSettings({ serviceTier: mutableServiceTier ?? null });
               }
-              turnParams.effort = clampEffortForCodex(mutableModel, mutableEffort);
+              turnParams.effort = clampEffortForCodex(descriptorForMutableModel(), mutableModel, mutableEffort);
               if (mutableModel && mutableModel !== 'gpt-5') {
                 turnParams.model = mutableModel;
               } else {
@@ -8419,7 +8430,7 @@ export class CodexAgent extends BaseAgent {
               if (turnParams.collaborationMode) {
                 turnParams.collaborationMode.settings.model = mutableModel;
                 turnParams.collaborationMode.settings.reasoning_effort =
-                  clampEffortForCodex(mutableModel, mutableEffort);
+                  clampEffortForCodex(descriptorForMutableModel(), mutableModel, mutableEffort);
               }
               readonlyReferencesProfileActive = 'permissions' in turnThreadWorkspaceConfig;
               threadMayHaveRollout = true;
@@ -8823,7 +8834,7 @@ export class CodexAgent extends BaseAgent {
 
       async setEffort(newEffort: Effort) {
         if (newEffort === mutableEffort) return; // 去重: 值没变不重推
-        const clamped = clampEffortForCodex(mutableModel, newEffort);
+        const clamped = clampEffortForCodex(descriptorForMutableModel(), mutableModel, newEffort);
         log.debug('setEffort', { from: mutableEffort, to: newEffort, clamped });
         mutableEffort = newEffort;
         // thread 已启动 → 立即经 thread/settings/update 生效; 未启动由首个 turn/start

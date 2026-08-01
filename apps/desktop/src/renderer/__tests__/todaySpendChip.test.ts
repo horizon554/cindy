@@ -24,6 +24,15 @@ const localeSources = ['en', 'zh-CN', 'ja', 'ko'].map((locale) =>
 );
 
 describe('TodaySpendChip dashboard routing', () => {
+  it('uses catalog source/group metadata when available and preserves legacy prefix fallback when absent', () => {
+    expect(source).toContain('export function classifySpendRoute(');
+    expect(source).toContain('metadata?.sourceAccess?.product === \'ChatGPT\'');
+    expect(source).toContain('metadata?.sourceAccess?.product === \'SuperGrok\'');
+    expect(source).toContain("declaredGroup === 'gpt-budget'");
+    expect(source).toContain("const legacyCodexBudgetModel = typeof modelId === 'string' && modelId.startsWith('codex/')");
+    expect(source).toContain('modelMetadata?: TodaySpendModelMetadata;');
+  });
+
   it('separates the latest user-round total from final-segment token details', () => {
     expect(source).toContain('message.userTurnMoney?.amount');
     expect(source).toContain('const userTurnCostUsd = typeof message.userTurnCostUsd');

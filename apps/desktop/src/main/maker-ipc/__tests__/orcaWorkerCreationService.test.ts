@@ -2,6 +2,7 @@ import type { AgentKind } from '@cindy/maker-core';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  budgetModelRequiresApiKey,
   buildNoProviderMessage,
   createOrcaWorkerCreationService,
   providerRouteRequiresExplicitSelection,
@@ -31,6 +32,14 @@ describe('buildNoProviderMessage (pi first-class)', () => {
       pi: [snap('Cindy AI')],
     });
     expect(msg).toContain('Pi(已连接:Cindy AI)');
+  });
+});
+
+describe('budgetModelRequiresApiKey', () => {
+  it('keeps the legacy codex/ prefix and API-key contract', () => {
+    expect(budgetModelRequiresApiKey('codex', 'codex/legacy', false)).toBe(true);
+    expect(budgetModelRequiresApiKey('codex', 'opaque-model', false)).toBe(false);
+    expect(budgetModelRequiresApiKey('codex', 'codex/legacy', true)).toBe(false);
   });
 });
 
