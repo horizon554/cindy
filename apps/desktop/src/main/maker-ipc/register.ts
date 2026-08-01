@@ -1373,7 +1373,12 @@ interface OrcaCollabService {
     { ok: true; workerId?: string } | { ok: false; errorCode: string; message: string }
   >;
   listAvailableModels: (params: { agent?: AgentKind }) => Promise<
-    { ok: true; codex?: Array<{ id: string; label: string }>; claude_code?: Array<{ id: string; label: string }>; pi?: Array<{ id: string; label: string }> }
+    {
+      ok: true;
+      codex?: Array<{ id: string; label: string; category?: string; group?: string }>;
+      claude_code?: Array<{ id: string; label: string; category?: string; group?: string }>;
+      pi?: Array<{ id: string; label: string; category?: string; group?: string }>;
+    }
     | { ok: false; errorCode: string; message: string }
   >;
 }
@@ -3622,10 +3627,16 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
       }
       if (turnAssistantPersistId && modelUsageDeltas && modelUsageDeltas.length > 0) {
         const mismatchClientId = turnAssistantPersistId;
-        const actualEntries = modelUsageDeltas.map((d) => ({
-          model: d.model,
-          outputTokens: d.outputTokensDelta,
-        }));
+        const actualEntries = modelUsageDeltas.map((d) => {
+          const family = getActiveCatalog().providers
+            .flatMap((provider) => provider.models['claude-code'] ?? [])
+            .find((model) => model.id === d.model)?.family;
+          return {
+            model: d.model,
+            ...(family !== undefined ? { family } : {}),
+            outputTokens: d.outputTokensDelta,
+          };
+        });
         void modelPromise
           .then((selectedModel) => {
             const mismatch = detectClaudeModelMismatch(selectedModel, actualEntries);
@@ -8017,12 +8028,22 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     listAvailableModels: async ({ agent }) => {
       try {
         const agents: AgentKind[] = agent ? [agent] : ['codex', 'claude-code', 'pi'];
-        const result: Record<string, Array<{ id: string; label: string }>> = {};
+        const result: Record<
+          string,
+          Array<{ id: string; label: string; category?: string; group?: string }>
+        > = {};
         for (const a of agents) {
           const caps = maker.getCapabilities(a);
           // key 必须区分 pi,否则 pi 模型会被塞进 claude_code 键与 CC 模型混淆。
           const key = a === 'codex' ? 'codex' : a === 'pi' ? 'pi' : 'claude_code';
-          result[key] = caps.availableModels.map((m) => ({ id: m.id, label: m.displayName }));
+          // category / group 一并下发:下游(Orca 派活选型)的折扣版判定要字段优先,
+          // 只给 id 的话又会退回 `codex/` 前缀启发式。
+          result[key] = caps.availableModels.map((m) => ({
+            id: m.id,
+            label: m.displayName,
+            ...(m.category !== undefined ? { category: m.category } : {}),
+            ...(m.group !== undefined ? { group: m.group } : {}),
+          }));
         }
         return { ok: true, ...result };
       } catch (err) {

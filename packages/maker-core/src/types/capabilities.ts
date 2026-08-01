@@ -240,6 +240,8 @@ export interface ModelDescriptor {
    * UI 据此显示 / 隐藏 Fast Mode 开关, 不再自己 startsWith 解析 model id。
    */
   supportsFastMode?: boolean;
+  /** 服务端能力分类；存在时优先于 legacy group / id 启发式。 */
+  category?: string;
   /**
    * 厂商分组 id（纯展示元数据，源自目录 providers.json，host 派生时透传）。
    * 渲染层据此对模型分组；缺省时回退 id 前缀归类。maker-core 运行时不读它。

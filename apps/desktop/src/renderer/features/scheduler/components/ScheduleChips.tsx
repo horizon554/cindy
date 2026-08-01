@@ -19,6 +19,7 @@ import {
   connectedProvidersForAgent,
   effectiveSourceIdForModel,
   getModel,
+  isBudgetModel,
   nativeDefaultSourceId,
 } from '@cindy/model-providers';
 import * as sessionService from '@/lib/sessionService';
@@ -1116,7 +1117,7 @@ export function ModelEffortChip({
     [disabled, discovery],
   );
   const caps = useAgentCapabilities(agentKind);
-  // 触发器(trigger)展示用:仍按 codex/ 折扣模型的 XD 网关来源可见性过滤,算出当前
+  // 触发器(trigger)展示用:仍按目录 budget 分组(旧快照回退 codex/ 前缀)的 XD 网关来源可见性过滤,算出当前
   // 选中模型名。下拉内容本体改用聊天的 ModelSelectorContent(它内部按来源/api-key 自行
   // 过滤 + 分组),这里只为 trigger 文案保留最小化 model 解析。
   const { providers } = useProviders();
@@ -1125,7 +1126,7 @@ export function ModelEffortChip({
   const models = useMemo(
     () =>
       (availableModels ?? []).filter(
-        (m) => agentKind !== 'codex' || xdConnected || !m.id.startsWith('codex/'),
+        (m) => agentKind !== 'codex' || xdConnected || !isBudgetModel(m),
       ),
     [availableModels, agentKind, xdConnected],
   );

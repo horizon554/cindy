@@ -29,6 +29,8 @@ const ALL_AGENT_KINDS = ['claude-code', 'codex', 'pi'] as const;
 export interface ModelDescriptor {
   id: string;
   displayName: string;
+  /** 服务端能力分类；存在时优先于 legacy group / id 启发式。 */
+  category?: string;
   /** 目录分组 id(如 'gpt-budget'): 折扣版与官方版 displayName 同名, 靠它区分。 */
   group?: string;
   /**

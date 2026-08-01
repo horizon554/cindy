@@ -160,8 +160,10 @@ export {
   isBudgetModel,
   modelBadges,
   formatContextWindow,
+  type ModelCategory,
+  type DisplayModel,
+  type ModelBadges,
 } from './classification.js';
-export type { ModelCategory, DisplayModel, ModelBadges } from './classification.js';
 
 export { resolveModelInvocation } from './invocation.js';
 export type {

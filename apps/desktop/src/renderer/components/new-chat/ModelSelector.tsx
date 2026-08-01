@@ -73,7 +73,9 @@ import {
   connectedProvidersForAgent,
   actualSourceIdForModel,
   effectiveSourceIdForModel,
+  formatContextWindow,
   getModel,
+  isBudgetModel as isCatalogBudgetModel,
   modelSupportsFastMode,
   providerOffersModel,
   resolveModelIconKind,
@@ -248,19 +250,6 @@ export function ModelIconMark({
       dense={dense}
     />
   );
-}
-
-// 上下文窗口 tokens → 紧凑展示("1M" / "272K" / "8192")。
-function formatContextWindow(tokens: number): string {
-  if (tokens >= 1_000_000) {
-    const m = tokens / 1_000_000;
-    return `${Number.isInteger(m) ? m : Number(m.toFixed(1))}M`;
-  }
-  if (tokens >= 1000) {
-    const k = tokens / 1000;
-    return `${Number.isInteger(k) ? k : Number(k.toFixed(0))}K`;
-  }
-  return String(tokens);
 }
 
 // 单栏列表里每行 / Edit 配置列消费的最小模型形状(SectionModel 与 renderer ModelDescriptor 都满足)。
@@ -1006,7 +995,10 @@ function ModelSelectorContentView({
   const modelDisabledOf = (id: string): boolean => {
     if (!deviceId) {
       if (subscriptionDirectDisabledReason(id)) return true;
-      return id.startsWith('codex/') && !hasSavedKey;
+      const model = currentAgentKind === 'codex'
+        ? codex.capabilities?.availableModels.find((entry) => entry.id === id)
+        : cc.capabilities?.availableModels.find((entry) => entry.id === id);
+      return isCatalogBudgetModel(model ?? { id }) && !hasSavedKey;
     }
     if (remoteModelListStatus !== 'ready') return true;
     if (remoteProviders.error) return remoteProviders.unsupported ? false : true;
@@ -2263,7 +2255,7 @@ export function ModelSelector({
   const triggerTitle = showSourceDisconnected ? baseAriaLabel : displayIdentityLabel;
   // 多实例同屏(IM 目录偏好)时前置「字段名 · 行别名」,读屏才能区分行与行。
   const ariaLabel = ariaContext ? `${ariaContext}:${baseAriaLabel}` : baseAriaLabel;
-  const isBudget = modelId.startsWith('codex/');
+  const isBudget = isCatalogBudgetModel(currentModel ?? { id: modelId });
   const isFieldTrigger = triggerVariant === 'field';
   const isCreateAgentVariant = visualVariant === 'create-agent';
   // compact 是 composer 容器宽度状态，不是 create-agent 的视觉私有状态。
