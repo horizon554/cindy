@@ -131,17 +131,13 @@ export function pickNewSessionDefaultDevice(input: {
 
 export const FALLBACK_MODELS: Record<NewSessionAgentKind, string> = {
   'claude-code': 'claude-sonnet-4-6',
-  codex: 'gpt-5.4',
-  // pi 沿用原冷启动值(内置目录不为 pi 声明默认,resolver 会落到这里)。
+  // 2026-08-01 产品定案:codex 默认与全局目录默认统一(gpt-5.4 是漂移残留)。
+  codex: 'gpt-5.5',
+  // pi 不在本次定案范围内(内置目录也不为 pi 声明默认,resolver 会落到这里)。
   pi: 'gpt-5.4',
 };
 
 export function defaultNewSessionModel(agentKind: NewSessionAgentKind): string {
-  if (agentKind === 'codex') {
-    // This entry intentionally stays on GPT-5.4: the catalog-wide Codex default is GPT-5.5.
-    // Preserve byte-for-byte cold-start behavior until product explicitly approves unifying them.
-    return FALLBACK_MODELS.codex;
-  }
   return resolveDefaultModel(
     BUNDLED_CATALOG,
     agentKind,

@@ -916,7 +916,7 @@ describe('sessionShareImport', () => {
       sharedMediaRootOverride: sharedMediaRoot,
     });
     const session = (dbMock.txCalls[0].args as { session: Record<string, unknown> }).session;
-    expect(session.model).toBe('gpt-5.4');
+    expect(session.model).toBe('gpt-5.5');
     expect(session.codexHistoryHasProductPrompt).toBe(false);
   });
 

@@ -865,10 +865,12 @@ async function writeIfMissing(
 const EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const PERMISSION_MODES = new Set(['ask', 'default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']);
 
-/** draftPrefs 缺省(旧调用方 / 测试)时按 agentKind 兜底的模型。 */
+/** draftPrefs 缺省(旧调用方 / 测试)且目录不可用时按 agentKind 兜底的模型。 */
 const FALLBACK_MODEL_BY_AGENT: Record<'cc' | 'codex' | 'pi', string> = {
   cc: 'claude-sonnet-4-6',
-  codex: 'gpt-5.4',
+  // 2026-08-01 产品定案:与全局目录默认统一。
+  codex: 'gpt-5.5',
+  // pi 不在本次定案范围内(定案时 pi 尚未成为一等 agent),保留原冷启动值待单独拍板。
   pi: 'gpt-5.4',
 };
 
@@ -935,16 +937,15 @@ function buildSessionRow(params: {
     worktreePath,
     model: str(
       draftPrefs?.model,
-      manifest.agentKind === 'codex'
-        // Share import intentionally stays on GPT-5.4 while the catalog-wide Codex default is
-        // GPT-5.5. Preserve import behavior until product explicitly approves unifying them.
-        ? FALLBACK_MODEL_BY_AGENT.codex
-        : resolveDefaultModel(
-            getActiveCatalog(),
-            'claude-code',
-            'session',
-            FALLBACK_MODEL_BY_AGENT.cc,
-          ),
+      // 2026-08-01 产品定案:导入默认与全局目录默认统一(codex 侧 gpt-5.4 是漂移残留)。
+      resolveDefaultModel(
+        getActiveCatalog(),
+        manifest.agentKind === 'codex' ? 'codex' : 'claude-code',
+        'session',
+        manifest.agentKind === 'codex'
+          ? FALLBACK_MODEL_BY_AGENT.codex
+          : FALLBACK_MODEL_BY_AGENT.cc,
+      ),
     ),
     effort: EFFORTS.has(effort) ? effort : 'high',
     permissionMode: PERMISSION_MODES.has(permissionMode) ? permissionMode : 'auto',

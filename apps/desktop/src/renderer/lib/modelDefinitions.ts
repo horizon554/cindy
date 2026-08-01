@@ -157,6 +157,9 @@ export function getDefaultModelForVendor(vendorKey: 'cc' | 'codex' | 'pi', devic
  * 影子：必须与 bundled 目录里「排序第一且默认可见」的那个一致（订阅口径，即不取网关折扣组），
  * 否则冷启动首帧会闪一个随后被换掉的模型名。由 modelDefinitionsDefaults 测试锁住。
  */
+// 有意的场景分档(2026-08-01 产品定案,非漂移):交互主会话首帧种子推旗舰档,
+// 与 authManager/调度/worker 的均衡档全局默认(目录 defaults)是不同场景的
+// 有意差异,不随目录 defaults 统一。
 const COLD_START_CC_MODEL_ID = 'claude-opus-5';
 const COLD_START_CODEX_MODEL_ID = 'gpt-5.6-sol';
 
