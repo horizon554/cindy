@@ -7,6 +7,7 @@ import {
   createTemplateParamDefaults,
   deriveMobileScheduleSessionMode,
   MOBILE_SCHEDULE_PENDING_SESSION_ID,
+  MOBILE_SCHEDULE_MODEL_DEFAULTS,
   updateDraftAgentKind,
   updateDraftBoundSessionId,
   updateDraftSessionMode,
@@ -37,6 +38,16 @@ function schedule(patch: Partial<RemoteSchedule> = {}): RemoteSchedule {
 }
 
 describe('mobile schedule form model', () => {
+  it('injects bundled catalog defaults into maker-shared schedule drafts', () => {
+    expect(createMobileScheduleDraft(null, { modelDefaults: MOBILE_SCHEDULE_MODEL_DEFAULTS }).model)
+      .toBe('claude-sonnet-4-6');
+    expect(updateDraftAgentKind(
+      createMobileScheduleDraft(null),
+      'codex',
+      MOBILE_SCHEDULE_MODEL_DEFAULTS,
+    ).model).toBe('gpt-5.5');
+  });
+
   it('builds a desktop-compatible create input for recurring project schedules', () => {
     const draft = createMobileScheduleDraft(null, { fallbackWorkingDir: '/repo/xdt-maker' });
     const input = buildMobileScheduleInput({

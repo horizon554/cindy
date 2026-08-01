@@ -46,6 +46,8 @@ export const IM_DEFAULT_SETTINGS: ImDefaultSettings = {
     },
     codex: {
       providerId: null,
+      // Keep the discounted `codex/` route. The catalog-wide `gpt-5.5` default is an official
+      // route with different billing; unifying them requires an explicit product decision.
       model: 'codex/gpt-5.5',
       effort: 'high',
     },

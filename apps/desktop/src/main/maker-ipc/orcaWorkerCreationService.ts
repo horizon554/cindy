@@ -1,6 +1,7 @@
 import type { AgentKind } from '@cindy/maker-core';
-import type { AuthStrategy } from '@cindy/model-providers';
+import { resolveDefaultModel, type AuthStrategy } from '@cindy/model-providers';
 
+import { getActiveCatalog } from '../maker-host/active-catalog.js';
 import { isCredentialModeSwitchBusyError } from '../maker-host/codex-credential-switch.js';
 import { isSubscriptionDirectModel } from '../../shared/subscriptionModels.js';
 import type { DispatchWorkerTaskResult, OrcaWorkerEffort, OrcaWorkerStatus } from './orcaTeamService.js';
@@ -365,13 +366,21 @@ function resolveWorkerConfig(params: {
   availableModels: OrcaWorkerModelCapabilities[];
 }): ResolveWorkerConfigResult {
   const { input, lead, defaults, availableModels } = params;
+  // pi 显式列出(与 model-defaults.ts 对齐,避免将来改 cc 默认时 pi 静默跟随)。
+  const fallbackModel = input.agent === 'codex'
+    ? 'gpt-5.5'
+    : input.agent === 'pi'
+      ? 'claude-sonnet-4-6'
+      : 'claude-sonnet-4-6';
+  const catalogDefaultModel = resolveDefaultModel(
+    getActiveCatalog(),
+    input.agent,
+    'session',
+    fallbackModel,
+  );
   const model = input.model
     ?? defaults.model
-    // pi 显式列出(与 model-defaults.ts 对齐,避免将来改 cc 默认时 pi 静默跟随)。
-    ?? (input.agent === lead.agentKind ? lead.model
-        : input.agent === 'codex' ? 'gpt-5.5'
-        : input.agent === 'pi' ? 'claude-sonnet-4-6'
-        : 'claude-sonnet-4-6');
+    ?? (input.agent === lead.agentKind ? lead.model : catalogDefaultModel);
   const modelCapabilities = availableModels.find((candidate) => candidate.id === model);
   if (!modelCapabilities) {
     return {

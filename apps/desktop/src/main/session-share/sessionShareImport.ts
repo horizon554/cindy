@@ -15,12 +15,14 @@ import path from 'node:path';
 
 import JSZip from 'jszip';
 import { isClaudeProjectKeyExact, sanitizeClaudeProjectKey } from '@cindy/maker-core';
+import { resolveDefaultModel } from '@cindy/model-providers';
 import { app } from 'electron';
 
 import { getDbClient } from '../localDb/client/current.js';
 import { ensureDialogueWorkspaceDir } from '../localDb/dialogueWorkspace.js';
 import { patchSessionMetaInDb } from '../localDb/ipc/sessions.js';
 import { createLogger } from '../logger.js';
+import { getActiveCatalog } from '../maker-host/active-catalog.js';
 import {
   importSharedCodexThread,
   removeSharedCodexThread,
@@ -931,7 +933,19 @@ function buildSessionRow(params: {
     workingDir,
     workspaceKind: manifest.workspaceKind,
     worktreePath,
-    model: str(draftPrefs?.model, FALLBACK_MODEL_BY_AGENT[manifest.agentKind]),
+    model: str(
+      draftPrefs?.model,
+      manifest.agentKind === 'codex'
+        // Share import intentionally stays on GPT-5.4 while the catalog-wide Codex default is
+        // GPT-5.5. Preserve import behavior until product explicitly approves unifying them.
+        ? FALLBACK_MODEL_BY_AGENT.codex
+        : resolveDefaultModel(
+            getActiveCatalog(),
+            'claude-code',
+            'session',
+            FALLBACK_MODEL_BY_AGENT.cc,
+          ),
+    ),
     effort: EFFORTS.has(effort) ? effort : 'high',
     permissionMode: PERMISSION_MODES.has(permissionMode) ? permissionMode : 'auto',
     providerId:

@@ -10,6 +10,7 @@
 
 import { useCallback, useRef, useState } from 'react';
 import type { CreateScheduleInput, Schedule, ScheduleTemplate, ScheduleWorkspaceKind } from '@cindy/maker-scheduler';
+import { BUNDLED_CATALOG, resolveDefaultModel } from '@cindy/model-providers';
 import { getPersistedVendorModel } from '@/state/newMakerDraft';
 import type { Session } from '@/lib/ccAgent.types';
 import {
@@ -154,8 +155,10 @@ export function getScheduleAgentPrefs(agentKind: ScheduleFormState['agentKind'])
  * 的事故见 2026-06 踩坑:任务里看着选了 Opus 4.8,实际每次跑 4.7)。
  */
 export function schedulerFallbackModel(agentKind: ScheduleFormState['agentKind']): string {
-  // Pi 的来源/模型来自动态连接目录；没有能与 providerId 解耦的静态默认。
-  return agentKind === 'codex' ? 'gpt-5.5' : agentKind === 'pi' ? '' : 'claude-sonnet-4-6';
+  // Pi 的来源/模型来自动态连接目录；没有能与 providerId 解耦的静态默认,目录默认同样不适用。
+  if (agentKind === 'pi') return '';
+  const fallback = agentKind === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6';
+  return resolveDefaultModel(BUNDLED_CATALOG, agentKind, 'session', fallback);
 }
 
 /**

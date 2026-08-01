@@ -312,6 +312,35 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     expect(provider('xd').titleModel).toBe('gpt-5.4-mini');
   });
 
+  it('builtin providers configure independent one-shot defaults', () => {
+    expect(provider('anthropic').defaults?.['claude-code']?.oneShotModel).toBe('claude-haiku-4-5');
+    expect(provider('anthropic').defaults?.codex?.oneShotModel).toBe('claude-haiku-4-5');
+    expect(provider('openai').defaults?.['claude-code']?.oneShotModel).toBe('gpt-5.4-mini');
+    expect(provider('openai').defaults?.codex?.oneShotModel).toBe('gpt-5.4-mini');
+    expect(provider('xd').defaults?.['claude-code']?.oneShotModel).toBe('gpt-5.4-mini');
+    expect(provider('xd').defaults?.codex?.oneShotModel).toBe('gpt-5.4-mini');
+  });
+
+  it('bundled catalog declares global cold-start session defaults', () => {
+    expect(BUNDLED_CATALOG.defaults).toEqual({
+      'claude-code': { sessionModel: 'claude-sonnet-4-6' },
+      codex: { sessionModel: 'gpt-5.5' },
+    });
+  });
+
+  it('parseCatalog validates top-level defaults independently from provider defaults', () => {
+    expect(parseCatalog({
+      version: '3',
+      providers: [],
+      defaults: { codex: { sessionModel: 'remote-codex' } },
+    }).defaults?.codex?.sessionModel).toBe('remote-codex');
+    expect(() => parseCatalog({
+      version: '3',
+      providers: [],
+      defaults: { codex: { sessionModel: '' } },
+    })).toThrow(/catalog\.defaults\.codex\.sessionModel/);
+  });
+
   it('parseCatalog allows titleModel on a dynamic-list provider (all models empty)', () => {
     // bundled 的 anthropic/openai/xd 正是这种形态,上面的 parse 测试已覆盖;这里显式守语义。
     expect(() => parseCatalog(BUNDLED_CATALOG)).not.toThrow();

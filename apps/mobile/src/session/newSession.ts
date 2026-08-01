@@ -1,3 +1,4 @@
+import { BUNDLED_CATALOG, resolveDefaultModel } from '@cindy/model-providers';
 import { stripTrailingPathSeparators } from '@cindy/maker-shared/path-text';
 import { i18n } from '@/i18n';
 import type { CreateSessionOptions, RemoteDirectoryEntry } from '@/device-link/mobileMakerTransport';
@@ -128,11 +129,32 @@ export function pickNewSessionDefaultDevice(input: {
   return preferred ?? input.deviceOptions[0] ?? null;
 }
 
+export const FALLBACK_MODELS: Record<NewSessionAgentKind, string> = {
+  'claude-code': 'claude-sonnet-4-6',
+  codex: 'gpt-5.4',
+  // pi 沿用原冷启动值(内置目录不为 pi 声明默认,resolver 会落到这里)。
+  pi: 'gpt-5.4',
+};
+
+export function defaultNewSessionModel(agentKind: NewSessionAgentKind): string {
+  if (agentKind === 'codex') {
+    // This entry intentionally stays on GPT-5.4: the catalog-wide Codex default is GPT-5.5.
+    // Preserve byte-for-byte cold-start behavior until product explicitly approves unifying them.
+    return FALLBACK_MODELS.codex;
+  }
+  return resolveDefaultModel(
+    BUNDLED_CATALOG,
+    agentKind,
+    'session',
+    FALLBACK_MODELS[agentKind],
+  );
+}
+
 export const DEFAULT_NEW_SESSION_DRAFT: NewSessionDraft = {
   agentKind: 'claude-code',
   workspaceKind: 'project',
   workingDir: '',
-  model: 'claude-sonnet-4-6',
+  model: defaultNewSessionModel('claude-code'),
   providerId: null,
   effort: 'medium',
   // Claude 保留 Auto-review 种子默认；用户上次在新建页选过的档走
@@ -140,12 +162,6 @@ export const DEFAULT_NEW_SESSION_DRAFT: NewSessionDraft = {
   permissionMode: 'auto',
   fastMode: false,
   firstMessage: '',
-};
-
-const DEFAULT_MODELS: Record<NewSessionAgentKind, string> = {
-  'claude-code': 'claude-sonnet-4-6',
-  codex: 'gpt-5.4',
-  pi: 'gpt-5.4',
 };
 
 /** 新建交互式会话的权限种子默认；三个 agent 都保留 Auto-review。 */
@@ -161,7 +177,7 @@ export function withAgentDefaults(
   return {
     ...draft,
     agentKind,
-    model: DEFAULT_MODELS[agentKind],
+    model: defaultNewSessionModel(agentKind),
     permissionMode: defaultPermissionModeForNewSessionAgent(agentKind),
     // 换 agent → 来源选择作废(各 agent 的供应商集不同),回到默认路由由被控端定。
     providerId: null,
@@ -345,9 +361,9 @@ export function pickMostRecentSessionRuntime(
  *   1) 该 agent 的最近一次会话模型(pickMostRecentSessionRuntime,按 deviceId scope);
  *   2) 否则该 agent 的模型列表最上面那个(modelRows[0] —— providers 已加载时同步可得,
  *      与下拉渲染的第一项一致);
- *   3) 否则该 agent 的内置默认 DEFAULT_MODELS[agentKind]。
+ *   3) 否则使用站点默认；Claude 从 BUNDLED_CATALOG defaults 解析，Codex 保留差异值。
  * effort:reconcile 到目标 model 的合法档(reconcileEffortForModel,base = 最近会话 effort ?? 当前 effort);
- *   拿不到目标 model 对应的 SectionModel(model 不在 modelRows 里,如走了 DEFAULT_MODELS 兜底或历史模型已下架)
+ *   拿不到目标 model 对应的 SectionModel(model 不在 modelRows 里,如走了目录默认兜底或历史模型已下架)
  *   时保留 base effort 不动。providerId 由调用方统一置 null(各 agent 供应商集不同,回默认路由)。
  */
 export function pickAgentDefaultRuntime(args: {
@@ -370,7 +386,7 @@ export function pickAgentDefaultRuntime(args: {
     sectionModel = modelRows[0].model;
     model = sectionModel.id;
   } else {
-    model = DEFAULT_MODELS[agentKind];
+    model = defaultNewSessionModel(agentKind);
   }
   const effort = sectionModel ? reconcileEffortForModel(sectionModel, baseEffort) : baseEffort;
   return { agentKind, model, effort };

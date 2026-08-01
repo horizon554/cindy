@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
+import { BUNDLED_CATALOG, resolveDefaultModel } from '@cindy/model-providers';
 
 import { getStickySessionDeviceId } from '@/features/device-link/stickySessionOrigin';
 import { createLogger } from '@/lib/logger';
@@ -154,13 +155,20 @@ function getEntry(leadSessionId: string): LeadEntry {
 
 function mapWorkerRecord(raw: Record<string, unknown>): WorkerInfo {
   const session = raw.session as Record<string, unknown> | undefined;
+  const agent: WorkerInfo['agent'] =
+    session?.agentKind === 'codex' ? 'codex' : session?.agentKind === 'pi' ? 'pi' : 'claude-code';
   return {
     workerId: raw.id as string,
     sessionId: raw.sessionId as string,
     role: (raw.role as string) ?? 'developer',
-    agent:
-      session?.agentKind === 'codex' ? 'codex' : session?.agentKind === 'pi' ? 'pi' : 'claude-code',
-    model: (session?.model as string) ?? 'claude-sonnet-4-6',
+    agent,
+    // 记录缺 model 时按目录冷启动默认补展示值(按 agent 分别兜底,codex 不再显示成 Claude)。
+    model: (session?.model as string) ?? resolveDefaultModel(
+      BUNDLED_CATALOG,
+      agent,
+      'session',
+      agent === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6',
+    ),
     effort: (session?.effort as string | null) ?? null,
     label: (raw.label as string | null) ?? null,
     status: (raw.status as WorkerInfo['status']) ?? 'idle',

@@ -310,6 +310,31 @@ describe('mergeWithBundled', () => {
     ).toBeUndefined();
   });
 
+  it('v3 top-level and provider defaults override bundled fields without erasing siblings', () => {
+    const primary: Catalog = {
+      version: '3',
+      defaults: { codex: { sessionModel: 'remote-codex' } },
+      providers: [{
+        id: 'anthropic',
+        defaults: {
+          'claude-code': { sessionModel: 'remote-claude' },
+        },
+      } as Catalog['providers'][number]],
+    };
+
+    const merged = mergeWithBundled(primary);
+    expect(merged.defaults).toEqual({
+      'claude-code': { sessionModel: 'claude-sonnet-4-6' },
+      codex: { sessionModel: 'remote-codex' },
+    });
+    expect(merged.providers.find((p) => p.id === 'anthropic')?.defaults?.['claude-code'])
+      .toEqual({
+        sessionModel: 'remote-claude',
+        oneShotModel: 'claude-haiku-4-5',
+        titleModel: 'claude-haiku-4-5',
+      });
+  });
+
   it('does not infer bundled billing when a same-id primary changes auth or upstream', () => {
     const apiKeyPrimary: Catalog = {
       ...MINIMAL,

@@ -2,9 +2,11 @@ import { ipcMain } from 'electron';
 import { and, desc, inArray, ne } from 'drizzle-orm';
 
 import type { AgentKind, Maker, OneShotOptions } from '@cindy/maker-core';
+import { resolveDefaultModel } from '@cindy/model-providers';
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
 
 import { createLogger } from '../logger.js';
+import { getActiveCatalog } from '../maker-host/active-catalog.js';
 import { isAgentOneShotRouteDisabled } from '../maker-host/model-route-guard-live.js';
 import { getDbClient } from '../localDb/client/current.js';
 import { sessions } from '../localDb/schema.js';
@@ -278,10 +280,13 @@ export async function pickHelpAgent(
   return null;
 }
 
-function buildOneShotOptions(agentKind: AgentKind): OneShotOptions {
+export function buildOneShotOptions(
+  agentKind: AgentKind,
+  catalog = getActiveCatalog(),
+): OneShotOptions {
   if (agentKind === 'claude-code') {
     return {
-      model: 'claude-haiku-4-5',
+      model: resolveDefaultModel(catalog, agentKind, 'oneShot', 'claude-haiku-4-5'),
       maxTokens: 220,
       timeoutMs: 20_000,
     };
@@ -290,7 +295,7 @@ function buildOneShotOptions(agentKind: AgentKind): OneShotOptions {
   // GPT id；让 Maker 按该 Pi agent 的当前能力选择默认模型。
   if (agentKind === 'pi') return { timeoutMs: 20_000 };
   return {
-    model: 'gpt-5.4-mini',
+    model: resolveDefaultModel(catalog, agentKind, 'oneShot', 'gpt-5.4-mini'),
     timeoutMs: 20_000,
   };
 }

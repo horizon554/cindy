@@ -565,6 +565,14 @@ describe('CreateWorkerPopover', () => {
   it('restores remembered effort and Fast for the picked row when the panel omits them', async () => {
     // 真组件选行只回传 (providerId, modelId);目标模型 hover 配置过的 effort/Fast
     // 存在模型级全局预设里,选中后必须恢复,不能沿用上一个模型的值。
+    // Keep the initial row distinct from the picked row: the catalog default is now gpt-5.5.
+    window.localStorage.setItem(
+      'workerCreationPrefs',
+      JSON.stringify({
+        lastAgent: 'codex',
+        codex: { model: 'codex/gpt-5.5', effort: 'high', fast: false, providerId: null },
+      }),
+    );
     setProviderModelChoice('codex', 'openai', 'gpt-5.5', 'low');
     setProviderModelFast('codex', 'openai', 'gpt-5.5', true);
     mocks.localProviders = [

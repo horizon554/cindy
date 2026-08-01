@@ -10,6 +10,7 @@ import {
   buildRecentWorkspaceOptions,
   buildRemoteCreateSessionOptions,
   filterRemoteDirectoryEntries,
+  defaultNewSessionModel,
   defaultPermissionModeForNewSessionAgent,
   normalizeCreateSessionResult,
   parseNewSessionDeviceOptions,
@@ -170,7 +171,9 @@ describe('pickAgentDefaultRuntime', () => {
     expect(runtime).toEqual({ agentKind: 'codex', model: 'gpt-5.4', effort: 'low' });
   });
 
-  it('falls back to DEFAULT_MODELS and keeps current effort when providers are not loaded yet', () => {
+  it('uses catalog defaults where values match and preserves the divergent Codex fallback', () => {
+    expect(defaultNewSessionModel('claude-code')).toBe('claude-sonnet-4-6');
+    expect(defaultNewSessionModel('codex')).toBe('gpt-5.4');
     expect(pickAgentDefaultRuntime({
       agentKind: 'codex',
       sessions: [],

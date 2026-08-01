@@ -35,6 +35,8 @@ export type {
 } from './types.js';
 
 export { PI_REASONING_EFFORTS } from './types.js';
+export { resolveDefaultModel } from './defaults.js';
+export type { DefaultModelScenario, DefaultsCatalogView } from './defaults.js';
 
 export { resolveCodexCompatibilityWireProtocol } from './codexCompatibility.js';
 

@@ -65,6 +65,15 @@ vi.mock('../../localDb/dialogueWorkspace.js', () => ({
     return dir;
   },
 }));
+const activeCatalogMock = vi.hoisted(() => ({
+  catalog: null as import('@cindy/model-providers').Catalog | null,
+}));
+vi.mock('../../maker-host/active-catalog.js', async () => {
+  const { BUNDLED_CATALOG } = await import('@cindy/model-providers');
+  return {
+    getActiveCatalog: () => activeCatalogMock.catalog ?? BUNDLED_CATALOG,
+  };
+});
 vi.mock('../../maker-host/codex-local-sessions.js', () => ({
   importSharedCodexThread: async (params: unknown) => {
     codexMock.importCalls.push(params);
@@ -324,6 +333,7 @@ async function writeBundleFile(bytes: Buffer, password?: string): Promise<string
 
 describe('sessionShareImport', () => {
   beforeEach(async () => {
+    activeCatalogMock.catalog = null;
     dbMock.conflictRow = null;
     dbMock.queryCalls = [];
     dbMock.txCalls = [];
@@ -869,6 +879,25 @@ describe('sessionShareImport', () => {
     expect(session.providerId).toBeNull();
     expect(session.fastMode).toBe(false);
     expect(session.planModeEnabled).toBe(false);
+  });
+
+  it('missing draftPrefs follows active catalog defaults when present', async () => {
+    activeCatalogMock.catalog = {
+      version: '3',
+      providers: [],
+      defaults: { 'claude-code': { sessionModel: 'catalog-import-model' } },
+    };
+    const filePath = await writeBundleFile(await buildBundle({ session: exporterSessionConfig }));
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+    await commitShareImport({
+      draftId: inspect.draftId,
+      workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+    });
+    const session = (dbMock.txCalls[0].args as { session: Record<string, unknown> }).session;
+    expect(session.model).toBe('catalog-import-model');
   });
 
   it('codex bundle without draftPrefs falls back to codex default model', async () => {

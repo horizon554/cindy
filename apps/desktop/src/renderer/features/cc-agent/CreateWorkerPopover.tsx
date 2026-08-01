@@ -9,6 +9,8 @@ import {
   isModelSelectableForNewRoute,
   modelSupportsFastMode,
   providerOffersModel,
+  resolveDefaultModel,
+  BUNDLED_CATALOG,
 } from '@cindy/model-providers';
 
 import { FastModeToggle } from '@/components/new-chat/FastModeToggle';
@@ -52,9 +54,20 @@ interface WorkerPrefs {
 
 const DEFAULT_PREFS: WorkerPrefs = {
   lastAgent: 'codex',
-  codex: { model: 'codex/gpt-5.5', effort: 'high', fast: false, providerId: null },
-  'claude-code': { model: 'claude-opus-4-7', effort: 'high', fast: false, providerId: null },
-  // pi worker 默认模型与 orcaWorkerCreationService.resolveWorkerConfig 的 pi 分支一致。
+  codex: {
+    model: resolveDefaultModel(BUNDLED_CATALOG, 'codex', 'session', 'codex/gpt-5.5'),
+    effort: 'high',
+    fast: false,
+    providerId: null,
+  },
+  'claude-code': {
+    model: resolveDefaultModel(BUNDLED_CATALOG, 'claude-code', 'session', 'claude-opus-4-7'),
+    effort: 'high',
+    fast: false,
+    providerId: null,
+  },
+  // pi worker 默认模型与 orcaWorkerCreationService.resolveWorkerConfig 的 pi 分支一致;
+  // pi 不走目录默认(它没有跨来源合法的静态 id,见 scheduler-host/model-defaults.ts)。
   pi: { model: 'claude-sonnet-4-6', effort: 'high', fast: false, providerId: null },
 };
 
