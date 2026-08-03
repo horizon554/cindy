@@ -521,16 +521,19 @@ function rewriteChatBridgeModel(model: string, stripPrefix: string | undefined):
 }
 
 /**
- * 在模型级多模态能力元数据接入路由前,图片桥接先按已验证的上游能力显式开启。
+ * 图片桥接开启条件 = 「resolve 判定的模型多模态能力」**或**「已验证上游白名单」(或集)。
  *
- * 当前覆盖:
- * - Moonshot Kimi K3
- * - Volcengine Doubao Seed 系列
- * - Alibaba Cloud Bailian Coding Plan Qwen 3.7 Plus
- *
- * 这里认官方 DNS 边界 + 上游 model,不认 provider id(预设创建后会生成用户自定义
- * id),也不对所有 openai-chat 供应商放开。未命中继续沿用 fail-closed 默认——
- * 无图片能力的上游(如 DeepSeek)保持发送前显式报错,不静默吞图。
+ * - modalities 主路径:resolve 已保守地判定过输入模态(image 仅来自厂商 /v1/models 自报或
+ *   知识库,未命中一律不编造),`declaredImageInput===true` 即可信任,不再按 host 二次设限——
+ *   OpenRouter 等自报 image 的第三方模型据此放开。
+ * - 白名单兜底:modalities 缺失(从未 resolve / 关闭 / 上游与知识库都没有该模型)时,保留原有
+ *   官方 DNS 边界 + 上游 model 判定,避免这些已知可用的 vision 模型被关。当前覆盖:
+ *   - Moonshot Kimi K3
+ *   - Volcengine Doubao Seed 系列
+ *   - Alibaba Cloud Bailian Coding Plan Qwen 3.7 Plus
+ *   白名单认官方 DNS 边界 + 上游 model,不认 provider id(预设创建后会生成用户自定义 id),
+ *   也不对所有 openai-chat 供应商放开。两条取或,互不回归。
+ * - 都不满足:继续 fail-closed——无图片能力的上游(如 DeepSeek)发送前显式报错,不静默吞图。
  */
 export function chatBridgeCapabilitiesForRoute(
   upstream: string,
@@ -558,12 +561,14 @@ function isVerifiedImageChatRoute(
   }
   if (url.protocol !== 'https:') return false;
   const host = url.hostname.toLowerCase();
-  const trustedHost = MOONSHOT_CHAT_HOSTS.has(host) || VOLCENGINE_ARK_CHAT_HOST_RE.test(host);
-  if (declaredImageInput !== undefined) return declaredImageInput && trustedHost;
-  if (realModel === 'kimi-k3') return MOONSHOT_CHAT_HOSTS.has(host);
-  if (isDoubaoVisionModel(realModel)) return VOLCENGINE_ARK_CHAT_HOST_RE.test(host);
-  if (isQwenImageChatModel(realModel)) return DASHSCOPE_CODING_CHAT_HOSTS.has(host);
-  return false;
+  // 白名单兜底:仅在官方 DNS 边界上认已知 vision 上游 model(host 已内含在各分支)。
+  // Qwen 3.7 Plus 是 upstream 在本提交之后补的第三条,一并纳入兜底(否则或集会漏掉它)。
+  const whitelisted =
+    (realModel === 'kimi-k3' && MOONSHOT_CHAT_HOSTS.has(host))
+    || (isDoubaoVisionModel(realModel) && VOLCENGINE_ARK_CHAT_HOST_RE.test(host))
+    || (isQwenImageChatModel(realModel) && DASHSCOPE_CODING_CHAT_HOSTS.has(host));
+  // 或集:resolve 正向判定 image(保守,未命中不编造)∪ 白名单。未命中两者 → fail-closed。
+  return declaredImageInput === true || whitelisted;
 }
 
 /**

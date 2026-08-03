@@ -4711,6 +4711,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1') return;
     const cfg = await getCustomProvider(providerId);
     if (!cfg) return;
+    // 逐 agent 顺序 resolve:overlay 立即落 active-catalog(in-session 生效),并累积把 resolve
+    // 补全的 modalities/capabilities gap-fill 回 config(durability,重启后 buildUserProvider 可读)。
+    // 顺序处理 + 末尾单次写库,避免多 agent 并发写同一 config 互相乐观锁失败。
+    let nextCfg = cfg;
     for (const agent of Object.keys(cfg.runtimes) as AgentKind[]) {
       // resolve 契约(MODEL_ACCESS_AGENTS)只覆盖 claude-code/codex;pi 无知识库通道,
       // 配置里的模型原样保留(与 resolveFetchedModels 的同一条门一致)。
@@ -4718,51 +4722,78 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const runtime = cfg.runtimes[agent];
       if (!runtime || runtime.models.length === 0) continue;
       const uploadedIds = runtime.models.map((m) => m.id);
-      void resolveProviderModels({
-        providerId,
-        agent,
-        ...(runtime.wireProtocol ? { wireProtocol: runtime.wireProtocol } : {}),
-        models: runtime.models.map((m) => {
-          // 配置里持久化的厂商自报事实全部随 resolve 上传:未命中知识库的第三方模型
-          // 也保留厂商窗口/模态/能力,不落保守默认(与刷新 fetch-resolve 同口径)。
-          const providerReported = {
-            ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
-            ...(m.modalities ? { modalities: m.modalities } : {}),
-            ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-          };
-          return {
-            id: m.id,
-            name: m.name,
-            ...(Object.keys(providerReported).length > 0 ? { providerReported } : {}),
-          };
-        }),
-      }).then((resolved) => {
-        if (!resolved) return;
-        const overlay = resolved.entry.models.map((m) => ({
-          id: m.id,
-          name: m.name,
-          contextWindow: m.contextWindow,
-          maxOutput: m.maxOutput,
-          description: m.description,
-          family: m.family,
-          group: m.group ?? `custom:${providerId}`,
-          category: m.category,
-          mode: m.mode,
-          sortOrder: m.sortOrder,
-          efforts: m.efforts,
-          defaultEffort: m.defaultEffort,
-          supportsFastMode: m.supportsFastMode,
-          defaultEnabled: m.defaultEnabled,
-        }));
-        setResolvedProviderModels(
+      let resolved: Awaited<ReturnType<typeof resolveProviderModels>> = null;
+      try {
+        resolved = await resolveProviderModels({
           providerId,
           agent,
-          resolved.entry.models.map((m) => m.id),
-          overlay,
-          resolved.knowledgeRevision,
-          uploadedIds,
-        );
-      }).catch(() => undefined);
+          ...(runtime.wireProtocol ? { wireProtocol: runtime.wireProtocol } : {}),
+          models: runtime.models.map((m) => {
+            // 配置里持久化的厂商自报事实全部随 resolve 上传:未命中知识库的第三方模型
+            // 也保留厂商窗口/模态/能力,不落保守默认(与刷新 fetch-resolve 同口径)。
+            const providerReported = {
+              ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+              ...(m.modalities ? { modalities: m.modalities } : {}),
+              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+            };
+            return {
+              id: m.id,
+              name: m.name,
+              ...(Object.keys(providerReported).length > 0 ? { providerReported } : {}),
+            };
+          }),
+        });
+      } catch {
+        resolved = null;
+      }
+      if (!resolved) continue;
+      // in-session:补全 overlay 落 active-catalog(含 modalities/capabilities,供路由/桥接读)。
+      const overlay = resolved.entry.models.map((m) => ({
+        id: m.id,
+        name: m.name,
+        contextWindow: m.contextWindow,
+        maxOutput: m.maxOutput,
+        description: m.description,
+        family: m.family,
+        group: m.group ?? `custom:${providerId}`,
+        category: m.category,
+        mode: m.mode,
+        sortOrder: m.sortOrder,
+        efforts: m.efforts,
+        defaultEffort: m.defaultEffort,
+        supportsFastMode: m.supportsFastMode,
+        defaultEnabled: m.defaultEnabled,
+        ...(m.modalities ? { modalities: m.modalities } : {}),
+        ...(m.capabilities && Object.keys(m.capabilities).length > 0 ? { capabilities: m.capabilities } : {}),
+      }));
+      setResolvedProviderModels(
+        providerId,
+        agent,
+        resolved.entry.models.map((m) => m.id),
+        overlay,
+        resolved.knowledgeRevision,
+        uploadedIds,
+      );
+      // durability:把 resolve 补全的 modalities/capabilities gap-fill 回 config(缺才补,不覆盖
+      // 厂商自报/用户手填)。服务端这两个字段只来自 provider/KB、从不编造,有值即真;capabilities
+      // 为空对象时跳过。contextWindow 走原有厂商自报/预设路径,不在此写(避免固化 200K 保守默认)。
+      const gapFilled = mergeDiscoveredModelsIntoConfig(
+        nextCfg,
+        agent,
+        resolved.entry.models.map((m) => ({
+          id: m.id,
+          name: m.name,
+          ...(m.modalities ? { modalities: m.modalities } : {}),
+          ...(m.capabilities && Object.keys(m.capabilities).length > 0 ? { capabilities: m.capabilities } : {}),
+        })),
+      );
+      if (gapFilled) nextCfg = gapFilled;
+    }
+    // 末尾单次写库:直调 store（不经 IPC UPDATE handler → 不再触发 resolveSavedProviderModels,
+    // 避免循环);乐观锁——cfg 期间被其它写改动则 no-op,下次保存/刷新再补。gap-fill 幂等,
+    // 第二轮无可补即不再变更、不再写。
+    if (nextCfg !== cfg) {
+      await updateCustomProviderIfUnchanged(providerId, cfg, nextCfg).catch(() => undefined);
     }
   }
 
@@ -4799,7 +4830,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         agent: spec.agent,
         wireProtocol: spec.wireProtocol,
         models,
-      }).then((resolved) => {
+      }).then(async (resolved) => {
         if (!resolved) return;
         // 表单预填(仅当有 requestId)。
         if (spec.requestId) {
@@ -4830,6 +4861,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             defaultEffort: m.defaultEffort,
             supportsFastMode: m.supportsFastMode,
             defaultEnabled: m.defaultEnabled,
+            ...(m.modalities ? { modalities: m.modalities } : {}),
+            ...(m.capabilities && Object.keys(m.capabilities).length > 0 ? { capabilities: m.capabilities } : {}),
           }));
           setResolvedProviderModels(
             spec.savedProviderId,
@@ -4839,6 +4872,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             resolved.knowledgeRevision,
             models.map((m) => m.id),
           );
+          // durability:把 resolve 补全的 modalities/capabilities gap-fill 回 config。刷新不自报
+          // 厂商(如 Kimi/DeepSeek)时 path 1(save-resolve)常因配置无变化不触发,这里兜住;走
+          // store 直写不经 IPC handler → 不触发 resolve、无循环。乐观锁 + gap-fill 幂等,失败静默
+          // (overlay 已保证本 session 生效)。
+          try {
+            const cfg = await getCustomProvider(spec.savedProviderId);
+            if (cfg) {
+              const nextCfg = mergeDiscoveredModelsIntoConfig(
+                cfg,
+                spec.agent,
+                resolved.entry.models.map((m) => ({
+                  id: m.id,
+                  name: m.name,
+                  ...(m.modalities ? { modalities: m.modalities } : {}),
+                  ...(m.capabilities && Object.keys(m.capabilities).length > 0 ? { capabilities: m.capabilities } : {}),
+                })),
+              );
+              if (nextCfg) await updateCustomProviderIfUnchanged(spec.savedProviderId, cfg, nextCfg);
+            }
+          } catch {
+            /* 持久化失败静默降级 */
+          }
         }
       }).catch(() => undefined);
     },
@@ -4957,6 +5012,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                   defaultEffort: m.defaultEffort,
                   supportsFastMode: m.supportsFastMode,
                   defaultEnabled: m.defaultEnabled,
+                  ...(m.modalities ? { modalities: m.modalities } : {}),
+                  ...(m.capabilities && Object.keys(m.capabilities).length > 0 ? { capabilities: m.capabilities } : {}),
                 }));
                 setResolvedProviderModels(
                   providerId,

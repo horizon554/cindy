@@ -455,10 +455,6 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
     typeof spec.requestId !== 'string'
     || !/^[A-Za-z0-9_-]{1,128}$/.test(spec.requestId)
   )) return null;
-  if (spec.providerId !== undefined && (
-    typeof spec.providerId !== 'string'
-    || !/^[a-zA-Z0-9_-]{1,64}$/.test(spec.providerId)
-  )) return null;
   if (spec.wireProtocol !== undefined) {
     const allowed = spec.agent === 'claude-code'
       ? ['anthropic-messages']
@@ -478,7 +474,6 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
     authMethod: spec.authMethod as ProviderModelsFetchSpec['authMethod'],
     modelsUrl: (spec.modelsUrl as string | null | undefined) ?? null,
     requestId: spec.requestId as string | undefined,
-    providerId: spec.providerId as string | undefined,
     apiKey: (spec.apiKey as string | null | undefined) ?? null,
     headers: spec.headers as Record<string, string> | undefined,
     ...(typeof spec.savedProviderId === 'string' ? { savedProviderId: spec.savedProviderId } : {}),

@@ -493,16 +493,38 @@ describe('chatBridgeCapabilitiesForRoute', () => {
     expect(chatBridgeCapabilitiesForRoute(upstream, model).imageInput).toBe('image_url');
   });
 
-  it('uses declared image modality but still requires a trusted host', async () => {
+  it('trusts declared image modality on any host, independent of the whitelist (resolve is conservative)', async () => {
     const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    // 或集主路径:resolve 正向声明 image(仅来自厂商自报/知识库,未命中不编造)→ 放开,
+    // 不再要求受信 host —— OpenRouter / DeepSeek 等自报 image 的第三方模型据此启用。
     expect(
-      chatBridgeCapabilitiesForRoute('https://api.moonshot.cn/v1', 'opaque-model', undefined, true).imageInput,
+      chatBridgeCapabilitiesForRoute('https://openrouter.ai/api/v1', 'qwen/qwen3.7-flash', undefined, true).imageInput,
     ).toBe('image_url');
     expect(
-      chatBridgeCapabilitiesForRoute('https://api.moonshot.cn/v1', 'kimi-k3', undefined, false).imageInput,
+      chatBridgeCapabilitiesForRoute('https://api.deepseek.com/v1', 'opaque-model', undefined, true).imageInput,
+    ).toBe('image_url');
+    // 声明无 image、且非白名单 → fail-closed(缺省同理)。
+    expect(
+      chatBridgeCapabilitiesForRoute('https://openrouter.ai/api/v1', 'opaque-model', undefined, false).imageInput,
     ).toBeUndefined();
     expect(
-      chatBridgeCapabilitiesForRoute('https://api.deepseek.com/v1', 'opaque-model', undefined, true).imageInput,
+      chatBridgeCapabilitiesForRoute('https://openrouter.ai/api/v1', 'opaque-model', undefined, undefined).imageInput,
+    ).toBeUndefined();
+  });
+
+  it('keeps the trusted-host whitelist as an OR fallback (no regression when modalities absent/negative)', async () => {
+    const { chatBridgeCapabilitiesForRoute } = await freshCodexProxyHost();
+    // modalities 缺失 → 白名单兜底放开 Kimi K3 / 豆包 Seed。
+    expect(
+      chatBridgeCapabilitiesForRoute('https://api.moonshot.cn/v1', 'kimi-k3', undefined, undefined).imageInput,
+    ).toBe('image_url');
+    // 即便 modalities 误报无 image,已验证白名单经或集仍放开(curated known-good 不被关)。
+    expect(
+      chatBridgeCapabilitiesForRoute('https://api.moonshot.cn/v1', 'kimi-k3', undefined, false).imageInput,
+    ).toBe('image_url');
+    // 非白名单 host + modalities 缺失 → 关(fail-closed)。
+    expect(
+      chatBridgeCapabilitiesForRoute('https://api.deepseek.com/v1', 'opaque-model', undefined, undefined).imageInput,
     ).toBeUndefined();
   });
 
