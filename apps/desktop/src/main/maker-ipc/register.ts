@@ -4722,13 +4722,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         providerId,
         agent,
         ...(runtime.wireProtocol ? { wireProtocol: runtime.wireProtocol } : {}),
-        models: runtime.models.map((m) => ({
-          id: m.id,
-          name: m.name,
-          ...(m.contextWindow !== undefined
-            ? { providerReported: { contextWindow: m.contextWindow } }
-            : {}),
-        })),
+        models: runtime.models.map((m) => {
+          // 配置里持久化的厂商自报事实全部随 resolve 上传:未命中知识库的第三方模型
+          // 也保留厂商窗口/模态/能力,不落保守默认(与刷新 fetch-resolve 同口径)。
+          const providerReported = {
+            ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+            ...(m.modalities ? { modalities: m.modalities } : {}),
+            ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+          };
+          return {
+            id: m.id,
+            name: m.name,
+            ...(Object.keys(providerReported).length > 0 ? { providerReported } : {}),
+          };
+        }),
       }).then((resolved) => {
         if (!resolved) return;
         const overlay = resolved.entry.models.map((m) => ({
@@ -4775,12 +4782,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     resolveFetchedModels: (spec, result) => {
       if (
         process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1'
-        || !spec.requestId
+        || !result.models
         // An unsaved form has no canonical provider identity. Do not derive one from a hostname:
         // the model-access knowledge base is keyed by provider id, and a host can represent
         // multiple independent providers (or a user can move the endpoint without changing id).
+        // 两个消费方都以这个已保存身份为键:requestId → 表单预填广播;savedProviderId
+        // 本身 → 把完整 hints 补全 overlay 落 active-catalog(刷新路径)。
         || !spec.savedProviderId
-        || !result.models
         // resolve 契约(MODEL_ACCESS_AGENTS)只覆盖 claude-code/codex;pi 无知识库通道,
         // 保持发现结果原样展示,不发起 resolve。
         || (spec.agent !== 'claude-code' && spec.agent !== 'codex')
@@ -4793,14 +4801,45 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         models,
       }).then((resolved) => {
         if (!resolved) return;
-        const byId = new Map(resolved.entry.models.map((model) => [model.id, model]));
-        broadcastToAllWindows(MAKER_PUSH.PROVIDER_MODELS_RESOLVED, {
-          requestId: spec.requestId,
-          models: models.map((model) => {
-            const metadata = byId.get(model.id);
-            return metadata ? { ...model, ...metadata, id: model.id } : model;
-          }),
-        });
+        // 表单预填(仅当有 requestId)。
+        if (spec.requestId) {
+          const byId = new Map(resolved.entry.models.map((model) => [model.id, model]));
+          broadcastToAllWindows(MAKER_PUSH.PROVIDER_MODELS_RESOLVED, {
+            requestId: spec.requestId,
+            models: models.map((model) => {
+              const metadata = byId.get(model.id);
+              return metadata ? { ...model, ...metadata, id: model.id } : model;
+            }),
+          });
+        }
+        // 已保存 provider:完整 hints 补全 overlay 落目录,未命中知识库的模型也保留
+        // 厂商上报的 contextWindow/maxOutput/modalities/capabilities(字段映射同 OAuth 路径)。
+        if (spec.savedProviderId) {
+          const overlay = resolved.entry.models.map((m) => ({
+            id: m.id,
+            name: m.name,
+            contextWindow: m.contextWindow,
+            maxOutput: m.maxOutput,
+            description: m.description,
+            family: m.family,
+            group: m.group ?? `custom:${spec.savedProviderId}`,
+            category: m.category,
+            mode: m.mode,
+            sortOrder: m.sortOrder,
+            efforts: m.efforts,
+            defaultEffort: m.defaultEffort,
+            supportsFastMode: m.supportsFastMode,
+            defaultEnabled: m.defaultEnabled,
+          }));
+          setResolvedProviderModels(
+            spec.savedProviderId,
+            spec.agent,
+            resolved.entry.models.map((m) => m.id),
+            overlay,
+            resolved.knowledgeRevision,
+            models.map((m) => m.id),
+          );
+        }
       }).catch(() => undefined);
     },
     // 重新发现会用订阅凭证发起真实上游请求，限主页面 sender（子 frame / WebView 拒绝）。
@@ -4973,7 +5012,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               const cfg = await getCustomProvider(providerId);
               if (!isCurrent()) break;
               if (cfg) {
-                const nextCfg = mergeDiscoveredModelsIntoConfig(cfg, agent, effectiveModels);
+                // 只把厂商真实上报的 contextWindow 持久化进配置,不写 effectiveModels 的
+                // 200K 兜底(那是缺省显示值,不是真实窗口)。
+                const nextCfg = mergeDiscoveredModelsIntoConfig(
+                  cfg,
+                  agent,
+                  models.map((m) => ({
+                    id: m.id,
+                    name: m.name,
+                    // 厂商自报的窗口/模态/能力全部持久化(未命中知识库的模型也不落默认)。
+                    ...(m.providerReported?.contextWindow ? { contextWindow: m.providerReported.contextWindow } : {}),
+                    ...(m.providerReported?.modalities ? { modalities: m.providerReported.modalities } : {}),
+                    ...(m.providerReported?.capabilities ? { capabilities: m.providerReported.capabilities } : {}),
+                  })),
+                );
                 if (nextCfg) {
                   const applied = await updateCustomProviderIfUnchanged(providerId, cfg, nextCfg);
                   if (!isCurrent()) break;

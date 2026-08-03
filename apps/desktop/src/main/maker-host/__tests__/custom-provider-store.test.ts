@@ -394,6 +394,43 @@ describe('custom-provider-store CRUD (per-runtime)', () => {
     ]);
   });
 
+  it('round-trips provider modalities/capabilities and drops malformed capability data', async () => {
+    mountDb();
+    await createCustomProvider({
+      ...valid,
+      runtimes: {
+        codex: {
+          baseUrl: 'https://openrouter.ai/api/v1',
+          models: [
+            {
+              id: 'vlm',
+              name: 'VLM',
+              contextWindow: 1_048_576,
+              modalities: { input: ['text', 'image'], output: ['text'] },
+              // 坏数据:未知键 + 非 boolean 值,写库/读回都应被清洗掉。
+              capabilities: {
+                reasoning: true,
+                toolCall: false,
+                bogus: 'x',
+                temperature: 1,
+              } as never,
+            },
+          ],
+        },
+      },
+    });
+    const got = await getCustomProvider('openrouter');
+    expect(got?.runtimes.codex?.models).toEqual([
+      {
+        id: 'vlm',
+        name: 'VLM',
+        contextWindow: 1_048_576,
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        capabilities: { reasoning: true, toolCall: false },
+      },
+    ]);
+  });
+
   it('round-trips an explicit Chat Completions protocol', async () => {
     mountDb();
     await createCustomProvider({

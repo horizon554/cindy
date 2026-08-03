@@ -172,6 +172,22 @@ describe('customProviderModelConfigFromCatalogModel', () => {
       name: 'Reasoner',
     });
   });
+
+  it('preserves provider modalities/capabilities through the edit round trip', () => {
+    expect(customProviderModelConfigFromCatalogModel({
+      id: 'vlm',
+      name: 'VLM',
+      contextWindow: 1_048_576,
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      capabilities: { reasoning: true, toolCall: true },
+    })).toEqual({
+      id: 'vlm',
+      name: 'VLM',
+      contextWindow: 1_048_576,
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      capabilities: { reasoning: true, toolCall: true },
+    });
+  });
 });
 
 describe('providerViewToCustomProviderConfig', () => {
@@ -277,24 +293,140 @@ describe('appendDiscoveredCustomProviderModels', () => {
         { id: 'new', name: 'New', defaultEnabled: false },
       ],
       addedIds: ['new'],
+      changed: true,
     });
   });
 
-  it('carries the endpoint-declared contextWindow into appended models (#386)', () => {
+  // #386「端点声明的 contextWindow 随发现落盘」的入参形状已改为 providerReported,
+  // 同语义由下面 'persists provider-reported contextWindow into the config' 覆盖
+  // (含非正数忽略),不再保留旧形状的重复用例。
+
+  it('backfills provider-reported contextWindow onto existing models that lack one', () => {
+    const result = appendDiscoveredCustomProviderModels(
+      [
+        { id: 'has', name: 'Has', contextWindow: 128_000 }, // 已有值 → 不覆盖
+        { id: 'gap', name: 'Gap' }, // 缺失 + 厂商上报 → 回填
+        { id: 'nogap', name: 'NoGap' }, // 缺失但厂商未上报 → 不动
+      ],
+      [
+        { id: 'has', name: 'Has', providerReported: { contextWindow: 999_999 } },
+        { id: 'gap', name: 'Gap', providerReported: { contextWindow: 1_000_000 } },
+        { id: 'nogap', name: 'NoGap' },
+      ],
+    );
+    expect(result).toEqual({
+      models: [
+        { id: 'has', name: 'Has', contextWindow: 128_000 },
+        { id: 'gap', name: 'Gap', contextWindow: 1_000_000 },
+        { id: 'nogap', name: 'NoGap' },
+      ],
+      addedIds: [],
+      changed: true,
+    });
+  });
+
+  it('reports changed=false when there is nothing to add or backfill', () => {
+    const result = appendDiscoveredCustomProviderModels(
+      [{ id: 'a', name: 'A', contextWindow: 128_000 }],
+      [{ id: 'a', name: 'A', providerReported: { contextWindow: 999_999 } }],
+    );
+    expect(result).toEqual({
+      models: [{ id: 'a', name: 'A', contextWindow: 128_000 }],
+      addedIds: [],
+      changed: false,
+    });
+  });
+
+  it('persists provider-reported contextWindow into the config (survives restart / feeds save-resolve)', () => {
     const result = appendDiscoveredCustomProviderModels(
       [],
       [
-        { id: 'big', name: 'Big', contextWindow: 1_000_000 },
-        { id: 'plain', name: 'Plain' },
-        { id: 'bogus', name: 'Bogus', contextWindow: -1 },
+        { id: 'a', name: 'A', providerReported: { contextWindow: 1_000_000 } },
+        { id: 'b', name: 'B' }, // 无上报 → 不写假窗口
+        { id: 'c', name: 'C', providerReported: { contextWindow: 0 } }, // 非正数忽略
       ],
     );
     expect(result.models).toEqual([
-      { id: 'big', name: 'Big', contextWindow: 1_000_000, defaultEnabled: false },
-      { id: 'plain', name: 'Plain', defaultEnabled: false },
-      // 非法值不落盘,回落保守默认
-      { id: 'bogus', name: 'Bogus', defaultEnabled: false },
+      { id: 'a', name: 'A', defaultEnabled: false, contextWindow: 1_000_000 },
+      { id: 'b', name: 'B', defaultEnabled: false },
+      { id: 'c', name: 'C', defaultEnabled: false },
     ]);
+  });
+
+  it('persists provider-reported modalities/capabilities on new models, narrowing unknown capability keys', () => {
+    const result = appendDiscoveredCustomProviderModels(
+      [],
+      [
+        {
+          id: 'vlm',
+          name: 'VLM',
+          providerReported: {
+            contextWindow: 1_048_576,
+            modalities: { input: ['text', 'image'], output: ['text'] },
+            // 宽松上报:只保留已知 boolean 键,丢弃未知键与非 boolean。
+            capabilities: { reasoning: true, toolCall: false, bogus: 'x', temperature: 1 },
+          },
+        },
+      ],
+    );
+    expect(result.models).toEqual([
+      {
+        id: 'vlm',
+        name: 'VLM',
+        defaultEnabled: false,
+        contextWindow: 1_048_576,
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        capabilities: { reasoning: true, toolCall: false },
+      },
+    ]);
+    expect(result.changed).toBe(true);
+  });
+
+  it('backfills modalities/capabilities onto existing models that lack them, per field', () => {
+    const result = appendDiscoveredCustomProviderModels(
+      [
+        // 已有 modalities → 不覆盖;缺 capabilities → 回填。
+        { id: 'has-mod', name: 'HasMod', modalities: { input: ['text'], output: ['text'] } },
+        // 三者皆缺 → 全部回填。
+        { id: 'bare', name: 'Bare' },
+      ],
+      [
+        {
+          id: 'has-mod',
+          name: 'HasMod',
+          providerReported: {
+            modalities: { input: ['text', 'image'], output: ['text'] }, // 应被忽略(已有)
+            capabilities: { toolCall: true },
+          },
+        },
+        {
+          id: 'bare',
+          name: 'Bare',
+          providerReported: {
+            contextWindow: 262_144,
+            modalities: { input: ['text'], output: ['text'] },
+            capabilities: { reasoning: true },
+          },
+        },
+      ],
+    );
+    expect(result.models).toEqual([
+      {
+        id: 'has-mod',
+        name: 'HasMod',
+        modalities: { input: ['text'], output: ['text'] },
+        capabilities: { toolCall: true },
+      },
+      {
+        id: 'bare',
+        name: 'Bare',
+        contextWindow: 262_144,
+        modalities: { input: ['text'], output: ['text'] },
+        capabilities: { reasoning: true },
+      },
+    ]);
+    expect(result.addedIds).toEqual([]);
+    expect(result.changed).toBe(true);
   });
 });
 

@@ -469,6 +469,18 @@ export interface ProviderRuntimeModelConfig {
   id: string;
   name: string;
   contextWindow?: number;
+  /**
+   * 厂商 /v1/models 自报的输入/输出模态与能力(形状对齐 `CatalogModel`)。与 contextWindow
+   * 同理随用户配置持久化:未命中知识库的第三方模型也能保留厂商自报的真实能力,而非在 resolve
+   * 时落保守默认。仅在厂商确有上报时写入(缺省不猜)。
+   */
+  modalities?: { input: string[]; output: string[] };
+  capabilities?: {
+    reasoning?: boolean;
+    toolCall?: boolean;
+    attachment?: boolean;
+    temperature?: boolean;
+  };
   /** 模型未被用户显式开关时的可见性；缺省保持历史行为（默认可见）。 */
   defaultEnabled?: boolean;
   /** Pi 自定义模型是否支持原生图片输入；缺省保守视为不支持。 */

@@ -2035,6 +2035,10 @@ export function ProvidersSection() {
       try {
         const config = providerViewToCustomProviderConfig(p);
         let added = 0;
+        // config 是否实际变化(新增模型 或 存量模型回填厂商能力字段:contextWindow /
+        // modalities / capabilities)。仅看 added 会漏掉「无新增、仅回填」的刷新,导致厂商
+        // 上报的字段不落盘、重启后未命中模型又退回保守默认。
+        let changed = false;
         let anyOk = false;
         for (const agent of p.agents) {
           const rt = config.runtimes[agent];
@@ -2051,6 +2055,8 @@ export function ProvidersSection() {
             ...(rt.wireProtocol ? { wireProtocol: rt.wireProtocol } : {}),
             modelsUrl: rt.modelsUrl ?? null,
             apiKey,
+            // 已保存 provider 的真实 id:既把请求目标钉回已存端点并注入 main-only 密文头,
+            // 也让 main 侧把完整补全 overlay 落目录(见 resolveFetchedModels)。
             savedProviderId: p.id,
           });
           if (!r.ok || !r.models) continue;
@@ -2058,13 +2064,18 @@ export function ProvidersSection() {
           const merged = appendDiscoveredCustomProviderModels(rt.models, r.models);
           rt.models = merged.models;
           added += merged.addedIds.length;
+          if (merged.changed) changed = true;
         }
         if (!anyOk) {
           toast.error(t('settings.providers.models.refreshFailed'));
           return;
         }
-        if (added > 0) {
+        // 新增或回填任一发生都要落盘(回填让存量模型持久化厂商上报的能力字段);
+        // toast 文案仍以「新增数」为准——回填是静默的元数据补全,不算新模型。
+        if (changed) {
           await updateCustomProvider(config, {});
+        }
+        if (added > 0) {
           toast.success(t('settings.providers.models.refreshAdded', { count: added }));
         } else {
           toast.success(t('settings.providers.models.refreshNoNew'));

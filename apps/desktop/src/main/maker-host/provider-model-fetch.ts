@@ -34,6 +34,13 @@ export interface ProviderModelsFetchSpec {
   agent: AgentKind;
   /** Opaque renderer request identity used only for asynchronous metadata prefill. */
   requestId?: string;
+  /**
+   * 已保存自定义供应商的真实 id(刷新已存 provider 时传)。存在则 resolve 结果除表单
+   * 预填外,还按此 id 把完整补全 hints 落 active-catalog overlay —— 让未命中知识库的
+   * 模型也保留厂商上报的 contextWindow/maxOutput/modalities/capabilities。添加向导阶段
+   * (provider 尚未保存)不传,仅走表单预填。
+   */
+  providerId?: string;
   /** 上游 wire protocol；用于区分 Codex 原生 OpenAI 与 Anthropic Messages 桥。 */
   wireProtocol?: ProviderWireProtocol;
   baseUrl: string;

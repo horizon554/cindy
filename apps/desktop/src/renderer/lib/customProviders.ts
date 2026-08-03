@@ -111,6 +111,8 @@ export function customProviderModelConfigFromCatalogModel(
     | 'contextWindowExplicit'
     | 'defaultEnabled'
     | 'supportsImageInput'
+    | 'modalities'
+    | 'capabilities'
   > &
     Partial<Pick<CatalogModel, 'efforts'>>,
   agent?: AgentKind,
@@ -127,6 +129,9 @@ export function customProviderModelConfigFromCatalogModel(
     ...(model.contextWindowExplicit === true || model.contextWindow !== DEFAULT_CUSTOM_CONTEXT_WINDOW
       ? { contextWindow: model.contextWindow }
       : {}),
+    // 厂商自报的模态/能力随编辑往返保留(与 contextWindow 同理,缺省不写)。
+    ...(model.modalities ? { modalities: model.modalities } : {}),
+    ...(model.capabilities ? { capabilities: model.capabilities } : {}),
     ...(model.defaultEnabled === false ? { defaultEnabled: false } : {}),
     ...(model.supportsImageInput === true ? { supportsImageInput: true } : {}),
     ...(reasoningEfforts.length > 0 ? { reasoning: true, reasoningEfforts } : {}),
@@ -162,30 +167,111 @@ export function providerViewToCustomProviderConfig(p: ProviderView): CustomProvi
   };
 }
 
-/** 刷新时只追加接口新发现的模型，并让新增模型默认隐藏。端点声明的 contextWindow 随发现带入(#386)。 */
+/**
+ * 厂商 /v1/models 自报的能力事实**入参形状**(对齐 fetch 结果的 ProviderReportedModelHints):
+ * capabilities 是宽松的 `Record<string, unknown>`(上游可能报任意键),持久化前再收窄。
+ */
+interface DiscoveredReportedInput {
+  contextWindow?: number;
+  modalities?: { input: string[]; output: string[] };
+  capabilities?: Record<string, unknown>;
+}
+
+/** 收窄后、可直接写进配置的能力事实(与 ProviderRuntimeModelConfig 同形)。 */
+interface DiscoveredProviderReported {
+  contextWindow?: number;
+  modalities?: ProviderRuntimeModelConfig['modalities'];
+  capabilities?: ProviderRuntimeModelConfig['capabilities'];
+}
+
+/** 已知能力键(对齐 CatalogModel.capabilities);上游宽松 capabilities 只取这些 boolean。 */
+const MODEL_CAPABILITY_KEYS = ['reasoning', 'toolCall', 'attachment', 'temperature'] as const;
+
+/** 从一次上报里提取可持久化的能力字段:正数窗口 / 合法模态 / 收窄后的 boolean 能力。 */
+function pickPersistableReported(pr: DiscoveredReportedInput | undefined): DiscoveredProviderReported {
+  const out: DiscoveredProviderReported = {};
+  if (!pr) return out;
+  if (typeof pr.contextWindow === 'number' && pr.contextWindow > 0) out.contextWindow = pr.contextWindow;
+  if (pr.modalities && Array.isArray(pr.modalities.input) && Array.isArray(pr.modalities.output)) {
+    out.modalities = pr.modalities;
+  }
+  if (pr.capabilities) {
+    const caps: NonNullable<ProviderRuntimeModelConfig['capabilities']> = {};
+    for (const k of MODEL_CAPABILITY_KEYS) {
+      if (typeof pr.capabilities[k] === 'boolean') caps[k] = pr.capabilities[k] as boolean;
+    }
+    if (Object.keys(caps).length > 0) out.capabilities = caps;
+  }
+  return out;
+}
+
+/**
+ * 刷新时把接口发现结果合并进配置:新模型追加(默认隐藏),已存在模型保持成员资格不变。
+ *
+ * 厂商自报的能力事实(contextWindow / modalities / capabilities,来自 OpenRouter 等
+ * /v1/models)会持久化进配置,离线/重启后仍在,并让「保存即 resolve」把它作为 providerReported
+ * 上传——未命中知识库的第三方模型也能保留厂商自报的真实窗口与能力,而非在 resolve 时落保守默认。
+ *
+ * **关键**:不仅新模型,已存在但配置里缺某字段的模型也在此**逐字段回填**(gap-fill,不覆盖
+ * 既有值 / 用户手填)。否则老 provider 首次在新版刷新时,存量模型永远拿不到这些字段,重启后
+ * boot 的 config-resolve 仍是稀疏输入 → 又落默认。
+ *
+ * `changed` 标记配置是否实际变化(新增 或 任一字段回填)。调用方据此决定是否落盘持久化:仅看
+ * `addedIds` 会漏掉「无新增、仅回填」的刷新,导致回填不被保存。
+ */
 export function appendDiscoveredCustomProviderModels(
   existing: readonly ProviderRuntimeModelConfig[],
-  discovered: readonly Pick<ProviderRuntimeModelConfig, 'id' | 'name' | 'contextWindow'>[],
-): { models: ProviderRuntimeModelConfig[]; addedIds: string[] } {
+  discovered: readonly (Pick<ProviderRuntimeModelConfig, 'id' | 'name'> & {
+    providerReported?: DiscoveredReportedInput;
+  })[],
+): { models: ProviderRuntimeModelConfig[]; addedIds: string[]; changed: boolean } {
+  // 厂商这次上报的能力字段按 id 索引(首次出现胜出),供新增写入 + 存量回填共用。
+  const reported = new Map<string, DiscoveredProviderReported>();
+  for (const model of discovered) {
+    if (!model.id || reported.has(model.id)) continue;
+    const picked = pickPersistableReported(model.providerReported);
+    if (picked.contextWindow !== undefined || picked.modalities !== undefined || picked.capabilities !== undefined) {
+      reported.set(model.id, picked);
+    }
+  }
+  let changed = false;
+  // 回填:存量模型缺某字段且厂商这次上报了 → 逐字段补上(不覆盖既有值,含用户手填)。
+  const models: ProviderRuntimeModelConfig[] = existing.map((model) => {
+    const r = reported.get(model.id);
+    if (!r) return model;
+    let next = model;
+    if (next.contextWindow === undefined && r.contextWindow !== undefined) {
+      next = { ...next, contextWindow: r.contextWindow };
+      changed = true;
+    }
+    if (next.modalities === undefined && r.modalities !== undefined) {
+      next = { ...next, modalities: r.modalities };
+      changed = true;
+    }
+    if (next.capabilities === undefined && r.capabilities !== undefined) {
+      next = { ...next, capabilities: r.capabilities };
+      changed = true;
+    }
+    return next;
+  });
   const known = new Set(existing.map((m) => m.id));
-  const models = [...existing];
   const addedIds: string[] = [];
   for (const model of discovered) {
     if (!model.id || !model.name || known.has(model.id)) continue;
+    const r = reported.get(model.id);
     models.push({
       id: model.id,
       name: model.name,
-      ...(typeof model.contextWindow === 'number' &&
-      Number.isFinite(model.contextWindow) &&
-      model.contextWindow > 0
-        ? { contextWindow: Math.floor(model.contextWindow) }
-        : {}),
       defaultEnabled: false,
+      ...(r?.contextWindow !== undefined ? { contextWindow: r.contextWindow } : {}),
+      ...(r?.modalities !== undefined ? { modalities: r.modalities } : {}),
+      ...(r?.capabilities !== undefined ? { capabilities: r.capabilities } : {}),
     });
     known.add(model.id);
     addedIds.push(model.id);
+    changed = true;
   }
-  return { models, addedIds };
+  return { models, addedIds, changed };
 }
 
 /**
