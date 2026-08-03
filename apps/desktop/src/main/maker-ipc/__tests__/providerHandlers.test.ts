@@ -1205,6 +1205,49 @@ describe('provider:custom:* CRUD handlers', () => {
     );
   });
 
+  it('triggers save-time resolve after a successful create', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const resolveSavedProviderModels = vi.fn(() => {});
+    const deps = makeDeps({ resolveSavedProviderModels });
+    registerProviderHandlers(harness, deps);
+
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, validConfig);
+    expect(resolveSavedProviderModels).toHaveBeenCalledWith('openrouter');
+  });
+
+  it('triggers save-time resolve after a successful update', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const resolveSavedProviderModels = vi.fn(() => {});
+    const deps = makeDeps({ resolveSavedProviderModels });
+    registerProviderHandlers(harness, deps);
+
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, validConfig);
+    resolveSavedProviderModels.mockClear();
+    const upd = await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_UPDATE, {
+      ...validConfig,
+      name: 'OpenRouter Renamed',
+    });
+    expect(upd).toEqual({ ok: true });
+    expect(resolveSavedProviderModels).toHaveBeenCalledWith('openrouter');
+  });
+
+  it('does not trigger save-time resolve when create fails (duplicate id)', async () => {
+    mountDb();
+    const harness = new IpcHarness();
+    const resolveSavedProviderModels = vi.fn(() => {});
+    const deps = makeDeps({ resolveSavedProviderModels });
+    registerProviderHandlers(harness, deps);
+
+    await harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, validConfig);
+    resolveSavedProviderModels.mockClear();
+    await expect(
+      harness.invoke(MAKER_INVOKE.PROVIDER_CUSTOM_CREATE, validConfig),
+    ).rejects.toThrow(/ALREADY_EXISTS/);
+    expect(resolveSavedProviderModels).not.toHaveBeenCalled();
+  });
+
   it('rolls back partial create keys before any provider config is committed', async () => {
     mountDb();
     const harness = new IpcHarness();

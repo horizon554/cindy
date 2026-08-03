@@ -234,6 +234,12 @@ export interface ProviderHandlerDeps {
     spec: ProviderModelsFetchSpec,
     result: ProviderModelsFetchResult,
   ): void;
+  /**
+   * 自定义供应商保存(创建/更新)成功后,对其配置里的生效模型异步 resolve 并把补全
+   * overlay 写进 active-catalog —— 预设/手填添加的 provider 不必再手动点刷新即可富化。
+   * fire-and-forget,受 XDT_DISABLE_MODEL_CATALOG_RESOLVE 门控,失败静默降级。
+   */
+  resolveSavedProviderModels?(providerId: string): void;
   /** 内置四家的模型真源刷新；生产按 providerId 分派到既有 discovery 机制。 */
   refreshBuiltinModels(providerId: BuiltinRefreshableProviderId): Promise<void>;
   /** Renderer 自动刷新提示；Main 侧负责静默失败、冷却和跨窗口去重。 */
@@ -1311,6 +1317,8 @@ export function registerProviderHandlers(
       assertProviderMutationOwner(ownerAtIngress);
       await afterChange();
       assertProviderMutationOwner(ownerAtIngress);
+      // 保存即 resolve:预设/手填模型也走一遍补全,不必依赖用户事后点刷新。
+      deps.resolveSavedProviderModels?.(config.id);
       return { ok: true };
     });
   });
@@ -1392,6 +1400,8 @@ export function registerProviderHandlers(
         assertProviderMutationOwner(ownerAtIngress);
         await afterChange();
         assertProviderMutationOwner(ownerAtIngress);
+        // 保存即 resolve(同 CREATE):编辑后模型也走补全,与刷新按钮语义一致。
+        deps.resolveSavedProviderModels?.(config.id);
         return { ok: true };
       } finally {
         if (generation !== null) finishOAuthMutation(config.id, generation);

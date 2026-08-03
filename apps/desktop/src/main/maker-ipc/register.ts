@@ -4703,6 +4703,62 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
   options.onProviderModelAutoRefreshConfigured();
 
+  // 自定义供应商保存后:对配置里的生效模型异步 resolve + 把补全 overlay 写进
+  // active-catalog。与「获取模型列表 / 刷新」的 fetch→resolve 语义一致,但这里模型
+  // 直接取自已持久化的配置(预设/手填),不再发现——覆盖「预设添加后从不点刷新」的盲点。
+  // fire-and-forget、flag 门控、失败静默降级;overlay 字段映射与 OAuth 发现路径一致。
+  async function resolveSavedCustomProviderModels(providerId: string): Promise<void> {
+    if (process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1') return;
+    const cfg = await getCustomProvider(providerId);
+    if (!cfg) return;
+    for (const agent of Object.keys(cfg.runtimes) as AgentKind[]) {
+      // resolve 契约(MODEL_ACCESS_AGENTS)只覆盖 claude-code/codex;pi 无知识库通道,
+      // 配置里的模型原样保留(与 resolveFetchedModels 的同一条门一致)。
+      if (agent !== 'claude-code' && agent !== 'codex') continue;
+      const runtime = cfg.runtimes[agent];
+      if (!runtime || runtime.models.length === 0) continue;
+      const uploadedIds = runtime.models.map((m) => m.id);
+      void resolveProviderModels({
+        providerId,
+        agent,
+        ...(runtime.wireProtocol ? { wireProtocol: runtime.wireProtocol } : {}),
+        models: runtime.models.map((m) => ({
+          id: m.id,
+          name: m.name,
+          ...(m.contextWindow !== undefined
+            ? { providerReported: { contextWindow: m.contextWindow } }
+            : {}),
+        })),
+      }).then((resolved) => {
+        if (!resolved) return;
+        const overlay = resolved.entry.models.map((m) => ({
+          id: m.id,
+          name: m.name,
+          contextWindow: m.contextWindow,
+          maxOutput: m.maxOutput,
+          description: m.description,
+          family: m.family,
+          group: m.group ?? `custom:${providerId}`,
+          category: m.category,
+          mode: m.mode,
+          sortOrder: m.sortOrder,
+          efforts: m.efforts,
+          defaultEffort: m.defaultEffort,
+          supportsFastMode: m.supportsFastMode,
+          defaultEnabled: m.defaultEnabled,
+        }));
+        setResolvedProviderModels(
+          providerId,
+          agent,
+          resolved.entry.models.map((m) => m.id),
+          overlay,
+          resolved.knowledgeRevision,
+          uploadedIds,
+        );
+      }).catch(() => undefined);
+    }
+  }
+
   registerProviderHandlers(createElectronIpcHandlerRegistry(), {
     listProviders: (opts) => getDesktopProviderService().listProviders(opts),
     getModelVisibilityOverrides: () => getModelVisibilityMirrorSnapshot(),
@@ -4715,6 +4771,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     listPresets: () => getActiveCatalog().presets ?? [],
     testConnection: (input) => testProviderConnection(input),
     fetchModels: (spec) => fetchProviderModels(spec),
+    resolveSavedProviderModels: (providerId) => void resolveSavedCustomProviderModels(providerId),
     resolveFetchedModels: (spec, result) => {
       if (
         process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1'
