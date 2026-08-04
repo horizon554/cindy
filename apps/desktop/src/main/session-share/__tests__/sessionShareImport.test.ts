@@ -920,6 +920,31 @@ describe('sessionShareImport', () => {
     expect(session.codexHistoryHasProductPrompt).toBe(false);
   });
 
+  it('pi bundle without draftPrefs 用 pi 自己的兜底,不落成 cc 模型', async () => {
+    // pi 没有跨来源合法的静态默认,也不进目录 resolver;若按 claude-code 解析,
+    // 导入的 pi 会话会拿到 claude-sonnet-4-6 —— 一条假 Claude 路由。
+    activeCatalogMock.catalog = {
+      version: '3',
+      providers: [],
+      defaults: { 'claude-code': { sessionModel: 'catalog-cc-model' } },
+    };
+    const filePath = await writeBundleFile(
+      await buildBundle({ agentKind: 'pi', session: exporterSessionConfig }),
+    );
+    const inspect = await inspectShareFile(filePath);
+    if (inspect.encrypted) return;
+    await commitShareImport({
+      draftId: inspect.draftId,
+      workingDir: newWorkdir,
+      projectsRootOverride: projectsRoot,
+      sharedMediaRootOverride: sharedMediaRoot,
+    });
+    const session = (dbMock.txCalls[0].args as { session: Record<string, unknown> }).session;
+    expect(session.model).toBe('gpt-5.4');
+    expect(session.model).not.toBe('claude-sonnet-4-6');
+    expect(session.model).not.toBe('catalog-cc-model');
+  });
+
   it('pi bundle restores transcript and rewrites portable ids to the local absolute path', async () => {
     const filePath = await writeBundleFile(await buildBundle({ agentKind: 'pi' }));
     const inspect = await inspectShareFile(filePath);

@@ -67,7 +67,6 @@ function toDescriptor(m: CatalogModel): ModelDescriptor {
   return d;
 }
 
-
 export interface SessionModelCatalogMetadata {
   sourceAccess?: ProviderView['access'];
   group?: string;

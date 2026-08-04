@@ -569,7 +569,6 @@ function parseV3Catalog(input: Record<string, unknown>): Catalog {
     modelRegistry = registry.value;
   }
   const presets = sanitizePresets(presetEntries);
-  if (input.defaults !== undefined) validateCatalogDefaults(input.defaults, 'catalog.defaults');
   return {
     version: '3',
     providers: providerEntries,

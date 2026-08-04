@@ -938,14 +938,18 @@ function buildSessionRow(params: {
     model: str(
       draftPrefs?.model,
       // 2026-08-01 产品定案:导入默认与全局目录默认统一(codex 侧 gpt-5.4 是漂移残留)。
-      resolveDefaultModel(
-        getActiveCatalog(),
-        manifest.agentKind === 'codex' ? 'codex' : 'claude-code',
-        'session',
-        manifest.agentKind === 'codex'
-          ? FALLBACK_MODEL_BY_AGENT.codex
-          : FALLBACK_MODEL_BY_AGENT.cc,
-      ),
+      // pi 不进 resolver:它没有跨来源合法的静态默认,只用自己的兜底值 —— 否则会
+      // 落成 cc 的 claude-sonnet-4-6,给 pi 会话造出一条假 Claude 路由。
+      manifest.agentKind === 'pi'
+        ? FALLBACK_MODEL_BY_AGENT.pi
+        : resolveDefaultModel(
+            getActiveCatalog(),
+            manifest.agentKind === 'codex' ? 'codex' : 'claude-code',
+            'session',
+            manifest.agentKind === 'codex'
+              ? FALLBACK_MODEL_BY_AGENT.codex
+              : FALLBACK_MODEL_BY_AGENT.cc,
+          ),
     ),
     effort: EFFORTS.has(effort) ? effort : 'high',
     permissionMode: PERMISSION_MODES.has(permissionMode) ? permissionMode : 'auto',

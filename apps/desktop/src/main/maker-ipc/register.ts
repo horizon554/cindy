@@ -476,6 +476,7 @@ import {
 import {
   connectedProvidersForAgent,
   effectiveSourceIdForModel,
+  isBudgetModel,
   isModelSelectableForNewRoute,
   type Effort,
   type ProviderView,
@@ -4703,6 +4704,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
   options.onProviderModelAutoRefreshConfigured();
 
+  /**
+   * 添加向导里尚未保存的供应商在 resolve 请求上用的占位 provider id。
+   *
+   * 服务端按**模型 id** 匹配知识库(见 knowledgeProviderId);请求里的 providerId 只用来
+   * 额外追加 `<provider>/<model>` 作用域候选键。因此占位符既能拿到与已保存供应商同样的
+   * 知识库补全,又不会借用任何真实 provider 的 override 作用域。含 `/` 保证不与真实
+   * provider id(`^[a-z0-9_-]+$`)撞名。
+   */
+  const UNSAVED_FORM_RESOLVE_PROVIDER_ID = 'unsaved/form';
+
   // 自定义供应商保存后:对配置里的生效模型异步 resolve + 把补全 overlay 写进
   // active-catalog。与「获取模型列表 / 刷新」的 fetch→resolve 语义一致,但这里模型
   // 直接取自已持久化的配置(预设/手填),不再发现——覆盖「预设添加后从不点刷新」的盲点。
@@ -4814,19 +4825,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       if (
         process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1'
         || !result.models
-        // An unsaved form has no canonical provider identity. Do not derive one from a hostname:
-        // the model-access knowledge base is keyed by provider id, and a host can represent
-        // multiple independent providers (or a user can move the endpoint without changing id).
-        // 两个消费方都以这个已保存身份为键:requestId → 表单预填广播;savedProviderId
-        // 本身 → 把完整 hints 补全 overlay 落 active-catalog(刷新路径)。
-        || !spec.savedProviderId
+        // 两个消费方:requestId → 表单预填广播(含添加向导里尚未保存的新供应商);
+        // savedProviderId → 把完整 hints 补全 overlay 落 active-catalog(刷新路径)。
+        // 都没有则无人消费,免打 resolve。
+        || (!spec.requestId && !spec.savedProviderId)
         // resolve 契约(MODEL_ACCESS_AGENTS)只覆盖 claude-code/codex;pi 无知识库通道,
         // 保持发现结果原样展示,不发起 resolve。
         || (spec.agent !== 'claude-code' && spec.agent !== 'codex')
       ) return;
       const models = result.models;
+      // 未保存的表单没有正式 provider 身份,**绝不**从主机名推导一个:那既可能与真实
+      // provider id 撞名而借用它的 override 作用域,也不是知识库的匹配键。服务端按
+      // 模型 id 匹配知识库(providerId 只额外追加 `<provider>/<model>` 作用域候选键),
+      // 所以用一个不可能撞名的占位符即可拿到与已保存供应商同样的 KB 补全;
+      // overlay 写回目录仍只在 savedProviderId 存在时执行(见下方)。
+      const resolveProviderId = spec.savedProviderId ?? UNSAVED_FORM_RESOLVE_PROVIDER_ID;
       void resolveProviderModels({
-        providerId: spec.savedProviderId,
+        providerId: resolveProviderId,
         agent: spec.agent,
         wireProtocol: spec.wireProtocol,
         models,
@@ -7819,6 +7834,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 { efforts: model.efforts, defaultEffort: model.defaultEffort },
               ]),
             ),
+            // 折扣版预算闸的字段优先输入:按 category/group 判定,不靠 `codex/` 前缀。
+            // 缺了它,catalogBudgetModelRequiresApiKey 会永久退回前缀兜底,裸 id 的
+            // gpt-budget 模型就绕过 BUDGET_MODEL_REQUIRES_API_MODE 预检。
+            budgetModels: models.filter(isBudgetModel).map((model) => model.id),
             requiresExplicitRoute: providerRouteRequiresExplicitSelection(
               provider.routing[agent]?.authStrategy,
             ),
