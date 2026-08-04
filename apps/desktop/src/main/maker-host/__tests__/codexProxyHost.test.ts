@@ -1379,21 +1379,28 @@ describe('chatBridgeCapabilitiesForRoute', () => {
 });
 
 describe('createModelRoutingTransform —— session-less 控制面请求(桶③)', () => {
-  const CHATGPT = 'https://chatgpt.com/backend-api/codex';
 
   afterEach(async () => {
     const host = await import('../codex-proxy-host.js');
     host.clearCodexProxyAuthInjection();
     host.setCodexProxyGatewayKeyReader(() => null);
+    host.setCodexNativeModelsReader(() => null);
+    const { getActiveCatalog } = await import('../active-catalog.js');
+    host.setCodexSelectableCatalogReader(getActiveCatalog);
+    host.resetCodexNativeModelsSnapshots();
   });
 
-  it('oauth-bearer + 无 session + 无 model(GET /models)→ override 到 ChatGPT 订阅后端', async () => {
+  it('oauth-bearer + 无 session GET /models → Cindy 本地模型目录 handler', async () => {
     const host = await import('../codex-proxy-host.js');
     host.setCodexProxyAuthInjection('oauth-bearer');
     const transform = host.createModelRoutingTransform();
-    // GET /models: body=undefined, headers 无 thread-id → 解析不出 session。
-    expect(transform(undefined, { reqId: 1, method: 'GET', url: '/models?client_version=0.135.0', headers: {} }))
-      .toEqual({ upstreamOverride: CHATGPT });
+    const decision = transform(undefined, {
+      reqId: 1,
+      method: 'GET',
+      url: '/models?client_version=0.145.0',
+      headers: {},
+    });
+    expect(decision).toEqual({ localHandler: expect.any(Function) });
   });
 
   it('冻结 control-plane auth 形态后不受 session host 的全局模式改写', async () => {
@@ -1407,34 +1414,89 @@ describe('createModelRoutingTransform —— session-less 控制面请求(桶③
       method: 'GET',
       url: '/models',
       headers: {},
-    })).toEqual({ upstreamOverride: CHATGPT });
+    })).toEqual({ localHandler: expect.any(Function) });
   });
 
-  it('env-key + 无 session + 无 model(GET /models)→ null(留默认网关, sk- key 本就有效)', async () => {
+  it('env-key + 无 session GET /models → Cindy 本地模型目录 handler', async () => {
     const host = await import('../codex-proxy-host.js');
     host.setCodexProxyAuthInjection('env-key');
     const transform = host.createModelRoutingTransform();
-    expect(transform(undefined, { reqId: 1, method: 'GET', url: '/models', headers: {} })).toBeNull();
+    expect(transform(undefined, { reqId: 1, method: 'GET', url: '/models', headers: {} }))
+      .toEqual({ localHandler: expect.any(Function) });
   });
 
-  it('provider-oauth + 无 session + 无 model(GET /models)→ 路由到 provider OAuth 上游', async () => {
+  it('provider-oauth + 无 session GET /models 不猜第三方 provider,统一走本地目录', async () => {
     const host = await import('../codex-proxy-host.js');
-    const { setProviderOAuthTokenReader } = await import('../provider-route.js');
-    setProviderOAuthTokenReader((providerId, agent) =>
-      providerId === 'xai' && agent === 'codex' ? 'xai-live-token' : null,
-    );
     host.setCodexProxyAuthInjection('provider-oauth');
     const transform = host.createModelRoutingTransform();
 
     await expect(Promise.resolve(
       transform(undefined, { reqId: 1, method: 'GET', url: '/models', headers: {} }),
-    )).resolves.toEqual({
-      upstreamOverride: 'https://api.x.ai/v1',
-      headerOverride: { authorization: 'Bearer xai-live-token' },
-      headerDelete: ['chatgpt-account-id', 'openai-beta', 'originator', 'session_id'],
+    )).resolves.toEqual({ localHandler: expect.any(Function) });
+  });
+
+  it('本地 /models handler 返回 Codex ModelInfo 和目录 revision ETag', async () => {
+    const host = await import('../codex-proxy-host.js');
+    const { getActiveCatalogRevision } = await import('../active-catalog.js');
+    host.setCodexProxyAuthInjection('provider-oauth');
+    host.setCodexNativeModelsReader(() => [{
+      slug: 'gpt-template',
+      base_instructions: 'native prompt',
+      supported_in_api: true,
+    }]);
+    const transform = host.createModelRoutingTransform();
+    const decision = await Promise.resolve(
+      transform(undefined, { reqId: 1, method: 'GET', url: '/models?client_version=0.145.0', headers: {} }),
+    );
+    if (!decision?.localHandler) throw new Error('expected local models handler');
+
+    const writeHead = vi.fn();
+    const end = vi.fn();
+    await decision.localHandler({
+      rawBody: Buffer.alloc(0),
+      parsedBody: undefined,
+      ctx: { reqId: 1, method: 'GET', url: '/models', headers: {} },
+      res: { writeHead, end } as never,
     });
 
-    setProviderOAuthTokenReader(() => null);
+    expect(writeHead).toHaveBeenCalledWith(200, expect.objectContaining({
+      'content-type': 'application/json; charset=utf-8',
+      etag: `"cindy-catalog-${getActiveCatalogRevision()}"`,
+    }));
+    const payload = JSON.parse((end.mock.calls[0]?.[0] as Buffer).toString('utf8')) as {
+      models: Array<{ slug: string; context_window: number }>;
+    };
+    expect(payload.models).toContainEqual(expect.objectContaining({
+      slug: 'xai/grok-4.3',
+      base_instructions: 'native prompt',
+      context_window: 1_000_000,
+    }));
+    host.setCodexNativeModelsReader(() => null);
+  });
+
+  it('没有当前鉴权边界的 native 目录时，/models fail-closed 而不是返回空合成目录', async () => {
+    const host = await import('../codex-proxy-host.js');
+    host.setCodexProxyAuthInjection('provider-oauth');
+    host.setCodexProxyGatewayKeyReader(() => null);
+    host.setCodexNativeModelsReader(() => null);
+    const decision = await Promise.resolve(
+      host.createModelRoutingTransform()(undefined, {
+        reqId: 1,
+        method: 'GET',
+        url: '/models',
+        headers: {},
+      }),
+    );
+    if (!decision?.localHandler) throw new Error('expected local models handler');
+    const writeHead = vi.fn();
+    const end = vi.fn();
+    await decision.localHandler({
+      rawBody: Buffer.alloc(0),
+      parsedBody: undefined,
+      ctx: { reqId: 1, method: 'GET', url: '/models', headers: {} },
+      res: { writeHead, end } as never,
+    });
+    expect(writeHead).toHaveBeenCalledWith(503, expect.any(Object));
   });
 
   it('无 session 但带 model 的请求不落桶③ —— 仍走 decideCodexRoute(防误伤真实 /responses)', async () => {

@@ -2935,6 +2935,30 @@ export class CodexAgent extends BaseAgent {
       throw error;
     }
     if (initResp.codexHome) this.codexHome = initResp.codexHome;
+    const ensureModelCatalogFresh = (): Promise<void> | null => {
+      if (opts.remoteHostId || !this.deps.ensureCodexModelCatalogFresh) return null;
+      return this.deps.ensureCodexModelCatalogFresh({
+        refresh: async () => {
+          const page = await host.request<CodexModelListResponse>(
+            Method.ModelList,
+            { cursor: null, limit: 1, includeHidden: false },
+            { timeoutMs: CODEX_MODEL_LIST_RPC_TIMEOUT_MS },
+          );
+          if (!page || !Array.isArray(page.data)) {
+            throw new Error('Codex model/list returned an invalid response');
+          }
+        },
+      }).then(() => assertCurrentHost('model catalog sync'));
+    };
+    const initialCatalogSync = ensureModelCatalogFresh();
+    if (initialCatalogSync) {
+      try {
+        await initialCatalogSync;
+      } catch (error) {
+        releaseHostBindingLeaseIfNeeded();
+        throw error;
+      }
+    }
     // reviewer 路由的凭证模式判定: 远程 daemon 用的是 auth sync 推过去的
     // 同一份订阅凭证, reviewer 调用发生在 daemon 本地 — 订阅下走 daemon →
     // chatgpt.com 直连, 与本地订阅同构 (远端出网由用户网络或 agent-proxy
@@ -7885,6 +7909,8 @@ export class CodexAgent extends BaseAgent {
             CODEX_INHERITED_CAPABILITY_SELECTION
           ] ?? userMessageText(message.content);
         assertCurrentHost('turn/start');
+        const catalogSync = ensureModelCatalogFresh();
+        if (catalogSync) await catalogSync;
         resubscribeAfterTransportErrorIfNeeded();
         // 新 turn 总是携带当前 (可能已收紧的) 策略, 上一轮残留的延迟中断标记
         // 不得误伤本 turn (典型: 上次 turn/start 终失败, 标记未被 id 到达点消费)。

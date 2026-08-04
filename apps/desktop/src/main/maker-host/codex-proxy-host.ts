@@ -36,13 +36,24 @@ import {
   type ChatBridgeCapabilities,
 } from '@cindy/responses-chat-bridge';
 import { createResponsesAnthropicHandler } from '@cindy/responses-anthropic-bridge';
+import type { Catalog } from '@cindy/model-providers';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
 import { buildCodexGatewayBaseUrl, CODEX_OAUTH_UPSTREAM } from './codex-gateway-config.js';
 import { claudeUpstreamEndpoint } from './runtime-configs.js';
-import { getActiveCatalog, getCatalogModelContextWindow } from './active-catalog.js';
+import {
+  getActiveCatalog,
+  getActiveCatalogRevision,
+  getCatalogModelContextWindow,
+} from './active-catalog.js';
+import {
+  mergeCodexModelCatalog,
+  parseCodexModelsResponse,
+  projectVerifiedCodexModels,
+  type CodexModelInfoLike,
+} from './codex-model-catalog.js';
 import {
   gatewayDefaultRouteDecision,
   getSessionRoutingDescriptor,
@@ -96,6 +107,10 @@ let _disposeGeneration = 0;
 let dumpSeq = 0;
 
 const CODEX_RESPONSE_OBSERVER_MAX_BYTES = 2 * 1024 * 1024;
+const CODEX_MODELS_FETCH_TIMEOUT_MS = 5_000;
+const nativeModelsByAuth = new Map<CodexProxyAuthInjection, CodexModelInfoLike[]>();
+let nativeModelsReadThrough: () => CodexModelInfoLike[] | null = () => null;
+let selectableCatalogReadThrough: () => Catalog = getActiveCatalog;
 
 const encryptedContentRecoveryRule = createEncryptedContentRecoveryRule({
   enabled: () => readSilentEncryptedRetrySettings().enabled,
@@ -210,11 +225,126 @@ export function getCodexProxyAuthInjection(): CodexProxyAuthInjection {
   return _codexAuthInjection ?? 'env-key';
 }
 
+function codexModelsPath(url: string): boolean {
+  try {
+    return new URL(url, 'http://localhost').pathname === '/models';
+  } catch {
+    return false;
+  }
+}
+
+async function fetchNativeCodexModels(
+  authInjection: CodexProxyAuthInjection,
+): Promise<CodexModelInfoLike[] | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CODEX_MODELS_FETCH_TIMEOUT_MS);
+  timer.unref?.();
+  try {
+    const headers = new Headers({ accept: 'application/json' });
+    let upstream: string;
+    if (authInjection === 'oauth-bearer') {
+      const creds = _readCodexOAuthCredentials();
+      if (!creds) return null;
+      upstream = CODEX_OAUTH_UPSTREAM;
+      headers.set('authorization', `Bearer ${creds.accessToken}`);
+      headers.set('chatgpt-account-id', creds.accountId);
+    } else {
+      // env-key and provider-oauth both use the current Cindy gateway identity
+      // for native metadata. provider-oauth must never guess a third-party
+      // provider, and it must not fall back to a previous ChatGPT account.
+      const gatewayKey = _readGatewayKey();
+      if (!gatewayKey) return null;
+      upstream = buildCodexGatewayBaseUrl();
+      headers.set('authorization', `Bearer ${gatewayKey}`);
+    }
+    const response = await outboundFetch(`${upstream.replace(/\/+$/, '')}/models?client_version=0.145.0`, {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const parsed = parseCodexModelsResponse(await response.json());
+    if (parsed) nativeModelsByAuth.set(authInjection, parsed.map((model) => ({ ...model })));
+    return parsed;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function handleCodexModelsRequest(
+  authInjection: CodexProxyAuthInjection,
+  res: import('node:http').ServerResponse,
+): Promise<void> {
+  const native = await fetchNativeCodexModels(authInjection)
+    ?? nativeModelsReadThrough()
+    ?? nativeModelsByAuth.get(authInjection);
+  const catalog = selectableCatalogReadThrough();
+  const projected = projectVerifiedCodexModels(catalog);
+  if (!native) {
+    const body = Buffer.from(JSON.stringify({ error: 'native Codex model catalog unavailable' }));
+    res.writeHead(503, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': String(body.length),
+      'cache-control': 'no-store',
+    });
+    res.end(body);
+    return;
+  }
+  const payload = mergeCodexModelCatalog(native, projected);
+  const mergedSlugs = new Set(payload.models.map((model) => model.slug));
+  if (projected.some((model) => !mergedSlugs.has(model.slug))) {
+    const body = Buffer.from(JSON.stringify({ error: 'native Codex model template unavailable' }));
+    res.writeHead(503, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': String(body.length),
+      'cache-control': 'no-store',
+    });
+    res.end(body);
+    return;
+  }
+  const body = Buffer.from(JSON.stringify(payload));
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(body.length),
+    'cache-control': 'no-store',
+    etag: `"cindy-catalog-${getActiveCatalogRevision()}"`,
+  });
+  res.end(body);
+}
+
 // gateway api key reader —— 由 host 注入(readClaudeApiKey), 避免 codex-proxy-host 直接 import
 // auth-adapters(重模块, 会拖累单测加载 / 埋循环依赖)。proxy 给折扣 / api 流量换 gateway key 时调它。
 let _readGatewayKey: () => string | null = () => null;
+let _readCodexOAuthCredentials: () => {
+  accessToken: string;
+  accountId: string;
+} | null = () => null;
 export function setCodexProxyGatewayKeyReader(fn: () => string | null): void {
   _readGatewayKey = fn;
+}
+export function setCodexProxyOAuthCredentialsReader(
+  fn: () => { accessToken: string; accountId: string } | null,
+): void {
+  _readCodexOAuthCredentials = fn;
+}
+export function setCodexNativeModelsReader(
+  fn: () => CodexModelInfoLike[] | null,
+): void {
+  nativeModelsReadThrough = fn;
+}
+export function setCodexSelectableCatalogReader(fn: () => Catalog): void {
+  selectableCatalogReadThrough = fn;
+}
+export function readCodexNativeModelsSnapshot(
+  authInjection: CodexProxyAuthInjection = getCodexProxyAuthInjection(),
+): CodexModelInfoLike[] | null {
+  const models = nativeModelsByAuth.get(authInjection);
+  return models ? models.map((model) => ({ ...model })) : null;
+}
+export function resetCodexNativeModelsSnapshots(): void {
+  nativeModelsByAuth.clear();
 }
 
 function headerValue(headers: Readonly<Record<string, string>>, name: string): string {
@@ -2200,13 +2330,18 @@ export function createModelRoutingTransform(
       if (implicitProviderOAuth) return implicitProviderOAuth;
     }
 
-    // ③ 无会话且无 model = 不属于任何 session 的控制面请求(典型: codex models-manager 的
-    //    `GET /models` 轮询)。它没有 provider 上下文可解析,默认会掉静态默认上游(网关)、带着子进程
-    //    spawn 时那把凭证 —— oauth-bearer 揣的 OAuth token 在网关无效(要 sk-)→ 401。
-    //    故按 spawn 凭证回它的原生后端: oauth-bearer → ChatGPT 订阅后端(只 override 上游、透传 OAuth
-    //    token,等价 stock codex 订阅模式轮 /models 的去处); provider-oauth → 唯一 provider-oauth
-    //    供应商的上游/令牌(当前 xAI),避免把占位 key 打到网关; env-key → null(留默认网关, sk- key 本就有效)。
-    //    `!model` 这道闸确保真实 /responses(永远带 model)绝不落进此分支,杜绝注册时序竞争误伤推理请求。
+    // ③ 无会话 GET /models = Codex 进程级模型元数据目录。它没有 provider/session
+    //    归属，不能安全地猜某一家自定义供应商；统一由 Cindy active catalog 投影成
+    //    Codex ModelInfo，并在可用时合并当前原生目录。resolve 已在目录写入路径完成，
+    //    这里仅做同步转换，不在控制面请求里重复访问 model-access。
+    if (!sessionId && !model && ctx.method === 'GET' && codexModelsPath(ctx.url)) {
+      return {
+        localHandler: ({ res }) => handleCodexModelsRequest(authInjection, res),
+      };
+    }
+
+    // 其它无会话、无 model 的控制面请求保持旧路由语义。`!model` 闸确保真实
+    // /responses(永远带 model)不会进入这里。
     if (!sessionId && !model) {
       if (authInjection === 'oauth-bearer') return { upstreamOverride: CODEX_OAUTH_UPSTREAM };
       if (authInjection === 'provider-oauth') {
@@ -2674,6 +2809,9 @@ export function isCodexProxyHandleReady(): boolean {
 export async function disposeCodexProxy(): Promise<void> {
   _disposeGeneration += 1;
   dumpSeq = 0;
+  nativeModelsByAuth.clear();
+  nativeModelsReadThrough = () => null;
+  selectableCatalogReadThrough = getActiveCatalog;
   for (const threadId of threadToSession.keys()) {
     registry.delete(threadId);
   }

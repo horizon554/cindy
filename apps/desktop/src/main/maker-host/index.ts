@@ -19,6 +19,7 @@ import {
 } from '@cindy/maker-core';
 import {
   getActiveCatalog,
+  getActiveCatalogRevision,
   setActiveCatalogChangedListener,
   setDiscoveredCodexModels,
   setResolvedProviderModels,
@@ -55,7 +56,9 @@ import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionS
 import {
   desktopClaudeAuthAdapter,
   desktopCodexAuthAdapter,
+  getCodexHome,
   readClaudeApiKey,
+  readCodexOneShotCreds,
 } from './auth-adapters.js';
 import {
   desktopSessionStorage,
@@ -66,6 +69,14 @@ import { desktopMakerLogger } from './logger-adapter.js';
 import { resolveSessionCcDebugFile } from '../logger.js';
 import { resetProviderModelAutoRefreshCooldowns } from './provider-model-auto-refresh.js';
 import { createSshDaemonTransport } from './codex-remote-transport.js';
+import { CodexModelCatalogSync } from './codex-model-catalog-sync.js';
+import {
+  isCodexNativeDiscoverySlug,
+} from './codex-model-catalog.js';
+import {
+  readNativeCodexModelsFromCache,
+  writeCodexModelCatalogCache,
+} from './codex-model-catalog-cache.js';
 import { getRemoteSshPool } from '../remote-ssh/index.js';
 import {
   getRemoteAgentProxyEnv,
@@ -121,8 +132,13 @@ import {
   getCodexThreadUpstreamOrigin,
   isCodexControlPlaneProxyHandleReady,
   isCodexProxyHandleReady,
+  readCodexNativeModelsSnapshot,
+  resetCodexNativeModelsSnapshots,
   setCodexProxyAuthInjection,
   setCodexProxyGatewayKeyReader,
+  setCodexProxyOAuthCredentialsReader,
+  setCodexNativeModelsReader,
+  setCodexSelectableCatalogReader,
   registerComposed as registerCodexProxyComposed,
   registerChildThread as registerCodexProxyChildThread,
   unregister as unregisterCodexProxyPrompt,
@@ -220,6 +236,22 @@ const reviewAutoPermissionAction = createAutoPermissionReviewer({
  * null = maker 尚未构造:那时既没有 agent 也没有会话,没有任何东西在等模型清单。
  */
 let _codexModelBackfill: CodexModelBackfillCoordinator | null = null;
+const codexModelCatalogSync = new CodexModelCatalogSync({
+  revision: getActiveCatalogRevision,
+  writeModelsCache: (revision, isCurrent) => writeCodexModelCatalogCache({
+    codexHome: getCodexHome(),
+    catalog: getDesktopSelectableCatalog(),
+    revision,
+    nativeModels: readCodexNativeModelsSnapshot(),
+    isCurrent,
+  }),
+  logger: desktopMakerLogger,
+});
+
+function resetCodexModelCatalogBoundary(): void {
+  codexModelCatalogSync.reset();
+  resetCodexNativeModelsSnapshots();
+}
 
 /** Refresh selectable model capabilities, then notify every local/remote renderer. */
 function refreshSelectableModelsAndBroadcast(payload: Record<string, unknown>): void {
@@ -1057,8 +1089,14 @@ export function getMaker(): Maker {
       // 让 agent 按 id 回查 availableModels —— 那张表去重后 provider 归属已丢。
       resolveVerifiedContextWindow: (providerId, modelId) =>
         resolveVerifiedContextWindow(getDesktopSelectableCatalog(), 'codex', providerId, modelId),
+      ensureCodexModelCatalogFresh: ({ refresh }) =>
+        codexModelCatalogSync.ensureFresh(refresh),
       onCodexLocalModelsListed: (models) => {
-        const discovered = mapCodexAppServerModelsToCatalog(models);
+        const catalog = getDesktopSelectableCatalog();
+        const nativeModels = models.filter((model) =>
+          isCodexNativeDiscoverySlug(catalog, model.model || model.id),
+        );
+        const discovered = mapCodexAppServerModelsToCatalog(nativeModels);
         setDiscoveredCodexModels(discovered);
         if (process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE !== '1' && discovered.length > 0) {
           const ids = discovered.map((model) => model.id);
@@ -1171,6 +1209,9 @@ export function getMaker(): Maker {
           await broadcastCodexRuntimeRoute();
         }
         setCodexProxyGatewayKeyReader(readClaudeApiKey);
+        setCodexProxyOAuthCredentialsReader(readCodexOneShotCreds);
+        setCodexSelectableCatalogReader(getDesktopSelectableCatalog);
+        setCodexNativeModelsReader(() => readNativeCodexModelsFromCache(getCodexHome()));
 
         // 这个点在 CodexAgent.createHost() 内。返回的 codexProxyActive 会被冻到 AppServerHost 实例上,
         // 后续 startSession 只读 host 自己的事实,不再 live 读全局 flag。
@@ -1320,6 +1361,7 @@ export function getMaker(): Maker {
       resetProviderModelAutoRefreshCooldowns('openai');
       // auth 边界变了:「清单已在场」和「试过几次」都不再适用于下一个账号。
       resetCodexModelBackfillState();
+      resetCodexModelCatalogBoundary();
       await codexAgent.forceDisposeLocalHostForAuthChange('Codex desktop auth logout');
       clearCodexProxyAuthInjection();
       await broadcastCodexRuntimeRoute();
@@ -1331,6 +1373,7 @@ export function getMaker(): Maker {
     desktopCodexAuthAdapter.setOnLoginSuccess(async () => {
       resetProviderModelAutoRefreshCooldowns('openai');
       resetCodexModelBackfillState();
+      resetCodexModelCatalogBoundary();
       // 必须在新 app-server 首次 model/list / Responses 请求之前清：bridge 的旧账号
       // accessToken/accountId 有 30s 内存缓存，晚清会让新 host 短暂带旧账号凭证请求。
       clearChatgptBridgeCredentialCache();
@@ -1345,6 +1388,7 @@ export function getMaker(): Maker {
     // 才由 auto-refresh 兜住 —— 这正是首启 Codex tab 只剩少数模型的直接原因。
     desktopCodexAuthAdapter.setOnOAuthBindingClaimed(async () => {
       resetProviderModelAutoRefreshCooldowns('openai');
+      resetCodexModelCatalogBoundary();
       await requestCodexModelBackfill();
     });
     // codex CLI 在 stderr 报 refresh_token 失效时, agent 会调 auth.invalidate() →
@@ -1354,6 +1398,7 @@ export function getMaker(): Maker {
     desktopCodexAuthAdapter.setOnInvalidatedBroadcast(async (reason, credentialScope) => {
       resetProviderModelAutoRefreshCooldowns('openai');
       resetCodexModelBackfillState();
+      resetCodexModelCatalogBoundary();
       // 运行中 401/token invalidation 不经过 maker:auth:logout IPC，必须在这里做同一套
       // auth-boundary catalog 收口；否则磁盘 cache 已删但内存 discovered/capabilities 仍旧。
       try {
@@ -1573,6 +1618,7 @@ export function resetMaker(): void {
   // coordinator 闭包捕获了刚作废的那个 maker —— 不清掉的话,换账号窗口期内到达的 auth
   // 事件会拿旧实例去拉模型清单(串号)。下次 getMaker() 会带着干净记账重建它。
   _codexModelBackfill = null;
+  resetCodexModelCatalogBoundary();
   _initialCustomMcpRefresh = undefined;
   resetPluginRegistry();
   resetCustomMcpRegistry();
@@ -1654,6 +1700,7 @@ export async function finalizeCodexAfterAuthModeChange(): Promise<void> {
   const guard = _codexCredentialChangeGuard;
   _codexCredentialChangeGuard = null;
   const agent = _codexAgent;
+  resetCodexModelCatalogBoundary();
   if (guard || agent) {
     try {
       if (guard) {

@@ -451,6 +451,16 @@ export interface AgentDeps {
   ) => void | Promise<void>;
 
   /**
+   * Before a local Codex thread starts, synchronize the long-lived app-server's
+   * ModelInfo catalog with the host-owned catalog revision. The host owns local
+   * cache invalidation; maker-core only supplies the official model/list refresh
+   * callback and waits for the bounded result. Remote hosts are excluded.
+   */
+  ensureCodexModelCatalogFresh?: (ctx: {
+    refresh: () => Promise<void>;
+  }) => Promise<void>;
+
+  /**
    * Host-owned lightweight reviewer for routes without a healthy vendor-native
    * reviewer. The host must use this session's selected provider + model and pass
    * only the request supplied here; null/throw is treated as a silent block.

@@ -403,6 +403,55 @@ async function nextEvent(iterator: AsyncIterator<AgentEvent>): Promise<AgentEven
   return result.value;
 }
 
+describe('CodexAgent runtime model catalog sync', () => {
+  it('synchronizes local ModelInfo before thread/start', async () => {
+    const calls: string[] = [];
+    const ensureCodexModelCatalogFresh = vi.fn(async ({ refresh }: { refresh: () => Promise<void> }) => {
+      calls.push('sync');
+      await refresh();
+    });
+    const agent = new CodexAgent(createDeps({}, { ensureCodexModelCatalogFresh }));
+    const host = installFakeHost(agent, (method) => {
+      calls.push(method);
+      if (method === Method.ModelList) return { data: [], nextCursor: null };
+      return undefined;
+    }, { codexHome: '/tmp/mock-codex-home' });
+
+    await agent.startSession({
+      sessionId: 'session-model-sync',
+      model: 'deepseek-v4-pro',
+      providerId: 'deepseek',
+      workingDir: '/repo',
+      permissionMode: 'ask',
+    });
+
+    expect(ensureCodexModelCatalogFresh).toHaveBeenCalledOnce();
+    expect(calls.slice(0, 3)).toEqual(['sync', Method.ModelList, Method.ThreadStart]);
+    expect(host.request).toHaveBeenCalledWith(
+      Method.ModelList,
+      { cursor: null, limit: 1, includeHidden: false },
+      expect.any(Object),
+    );
+  });
+
+  it('does not run the local catalog synchronizer for remote Codex sessions', async () => {
+    const ensureCodexModelCatalogFresh = vi.fn();
+    const agent = new CodexAgent(createDeps({}, { ensureCodexModelCatalogFresh }));
+    installFakeHost(agent, undefined, { codexHome: '/remote/codex-home' });
+
+    await agent.startSession({
+      sessionId: 'session-remote-model-sync',
+      model: 'deepseek-v4-pro',
+      providerId: 'deepseek',
+      workingDir: '/repo',
+      permissionMode: 'ask',
+      remoteHostId: 'remote-a',
+    });
+
+    expect(ensureCodexModelCatalogFresh).not.toHaveBeenCalled();
+  });
+});
+
 describe('CodexAgent permissions', () => {
   it('advertises distinct Ask, Auto, and Full access modes', () => {
     const agent = new CodexAgent(createDeps());
