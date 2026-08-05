@@ -55,6 +55,15 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
   );
 }
 
+/** Agent capability is a set; remote snapshots may serialize the same set in a different order. */
+function sameAgentSet(value: unknown, expected: readonly AgentKind[]): boolean {
+  if (!Array.isArray(value) || value.length !== expected.length || !value.every(isAgentKind)) {
+    return false;
+  }
+  const actual = new Set(value);
+  return actual.size === expected.length && expected.every((agent) => actual.has(agent));
+}
+
 function isWireProtocol(value: unknown): value is (typeof WIRE_PROTOCOLS)[number] {
   return typeof value === 'string' && (WIRE_PROTOCOLS as readonly string[]).includes(value);
 }
@@ -228,7 +237,7 @@ function validateOAuthDescriptor(p: Provider): void {
 }
 
 /** 轻量校验一个 provider。 */
-function validateProvider(p: Provider): void {
+export function validateProvider(p: Provider): void {
   assert(typeof p.id === 'string' && p.id.length > 0, 'provider.id missing');
   // id 会被 host 直接拼进 safeStorage 键名/文件名（provider_oauth_<id> 等），
   // 必须限定 slug 字符集，防被投毒目录用 `../` 之类字符把凭证写出存储目录。
@@ -634,6 +643,13 @@ function parseV3Catalog(input: Record<string, unknown>): Catalog {
       assert(
         entry.auth === undefined || sameJsonValue(entry.auth, bundled.auth),
         `provider '${entry.id}' bundled delta cannot override auth`,
+      );
+      // Agent runtime 是客户端随代码发布的能力边界，远端 delta 只能调整已内置
+      // runtime 的字段，不能通过删/加 agents 改写身份卡。需要临时停用时使用
+      // routing[agent].disabled，避免 merged provider 的 routing/models 变成孤儿。
+      assert(
+        entry.agents === undefined || sameAgentSet(entry.agents, bundled.agents),
+        `provider '${entry.id}' bundled delta cannot override agents`,
       );
     } else {
       validateProvider(entry as unknown as Provider);

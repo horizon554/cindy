@@ -66,9 +66,9 @@ const DEFAULT_PREFS: WorkerPrefs = {
     fast: false,
     providerId: null,
   },
-  // pi worker 默认模型与 orcaWorkerCreationService.resolveWorkerConfig 的 pi 分支一致;
-  // pi 不走目录默认(它没有跨来源合法的静态 id,见 scheduler-host/model-defaults.ts)。
-  pi: { model: 'claude-sonnet-4-6', effort: 'high', fast: false, providerId: null },
+  // Pi 没有跨来源合法的静态 model id；空种子会在目录就绪后由 activeModels 首项收敛，
+  // 避免把 Claude / GPT 的某个供应商路由伪装成全局默认。
+  pi: { model: '', effort: 'high', fast: false, providerId: null },
 };
 
 function readWorkerPrefs(): WorkerPrefs {

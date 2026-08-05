@@ -351,20 +351,25 @@ function selectWorkerModel(params: {
   input: OrcaWorkerCreateParams;
   lead: OrcaLeadSessionSnapshot;
   defaults: OrcaWorkerDefaultsSnapshot;
+  availableModels: readonly OrcaWorkerModelCapabilities[];
+  providers: readonly OrcaWorkerProviderSnapshot[];
 }): string {
-  const { input, lead, defaults } = params;
-  const fallbackModel =
-    input.agent === 'codex'
-      ? 'gpt-5.5'
-      : input.agent === 'pi'
-        ? 'claude-sonnet-4-6'
-        : 'claude-sonnet-4-6';
-  const catalogDefaultModel = resolveDefaultModel(
-    getActiveCatalog(),
-    input.agent,
-    'session',
-    fallbackModel,
-  );
+  const { input, lead, defaults, availableModels, providers } = params;
+  // Pi 可桥接任意已连接来源，没有跨来源合法的静态默认；无显式/记忆/Lead 模型时
+  // 按拍平清单顺序取第一个被当前已连接来源实际提供的模型，与创建面板的 connected
+  // activeModels 收敛保持一致；不能直接取 availableModels[0]，该清单不含连接态。
+  const firstRoutablePiModel = availableModels.find((candidate) =>
+    providers.some((provider) => provider.models.includes(candidate.id)),
+  )?.id;
+  const catalogDefaultModel =
+    input.agent === 'pi'
+      ? (firstRoutablePiModel ?? '')
+      : resolveDefaultModel(
+          getActiveCatalog(),
+          input.agent,
+          'session',
+          input.agent === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6',
+        );
   return (
     input.model ??
     defaults.model ??
@@ -748,6 +753,8 @@ export function createOrcaWorkerCreationService(
         input: params,
         lead,
         defaults,
+        availableModels,
+        providers: agentProviders,
       });
     const inheritedProviderId =
       explicitSourceId ??

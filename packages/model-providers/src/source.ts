@@ -16,6 +16,7 @@
 import {
   BUNDLED_CATALOG,
   parseCatalog,
+  validateProvider,
   validateModelConsistency,
 } from "./catalog.js";
 import {
@@ -397,11 +398,14 @@ export function mergeWithBundled(primary: Catalog): Catalog {
       ? { modelRegistry: selectedRegistry.modelRegistry }
       : {}),
   };
-  // v3 provider entries may be partial deltas, so their cross-provider model invariants can only
-  // be checked after every bundled identity card has been materialized. Without this final check,
-  // the first-wins model projection can pair a selected provider route with another provider's
-  // context/effort metadata for the same model id.
-  if (primary.version === "3") validateModelConsistency(catalog);
+  // v3 provider entries may be partial deltas, so both per-provider invariants and cross-provider
+  // model invariants can only be checked after every bundled identity card has been materialized.
+  // Without this final pass, a syntactically valid delta can leave the merged agents/routing/models
+  // inconsistent or make first-wins projection pair a route with another provider's metadata.
+  if (primary.version === "3") {
+    for (const provider of catalog.providers) validateProvider(provider);
+    validateModelConsistency(catalog);
+  }
   return catalog;
 }
 

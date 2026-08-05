@@ -9,7 +9,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { modelRegistryCanonicalJson } from '@cindy/model-access-protocol';
 
-import { BUNDLED_CATALOG } from '../catalog.js';
+import { BUNDLED_CATALOG, parseCatalog } from '../catalog.js';
 import {
   loadCatalog,
   loadCatalogWithSource,
@@ -386,11 +386,28 @@ describe('mergeWithBundled', () => {
       version: '3',
       providers: [{
         id: 'openai',
+        titleModel: xaiModel.id,
         models: {
           codex: [{ ...xaiModel, contextWindow: xaiModel.contextWindow + 1 }],
         },
       } as Catalog['providers'][number]],
     })).toThrow(/inconsistent metadata across providers/);
+  });
+
+  it('v3 validates each provider after materializing bundled deltas', () => {
+    const bundledOpenai = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'openai')!;
+    const replacementModels = Object.fromEntries(
+      bundledOpenai.agents.map((agent) => [
+        agent,
+        [model(`replacement-${agent}`, { name: `Replacement ${agent}` })],
+      ]),
+    );
+
+    const parsed = parseCatalog({
+      version: '3',
+      providers: [{ id: 'openai', models: replacementModels }],
+    });
+    expect(() => mergeWithBundled(parsed)).toThrow(/titleModel.*not found/);
   });
 
   it('does not infer bundled billing when a same-id primary changes auth or upstream', () => {

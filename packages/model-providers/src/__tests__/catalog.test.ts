@@ -400,6 +400,27 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     })).toThrow(/bundled delta cannot override auth/);
   });
 
+  it('v3 bundled deltas cannot override the client-owned agent runtime set', () => {
+    const openai = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'openai')!;
+    expect(parseCatalog({
+      version: '3',
+      providers: [{ id: 'openai' }],
+    }).providers[0]?.agents).toBeUndefined();
+    expect(parseCatalog({
+      version: '3',
+      providers: [{ id: 'openai', agents: [...openai.agents].reverse() }],
+    }).providers[0]?.agents).toEqual([...openai.agents].reverse());
+
+    expect(() => parseCatalog({
+      version: '3',
+      providers: [{ id: 'openai', agents: [] }],
+    })).toThrow(/bundled delta cannot override agents/);
+    expect(() => parseCatalog({
+      version: '3',
+      providers: [{ id: 'openai', agents: openai.agents.slice(0, 1) }],
+    })).toThrow(/bundled delta cannot override agents/);
+  });
+
   it.each([
     ['authStrategy', 'bogus'],
     ['requestPath', 'https://other.example/v1'],
@@ -878,16 +899,20 @@ describe('媒体清单跨供应商契约(2026-07 图像多来源)', () => {
   });
 
   it('只声明向量清单的供应商可以没有 agents(媒体-only 同理)', () => {
-    const cat = JSON.parse(JSON.stringify(BUNDLED_CATALOG)) as Catalog;
-    const xd = cat.providers.find((p) => p.id === 'xd')!;
-    xd.agents = [];
-    xd.models = {};
-    xd.routing = {};
-    delete xd.imageModels;
-    delete xd.imageDefaults;
-    delete xd.videoModels;
-    delete xd.videoDefaults;
-    expect(() => parseCatalog(cat)).not.toThrow();
+    expect(() => parseCatalog({
+      version: '3',
+      providers: [{
+        id: 'media-only',
+        name: 'Media Only',
+        source: 'user',
+        agents: [],
+        auth: { method: 'apiKey' },
+        routing: {},
+        models: {},
+        embeddingModels: [{ id: 'media-only/embed', name: 'Media Embed' }],
+        embeddingDefaults: { standard: 'media-only/embed' },
+      }],
+    })).not.toThrow();
   });
 
   it('非 xd 内置供应商的媒体模型 id 必须带 "<providerId>/" 前缀(防 first-wins 归属漂移)', () => {

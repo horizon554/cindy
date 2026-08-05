@@ -1360,6 +1360,49 @@ describe('OrcaWorkerCreationService', () => {
     }));
   });
 
+  it('uses the first connected Pi model when the flat catalog starts with a disconnected model', async () => {
+    const { deps, service } = createDeps({
+      getAvailableModels: vi.fn((agent: AgentKind) =>
+        agent === 'pi'
+          ? [
+              {
+                id: 'disconnected-pi-model',
+                efforts: ['high'],
+                defaultEffort: 'high',
+              },
+              {
+                id: 'custom-pi-model',
+                efforts: ['low', 'medium', 'high'],
+                defaultEffort: 'high',
+              },
+            ]
+          : [],
+      ),
+      getProviderRoutingContext: vi.fn(async () =>
+        providerRoutingContext({
+          pi: [{ id: 'custom-pi', name: 'Custom Pi', models: ['custom-pi-model'] }],
+        }),
+      ),
+    });
+
+    await expect(
+      service.createWorker({
+        leadSessionId: 'lead-1',
+        role: 'reviewer',
+        agent: 'pi',
+        label: 'pi-reviewer',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      resolved: {
+        model: 'custom-pi-model',
+      },
+    });
+    expect(deps.buildCreateOptsWithStderr).toHaveBeenCalledWith(
+      expect.objectContaining({ agentKind: 'pi', model: 'custom-pi-model' }),
+    );
+  });
+
   it('creates a worker with resolved defaults without dispatching or broadcasting from the creation boundary', async () => {
     const { calls, deps, service } = createDeps({
       getWorkerDefaults: vi.fn(() => ({

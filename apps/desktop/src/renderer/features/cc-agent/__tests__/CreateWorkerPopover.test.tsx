@@ -27,10 +27,17 @@ const mocks = vi.hoisted(() => ({
       defaultEffort: string | null;
       supportsFastMode?: boolean;
     }>,
+    pi: [] as Array<{
+      id: string;
+      efforts: string[];
+      defaultEffort: string | null;
+      supportsFastMode?: boolean;
+    }>,
   },
   capabilitiesByAgent: {
     codex: null as { availableModels: Array<{ id: string }> } | null,
     'claude-code': null as { availableModels: Array<{ id: string }> } | null,
+    pi: null as { availableModels: Array<{ id: string }> } | null,
   },
   capabilitiesLoading: false,
   providersLoading: false,
@@ -84,7 +91,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/hooks/useAgentCapabilities', () => ({
-  useAgentCapabilities: (agent: 'codex' | 'claude-code') => ({
+  useAgentCapabilities: (agent: 'codex' | 'claude-code' | 'pi') => ({
     capabilities: mocks.capabilitiesByAgent[agent],
     loading: mocks.capabilitiesLoading,
     error: null,
@@ -180,7 +187,8 @@ vi.mock('@/state/modelVisibilityPrefs', () => ({
 }));
 
 vi.mock('../workerModelAvailability', () => ({
-  selectWorkerModels: ({ agent }: { agent: 'codex' | 'claude-code' }) => mocks.modelsByAgent[agent],
+  selectWorkerModels: ({ agent }: { agent: 'codex' | 'claude-code' | 'pi' }) =>
+    mocks.modelsByAgent[agent],
 }));
 
 describe('CreateWorkerPopover', () => {
@@ -190,10 +198,12 @@ describe('CreateWorkerPopover', () => {
     resetProviderModelMemoryForTest();
     mocks.modelsByAgent.codex = [model('codex/gpt-5.5')];
     mocks.modelsByAgent['claude-code'] = [model('claude-opus-4-7')];
+    mocks.modelsByAgent.pi = [model('pi-live-default')];
     mocks.capabilitiesByAgent.codex = { availableModels: [{ id: 'codex/gpt-5.5' }] };
     mocks.capabilitiesByAgent['claude-code'] = {
       availableModels: [{ id: 'claude-opus-4-7' }],
     };
+    mocks.capabilitiesByAgent.pi = { availableModels: [{ id: 'pi-live-default' }] };
     mocks.capabilitiesLoading = false;
     mocks.providersLoading = false;
     mocks.localProviders = [];
@@ -442,6 +452,25 @@ describe('CreateWorkerPopover', () => {
       (screen.getByRole('button', { name: 'orca.createWorker.submit' }) as HTMLButtonElement)
         .disabled,
     ).toBe(false);
+  });
+
+  it('selects the first live Pi model instead of a static vendor fallback', async () => {
+    mocks.modelsByAgent.pi = [model('custom-pi-model')];
+    mocks.capabilitiesByAgent.pi = { availableModels: [{ id: 'custom-pi-model' }] };
+    const onCreate = vi.fn();
+
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Pi' }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId('model-selector').textContent).toBe('custom-pi-model'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: 'pi', model: 'custom-pi-model' }),
+      ),
+    );
   });
 
   it('explains why creation stays disabled when no local model is available', async () => {
