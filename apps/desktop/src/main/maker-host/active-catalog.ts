@@ -398,11 +398,14 @@ function applyResolvedOverlay(
     const pinned = rootAgent
       ? locallyPinnedFields(localOverrides, p.id, model.id, rootAgent)
       : new Set<string>();
-    const enrichment = pinned.size === 0
-      ? replacement
-      : Object.fromEntries(
-          Object.entries(replacement).filter(([field]) => !pinned.has(field)),
-        );
+    // Resolve metadata is a patch: an omitted wire field can be materialized as an own
+    // `undefined` property by local projectors, but that must never delete an existing catalog
+    // fact (for example `defaultEnabled: false`). Explicit null remains meaningful and is kept.
+    const enrichment = Object.fromEntries(
+      Object.entries(replacement).filter(
+        ([field, value]) => value !== undefined && !pinned.has(field),
+      ),
+    );
     changed = true;
     return {
       ...model,

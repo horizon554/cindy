@@ -156,6 +156,7 @@ function isModelDescriptor(value: unknown): value is ModelDescriptor {
     isStringArray(efforts) &&
     (defaultEffort === null ||
       (typeof defaultEffort === 'string' && efforts.includes(defaultEffort))) &&
+    isOptionalString(value.category) &&
     isOptionalString(value.group) &&
     isOptionalString(value.mode) &&
     isOptionalString(value.description) &&

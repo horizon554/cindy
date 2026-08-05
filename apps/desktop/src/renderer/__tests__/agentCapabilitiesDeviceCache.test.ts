@@ -329,6 +329,33 @@ describe('useAgentCapabilities deviceId-aware cache', () => {
     expect(mod.getCachedCapabilities('codex', 'dev-invalid-marker')).toBeNull();
   });
 
+  it('category 必须是字符串,非法分类不得落入远程能力缓存', async () => {
+    const invoke = vi.fn(async () => ({
+      ...caps('invalid-category'),
+      availableModels: [
+        {
+          ...caps('invalid-category').availableModels[0],
+          category: { id: 'gpt' },
+        },
+      ],
+    }));
+    const getCapabilities = vi.fn(async (k: string) => caps(`local:${k}`));
+    vi.stubGlobal('window', {
+      electronAPI: { maker: { getCapabilities }, deviceLink: { invoke } },
+    });
+    const mod = await import('@/hooks/useAgentCapabilities');
+    const listener = vi.fn();
+    mod.subscribeDeviceCapabilities('dev-invalid-category', 'codex', listener);
+
+    await mod.prefetchDeviceCapabilities('dev-invalid-category');
+
+    expect(listener).toHaveBeenCalledWith({
+      status: 'error',
+      error: 'Invalid agent capabilities response',
+    });
+    expect(mod.getCachedCapabilities('codex', 'dev-invalid-category')).toBeNull();
+  });
+
   it.each(['effortLevels', 'permissionModes'] as const)(
     '%s 混入非法 descriptor 时不得发布 ready',
     async (field) => {

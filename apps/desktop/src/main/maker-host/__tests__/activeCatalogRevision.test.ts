@@ -148,6 +148,48 @@ describe('active catalog revision', () => {
     expect(refreshed.find((model) => model.id === 'xai/resolved-a')).not.toHaveProperty('source');
   });
 
+  it('treats undefined resolved fields as absent instead of clearing catalog metadata', () => {
+    const discovered = {
+      id: 'xai/hidden-model',
+      name: 'Hidden Model',
+      description: 'Keep this description',
+      category: 'grok',
+      contextWindow: 200_000,
+      efforts: [],
+      defaultEffort: null,
+      defaultEnabled: false,
+    };
+    setDiscoveredProviderModels('xai', 'codex', [discovered]);
+    const liveModelIds = getActiveCatalog().providers
+      .find((provider) => provider.id === 'xai')!
+      .models.codex!.map((model) => model.id);
+    setResolvedProviderModels(
+      'xai',
+      'codex',
+      [discovered.id],
+      [{
+        ...discovered,
+        name: 'Resolved Name',
+        description: undefined,
+        category: undefined,
+        defaultEnabled: undefined,
+      }],
+      'knowledge-metadata-only',
+      liveModelIds,
+    );
+
+    expect(
+      getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
+        .models.codex?.find((model) => model.id === discovered.id),
+    ).toMatchObject({
+      name: 'Resolved Name',
+      description: 'Keep this description',
+      category: 'grok',
+      defaultEnabled: false,
+      source: 'resolved',
+    });
+  });
+
   it('applies resolved metadata when additions-only discovery preserves a different live order', () => {
     const providerId = 'reordered-user';
     const configured = [
