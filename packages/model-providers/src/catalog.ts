@@ -22,10 +22,30 @@ export { BUNDLED_CATALOG, BUILTIN_PROVIDERS } from './builtin.js';
 const AGENT_KINDS: readonly AgentKind[] = ['claude-code', 'codex', 'pi'];
 const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const WIRE_PROTOCOLS = ['anthropic-messages', 'openai-responses', 'openai-chat'] as const;
+const AUTH_STRATEGIES = [
+  'oauth-passthrough',
+  'provider-oauth-header',
+  'api-key-header',
+  'gateway-key',
+  'oauth-token',
+  'none',
+] as const;
 const BUNDLED_PROVIDER_IDS = new Set(BUNDLED_CATALOG_INTERNAL.providers.map((provider) => provider.id));
 
 function isWireProtocol(value: unknown): value is (typeof WIRE_PROTOCOLS)[number] {
   return typeof value === 'string' && (WIRE_PROTOCOLS as readonly string[]).includes(value);
+}
+
+function isAuthStrategy(value: unknown): value is (typeof AUTH_STRATEGIES)[number] {
+  return typeof value === 'string' && (AUTH_STRATEGIES as readonly string[]).includes(value);
+}
+
+function isHeaderName(value: unknown): value is string {
+  return (
+    typeof value === 'string'
+    && value.length > 0
+    && /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(value)
+  );
 }
 
 function isAgentKind(v: unknown): v is AgentKind {
@@ -629,8 +649,47 @@ function validateV3Provider(entry: Record<string, unknown>): void {
         }
         assert(valid, `provider '${String(entry.id)}' routing[${agent}].upstream invalid`);
       }
-      if (route.authStrategy !== undefined) assert(typeof route.authStrategy === 'string' && route.authStrategy.length > 0, `provider '${String(entry.id)}' routing[${agent}].authStrategy invalid`);
+      if (route.authStrategy !== undefined) assert(isAuthStrategy(route.authStrategy), `provider '${String(entry.id)}' routing[${agent}].authStrategy invalid`);
       if (route.wireProtocol !== undefined) assert(isWireProtocol(route.wireProtocol), `provider '${String(entry.id)}' routing[${agent}].wireProtocol invalid`);
+      if (route.requestPath !== undefined) {
+        assert(isProviderRequestPath(route.requestPath), `provider '${String(entry.id)}' routing[${agent}].requestPath invalid`);
+      }
+      if (route.disabled !== undefined) {
+        assert(typeof route.disabled === 'boolean', `provider '${String(entry.id)}' routing[${agent}].disabled invalid`);
+      }
+      if (route.modelIdRewrite !== undefined) {
+        assert(route.modelIdRewrite && typeof route.modelIdRewrite === 'object' && !Array.isArray(route.modelIdRewrite), `provider '${String(entry.id)}' routing[${agent}].modelIdRewrite invalid`);
+        const rewrite = route.modelIdRewrite as Record<string, unknown>;
+        assert(typeof rewrite.stripPrefix === 'string' && rewrite.stripPrefix.length > 0, `provider '${String(entry.id)}' routing[${agent}].modelIdRewrite.stripPrefix invalid`);
+      }
+      if (route.headerDelete !== undefined) {
+        assert(Array.isArray(route.headerDelete) && route.headerDelete.every(isHeaderName), `provider '${String(entry.id)}' routing[${agent}].headerDelete invalid`);
+      }
+      if (route.headerOverride !== undefined) {
+        assert(route.headerOverride && typeof route.headerOverride === 'object' && !Array.isArray(route.headerOverride), `provider '${String(entry.id)}' routing[${agent}].headerOverride invalid`);
+        assert(Object.entries(route.headerOverride as Record<string, unknown>).every(
+          ([name, value]) => isHeaderName(name) && typeof value === 'string' && !/[\r\n]/.test(value),
+        ), `provider '${String(entry.id)}' routing[${agent}].headerOverride invalid`);
+      }
+      if (route.adapter !== undefined) {
+        assert(typeof route.adapter === 'string' && route.adapter.length > 0, `provider '${String(entry.id)}' routing[${agent}].adapter invalid`);
+      }
+      if (route.modelsUrl !== undefined) {
+        let valid = false;
+        try {
+          const url = new URL(String(route.modelsUrl));
+          valid = (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password;
+        } catch {
+          valid = false;
+        }
+        assert(valid, `provider '${String(entry.id)}' routing[${agent}].modelsUrl invalid`);
+      }
+      if (route.modelPrefixes !== undefined) {
+        assert(Array.isArray(route.modelPrefixes) && route.modelPrefixes.length > 0, `provider '${String(entry.id)}' routing[${agent}].modelPrefixes invalid`);
+        assert(route.modelPrefixes.every(
+          (prefix) => typeof prefix === 'string' && /^[a-zA-Z0-9_-]+\/$/.test(prefix),
+        ), `provider '${String(entry.id)}' routing[${agent}].modelPrefixes invalid`);
+      }
     }
   }
   for (const field of ['models', 'fallbackModels'] as const) {

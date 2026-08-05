@@ -362,6 +362,52 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     })).toThrow(/provider\.name missing/);
   });
 
+  it.each([
+    ['authStrategy', 'bogus'],
+    ['requestPath', 'https://other.example/v1'],
+    ['disabled', 'yes'],
+    ['modelIdRewrite', { stripPrefix: 42 }],
+    ['headerDelete', { authorization: true }],
+    ['headerOverride', { 'x-test': 42 }],
+    ['adapter', []],
+    ['modelsUrl', 'file:///tmp/models'],
+    ['modelPrefixes', 'xai/'],
+    ['modelPrefixes', ['xai']],
+  ])('v3 rejects malformed bundled routing delta field %s', (field, value) => {
+    expect(() => parseCatalog({
+      version: '3',
+      providers: [{
+        id: 'xai',
+        routing: { codex: { [field]: value } },
+      }],
+    })).toThrow(new RegExp(String(field)));
+  });
+
+  it('v3 accepts well-shaped optional routing delta fields', () => {
+    expect(parseCatalog({
+      version: '3',
+      providers: [{
+        id: 'xai',
+        routing: {
+          codex: {
+            authStrategy: 'provider-oauth-header',
+            requestPath: '/v1/responses?tenant=acme',
+            disabled: false,
+            modelIdRewrite: { stripPrefix: 'xai/' },
+            headerDelete: ['authorization'],
+            headerOverride: { 'x-provider': 'xai' },
+            adapter: 'xai-responses',
+            modelsUrl: 'https://api.x.ai/v1/models',
+            modelPrefixes: ['xai/'],
+          },
+        },
+      }],
+    }).providers[0]?.routing.codex).toMatchObject({
+      requestPath: '/v1/responses?tenant=acme',
+      modelPrefixes: ['xai/'],
+    });
+  });
+
   it('v3 accepts a fully specified provider that is not bundled in the client', () => {
     const parsed = parseCatalog({
       version: '3',
