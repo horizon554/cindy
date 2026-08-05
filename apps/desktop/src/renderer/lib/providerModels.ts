@@ -14,7 +14,6 @@
 import {
   actualSourceIdForModel,
   getModel,
-  isAgentSelectableModel,
   isModelSelectableForNewRoute,
   isModelVisible,
   providerOffersModel,
@@ -28,7 +27,6 @@ import {
 // 用 renderer 自己的 ModelDescriptor（Effort=string，宽松）—— 与 capabilities.availableModels
 // 同型，picker 现有代码（effortDisplayNames 按 string 索引等）零改动即可消费。
 import type { AgentCapabilities, ModelDescriptor } from '@/hooks/useAgentCapabilities';
-import { isSubscriptionDirectModel } from '../../shared/subscriptionModels';
 
 /**
  * 按目标 `(provider, agent, model)` 读取 effort 能力。
@@ -268,7 +266,6 @@ export function selectVisibleModels(params: {
     deviceCcModels,
     deviceCodexModels,
     devicePiModels = [],
-    excludeSubscriptionDirect,
     excludeChatBridgedCodex,
   } = params;
   // excludeSubscriptionDirect 不再过滤(见参数文档):行保留,准入由调用方按

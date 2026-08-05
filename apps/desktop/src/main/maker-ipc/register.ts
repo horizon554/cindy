@@ -576,6 +576,7 @@ import {
 import { testProviderConnection } from '../maker-host/provider-diagnostics.js';
 import {
   isLatestModelResolveResult,
+  releaseModelResolveApplyResult,
   resolveProviderModelEntries,
   resolveProviderModels,
   toModelResolveRequestModels,
@@ -5137,6 +5138,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       void resolveProviderModels({
         providerId: resolveProviderId,
         agent: spec.agent,
+        // 服务端继续只看到固定的非真实 providerId；本地 apply token 按表单 requestId
+        // 隔离，避免两个并发“未保存供应商”互相把结果判成 stale。
+        ...(spec.requestId && !spec.savedProviderId
+          ? { localApplyScope: spec.requestId }
+          : {}),
         wireProtocol: spec.wireProtocol,
         sourceIdentity: {
           kind: 'provider-runtime',
@@ -5152,15 +5158,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           if (!resolved || !isLatestModelResolveResult(resolved)) return;
           // 表单预填(仅当有 requestId)。
           if (spec.requestId) {
-            const byId = new Map(resolved.entry.models.map((model) => [model.id, model]));
-            broadcastToAllWindows(MAKER_PUSH.PROVIDER_MODELS_RESOLVED, {
-              requestId: spec.requestId,
-              models: models.map((model) => {
-                const metadata = byId.get(model.id);
-                return metadata ? { ...model, ...metadata, id: model.id } : model;
-              }),
-            });
+            try {
+              const byId = new Map(resolved.entry.models.map((model) => [model.id, model]));
+              broadcastToAllWindows(MAKER_PUSH.PROVIDER_MODELS_RESOLVED, {
+                requestId: spec.requestId,
+                models: models.map((model) => {
+                  const metadata = byId.get(model.id);
+                  return metadata ? { ...model, ...metadata, id: model.id } : model;
+                }),
+              });
+            } finally {
+              if (!spec.savedProviderId) releaseModelResolveApplyResult(resolved);
+            }
           }
+          if (!spec.savedProviderId) return;
           // 已保存 provider:完整 hints 补全 overlay 落目录,未命中知识库的模型也保留
           // 厂商上报的 contextWindow/maxOutput/modalities/capabilities(字段映射同 OAuth 路径)。
           if (spec.savedProviderId) {

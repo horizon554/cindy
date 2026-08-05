@@ -42,6 +42,11 @@ export interface ModelResolveInput {
   providerId: string;
   agent: ModelAgent;
   wireProtocol?: string;
+  /**
+   * Local-only freshness scope for independent consumers that intentionally share one wire
+   * provider identity. It never participates in the request body or cache fingerprint.
+   */
+  localApplyScope?: string;
   /** Local-only cache discriminator. It is hashed and never sent to Model Access Server. */
   sourceIdentity: ModelResolveSourceIdentity;
   models: ResolveRequestModel[];
@@ -59,6 +64,8 @@ interface CachedModelResolveResult {
 export interface ModelResolveResult extends CachedModelResolveResult {
   /** Local-only request generation used to reject stale asynchronous overlay application. */
   applyToken: string;
+  /** Opaque local slot paired with applyToken; never persisted or sent to Model Access Server. */
+  applySlot: string;
 }
 
 export interface ModelResolver {
@@ -99,6 +106,7 @@ const memoryKeyBySlot = new Map<string, string>();
 const inFlight = new Map<string, Promise<CachedModelResolveResult | null>>();
 const latestApplyTokenBySlot = new Map<string, string>();
 const latestCacheKeyBySlot = new Map<string, string>();
+const localApplySlotsByCanonicalSlot = new Map<string, Set<string>>();
 let applyTokenSequence = 0;
 let identityGeneration = 0;
 const storeLoadByFile = new Map<string, Promise<PersistedResolveStore>>();
@@ -200,6 +208,16 @@ function modelResolveSlot(input: Pick<ModelResolveInput, 'providerId' | 'agent'>
   return `${input.providerId}\u0000${input.agent}`;
 }
 
+function modelResolveApplySlot(
+  input: Pick<ModelResolveInput, 'providerId' | 'agent' | 'localApplyScope'>,
+): string {
+  const slot = modelResolveSlot(input);
+  const localScope = input.localApplyScope?.trim();
+  if (!localScope) return slot;
+  const digest = createHash('sha256').update(localScope).digest('hex');
+  return `${slot}\u0000local:${digest}`;
+}
+
 function slotFromCacheKey(key: string): string | null {
   const first = key.indexOf('\u0000');
   if (first < 0) return null;
@@ -219,12 +237,38 @@ function beginApplyGeneration(slot: string, cacheKey: string): string {
 function withApplyToken(
   result: CachedModelResolveResult | null,
   applyToken: string,
+  applySlot: string,
 ): ModelResolveResult | null {
-  return result ? { ...result, applyToken } : null;
+  return result ? { ...result, applyToken, applySlot } : null;
 }
 
 export function isLatestModelResolveResult(result: ModelResolveResult): boolean {
-  return latestApplyTokenBySlot.get(modelResolveSlot(result.entry)) === result.applyToken;
+  return latestApplyTokenBySlot.get(result.applySlot) === result.applyToken;
+}
+
+function releaseLocalApplyGeneration(
+  canonicalSlot: string,
+  applySlot: string,
+  applyToken: string,
+): void {
+  if (
+    applySlot === canonicalSlot ||
+    latestApplyTokenBySlot.get(applySlot) !== applyToken
+  ) return;
+  latestApplyTokenBySlot.delete(applySlot);
+  latestCacheKeyBySlot.delete(applySlot);
+  const localSlots = localApplySlotsByCanonicalSlot.get(canonicalSlot);
+  localSlots?.delete(applySlot);
+  if (localSlots?.size === 0) localApplySlotsByCanonicalSlot.delete(canonicalSlot);
+}
+
+/** Release a one-shot local consumer slot after its result has been applied. */
+export function releaseModelResolveApplyResult(result: ModelResolveResult): void {
+  releaseLocalApplyGeneration(
+    modelResolveSlot(result.entry),
+    result.applySlot,
+    result.applyToken,
+  );
 }
 
 /** Make in-flight results for changed provider runtimes ineligible without invalidating other slots. */
@@ -235,6 +279,11 @@ export function invalidateModelResolveApplySlots(
     const slot = modelResolveSlot(input);
     latestApplyTokenBySlot.delete(slot);
     latestCacheKeyBySlot.delete(slot);
+    for (const localSlot of localApplySlotsByCanonicalSlot.get(slot) ?? []) {
+      latestApplyTokenBySlot.delete(localSlot);
+      latestCacheKeyBySlot.delete(localSlot);
+    }
+    localApplySlotsByCanonicalSlot.delete(slot);
   }
 }
 
@@ -243,6 +292,7 @@ export function invalidateModelResolveApplyState(): void {
   identityGeneration += 1;
   latestApplyTokenBySlot.clear();
   latestCacheKeyBySlot.clear();
+  localApplySlotsByCanonicalSlot.clear();
   // A new auth identity must not join a request started with the previous identity. The old
   // promise may still settle, but owner-scope checks below make its public result null and keep it
   // from updating cache or disk.
@@ -537,8 +587,12 @@ interface PendingResolveEntry {
   key: string;
   slot: string;
   cacheKey: string;
-  applyToken: string;
-  indexes: number[];
+  cacheApplyToken: string;
+  consumers: Array<{
+    index: number;
+    applySlot: string;
+    applyToken: string;
+  }>;
 }
 
 export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): ModelResolver {
@@ -566,7 +620,11 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
         // The wire protocol forbids duplicate provider/agent entries. Identical fingerprints can be
         // deduplicated locally; conflicting duplicates are ambiguous and fail closed as one batch.
         if (existing.key !== key) return results;
-        existing.indexes.push(index);
+        existing.consumers.push({
+          index,
+          applySlot: modelResolveApplySlot(input),
+          applyToken: '',
+        });
         continue;
       }
       uniqueByPair.set(pair, {
@@ -574,8 +632,14 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
         key,
         slot: pair,
         cacheKey: '',
-        applyToken: '',
-        indexes: [index],
+        cacheApplyToken: '',
+        consumers: [
+          {
+            index,
+            applySlot: modelResolveApplySlot(input),
+            applyToken: '',
+          },
+        ],
       });
     }
     const request: ResolveRequest = {
@@ -606,7 +670,20 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
 
     for (const entry of uniqueByPair.values()) {
       entry.cacheKey = `${scope}\u0000${entry.key}`;
-      entry.applyToken = beginApplyGeneration(entry.slot, entry.cacheKey);
+      // Cache durability remains latest-wins by the real provider/agent pair. Consumer freshness
+      // may be narrower (for example two unsaved forms sharing providerId='unsaved/form').
+      entry.cacheApplyToken = beginApplyGeneration(entry.slot, entry.cacheKey);
+      for (const consumer of entry.consumers) {
+        if (consumer.applySlot !== entry.slot) {
+          const localSlots = localApplySlotsByCanonicalSlot.get(entry.slot) ?? new Set<string>();
+          localSlots.add(consumer.applySlot);
+          localApplySlotsByCanonicalSlot.set(entry.slot, localSlots);
+        }
+        consumer.applyToken =
+          consumer.applySlot === entry.slot
+            ? entry.cacheApplyToken
+            : beginApplyGeneration(consumer.applySlot, entry.cacheKey);
+      }
     }
 
     const pending: Array<{
@@ -618,8 +695,13 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
       prepareMemorySlot(scope, entry.slot, entry.cacheKey);
       const memory = memoryCache.get(entry.cacheKey);
       if (memory) {
-        const applied = withApplyToken(memory, entry.applyToken);
-        for (const index of entry.indexes) results[index] = applied;
+        for (const consumer of entry.consumers) {
+          results[consumer.index] = withApplyToken(
+            memory,
+            consumer.applyToken,
+            consumer.applySlot,
+          );
+        }
         continue;
       }
       const existing = inFlight.get(entry.cacheKey);
@@ -703,14 +785,14 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
               resolvedByKey.set(entry.key, result);
               if (
                 latestCacheKeyBySlot.get(entry.slot) === entry.cacheKey &&
-                latestApplyTokenBySlot.get(entry.slot) === entry.applyToken
+                latestApplyTokenBySlot.get(entry.slot) === entry.cacheApplyToken
               ) {
                 setMemoryResult(scope, entry.slot, entry.cacheKey, result);
                 updates.push({
                   key: entry.key,
                   slot: entry.slot,
                   cacheKey: entry.cacheKey,
-                  applyToken: entry.applyToken,
+                  applyToken: entry.cacheApplyToken,
                   result,
                 });
               }
@@ -744,7 +826,7 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
             if (
               persisted &&
               latestCacheKeyBySlot.get(entry.slot) === entry.cacheKey &&
-              latestApplyTokenBySlot.get(entry.slot) === entry.applyToken
+              latestApplyTokenBySlot.get(entry.slot) === entry.cacheApplyToken
             ) {
               setMemoryResult(scope, entry.slot, entry.cacheKey, persisted);
             }
@@ -755,8 +837,7 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
       })();
 
       for (const entry of missing) {
-        let flight!: Promise<CachedModelResolveResult | null>;
-        flight = batchFlight
+        const flight = batchFlight
           .then((batch) => batch.get(entry.key) ?? null)
           .finally(() => {
             if (inFlight.get(entry.cacheKey) === flight) inFlight.delete(entry.cacheKey);
@@ -778,10 +859,26 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
         capturedIdentityGeneration,
         storeFile,
       )
-    ) return results.fill(null);
+    ) {
+      for (const entry of uniqueByPair.values()) {
+        for (const consumer of entry.consumers) {
+          releaseLocalApplyGeneration(entry.slot, consumer.applySlot, consumer.applyToken);
+        }
+      }
+      return results.fill(null);
+    }
     for (const { entry, result } of settled) {
-      const applied = withApplyToken(result, entry.applyToken);
-      for (const index of entry.indexes) results[index] = applied;
+      for (const consumer of entry.consumers) {
+        if (result) {
+          results[consumer.index] = withApplyToken(
+            result,
+            consumer.applyToken,
+            consumer.applySlot,
+          );
+        } else {
+          releaseLocalApplyGeneration(entry.slot, consumer.applySlot, consumer.applyToken);
+        }
+      }
     }
     return results;
   };
@@ -801,8 +898,27 @@ export function resetModelResolveStateForTests(): void {
   inFlight.clear();
   latestApplyTokenBySlot.clear();
   latestCacheKeyBySlot.clear();
+  localApplySlotsByCanonicalSlot.clear();
   applyTokenSequence = 0;
   identityGeneration = 0;
   storeLoadByFile.clear();
   storeWrite = Promise.resolve();
+}
+
+export function modelResolveLocalApplyStateForTests(): {
+  trackedSlots: number;
+  applyTokens: number;
+  cacheKeys: number;
+} {
+  const localPrefix = '\u0000local:';
+  return {
+    trackedSlots: [...localApplySlotsByCanonicalSlot.values()].reduce(
+      (total, slots) => total + slots.size,
+      0,
+    ),
+    applyTokens: [...latestApplyTokenBySlot.keys()].filter((slot) => slot.includes(localPrefix))
+      .length,
+    cacheKeys: [...latestCacheKeyBySlot.keys()].filter((slot) => slot.includes(localPrefix))
+      .length,
+  };
 }

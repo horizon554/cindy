@@ -72,4 +72,19 @@ describe('provider model resolve wiring', () => {
     expect(postReadGuard).toBeGreaterThan(configRead);
     expect(configWrite).toBeGreaterThan(postReadGuard);
   });
+
+  it('isolates unsaved form apply slots without changing the fixed server provider identity', () => {
+    const resolveStart = registerSource.indexOf('resolveFetchedModels: (spec, result) => {');
+    const resolveEnd = registerSource.indexOf('.catch(() => undefined);', resolveStart);
+    const resolveConsumer = registerSource.slice(resolveStart, resolveEnd);
+
+    expect(resolveStart).toBeGreaterThan(-1);
+    expect(resolveEnd).toBeGreaterThan(resolveStart);
+    expect(resolveConsumer).toContain(
+      "const resolveProviderId = spec.savedProviderId ?? UNSAVED_FORM_RESOLVE_PROVIDER_ID;",
+    );
+    expect(resolveConsumer).toContain('{ localApplyScope: spec.requestId }');
+    expect(resolveConsumer).toContain('providerId: resolveProviderId,');
+    expect(resolveConsumer).toContain('releaseModelResolveApplyResult(resolved)');
+  });
 });

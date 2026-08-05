@@ -19,7 +19,9 @@ import {
   isLatestModelResolveResult,
   modelResolveCacheKey,
   modelResolveIdentityScope,
+  modelResolveLocalApplyStateForTests,
   modelResolveRealm,
+  releaseModelResolveApplyResult,
   resetModelResolveStateForTests,
   type ModelResolveInput,
 } from '../modelResolve.js';
@@ -150,6 +152,9 @@ describe('model resolve client', () => {
     expect(modelResolveCacheKey(INPUT)).toBe(modelResolveCacheKey({ ...INPUT }));
     expect(modelResolveCacheKey({ ...INPUT, wireProtocol: undefined })).toBe(
       modelResolveCacheKey(INPUT),
+    );
+    expect(modelResolveCacheKey({ ...INPUT, localApplyScope: 'form-a' })).toBe(
+      modelResolveCacheKey({ ...INPUT, localApplyScope: 'form-b' }),
     );
     expect(modelResolveCacheKey(INPUT)).not.toBe(
       modelResolveCacheKey({ ...INPUT, agent: 'claude-code' }),
@@ -508,6 +513,166 @@ describe('model resolve client', () => {
       entries: Array<{ knowledgeRevision: string }>;
     };
     expect(persisted.entries).toEqual([expect.objectContaining({ knowledgeRevision: 'r2' })]);
+  });
+
+  it('keeps concurrent unsaved-form apply scopes independent while the wire identity stays fixed', async () => {
+    const formA: ModelResolveInput = {
+      ...INPUT,
+      providerId: 'unsaved/form',
+      localApplyScope: 'request-a',
+      sourceIdentity: { kind: 'native', id: 'unsaved-form-a' },
+    };
+    const formB: ModelResolveInput = {
+      ...INPUT,
+      providerId: 'unsaved/form',
+      localApplyScope: 'request-b',
+      sourceIdentity: { kind: 'native', id: 'unsaved-form-b' },
+    };
+    const releases: Array<(value: unknown) => void> = [];
+    const h = harness({
+      fetch: (request) => {
+        expect(request).not.toHaveProperty('entries.0.localApplyScope');
+        return new Promise((resolve) => releases.push(resolve));
+      },
+    });
+
+    const pendingA = h.resolve(formA);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(1));
+    const pendingB = h.resolve(formB);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(2));
+    expect(h.calls.fetch.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({ entries: [expect.objectContaining({ providerId: 'unsaved/form' })] }),
+      expect.objectContaining({ entries: [expect.objectContaining({ providerId: 'unsaved/form' })] }),
+    ]);
+
+    releases[1]!(responseFor([formB], 'r2'));
+    releases[0]!(responseFor([formA], 'r1'));
+    const [resolvedA, resolvedB] = await Promise.all([pendingA, pendingB]);
+    expect(resolvedA && isLatestModelResolveResult(resolvedA)).toBe(true);
+    expect(resolvedB && isLatestModelResolveResult(resolvedB)).toBe(true);
+    const persisted = JSON.parse(h.disk()!) as {
+      entries: Array<{ knowledgeRevision: string }>;
+    };
+    expect(persisted.entries).toEqual([expect.objectContaining({ knowledgeRevision: 'r2' })]);
+  });
+
+  it('deduplicates one resolve flight across independent local apply scopes', async () => {
+    const formA: ModelResolveInput = {
+      ...INPUT,
+      providerId: 'unsaved/form',
+      localApplyScope: 'request-a',
+    };
+    const formB: ModelResolveInput = { ...formA, localApplyScope: 'request-b' };
+    let release!: (value: unknown) => void;
+    const h = harness({
+      fetch: () => new Promise((resolve) => {
+        release = resolve;
+      }),
+    });
+
+    const pendingA = h.resolve(formA);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledOnce());
+    const pendingB = h.resolve(formB);
+    await Promise.resolve();
+    expect(h.calls.fetch).toHaveBeenCalledOnce();
+
+    release(responseFor([formA], 'r1'));
+    const [resolvedA, resolvedB] = await Promise.all([pendingA, pendingB]);
+    expect(resolvedA && isLatestModelResolveResult(resolvedA)).toBe(true);
+    expect(resolvedB && isLatestModelResolveResult(resolvedB)).toBe(true);
+  });
+
+  it('keeps latest-wins semantics within one local apply scope', async () => {
+    const olderInput: ModelResolveInput = { ...INPUT, localApplyScope: 'same-form' };
+    const newerInput: ModelResolveInput = {
+      ...olderInput,
+      sourceIdentity: { kind: 'native', id: 'same-form-new-source' },
+    };
+    const releases: Array<(value: unknown) => void> = [];
+    const h = harness({
+      fetch: () => new Promise((resolve) => releases.push(resolve)),
+    });
+
+    const older = h.resolve(olderInput);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(1));
+    const newer = h.resolve(newerInput);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(2));
+    releases[1]!(responseFor([newerInput], 'r2'));
+    releases[0]!(responseFor([olderInput], 'r1'));
+
+    const [olderResult, newerResult] = await Promise.all([older, newer]);
+    expect(olderResult && isLatestModelResolveResult(olderResult)).toBe(false);
+    expect(newerResult && isLatestModelResolveResult(newerResult)).toBe(true);
+  });
+
+  it('invalidates local child apply slots with their canonical provider runtime slot', async () => {
+    const localInput: ModelResolveInput = { ...INPUT, localApplyScope: 'unsaved-request' };
+    let release!: (value: unknown) => void;
+    const h = harness({
+      fetch: () => new Promise((resolve) => {
+        release = resolve;
+      }),
+    });
+
+    const pending = h.resolve(localInput);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledOnce());
+    invalidateModelResolveApplySlots([localInput]);
+    release(responseFor([localInput], 'r1'));
+
+    const stale = await pending;
+    expect(stale && isLatestModelResolveResult(stale)).toBe(false);
+    expect(h.disk()).toBeNull();
+  });
+
+  it('releases a one-shot local apply slot without invalidating the canonical cache slot', async () => {
+    const localInput: ModelResolveInput = { ...INPUT, localApplyScope: 'one-shot-request' };
+    const h = harness();
+    const local = await h.resolve(localInput);
+    expect(local && isLatestModelResolveResult(local)).toBe(true);
+
+    if (!local) throw new Error('local resolve result expected');
+    releaseModelResolveApplyResult(local);
+    expect(isLatestModelResolveResult(local)).toBe(false);
+    await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
+    expect(h.calls.fetch).toHaveBeenCalledOnce();
+  });
+
+  it('automatically releases local apply slots when resolve returns null', async () => {
+    const h = harness({ fetch: async () => { throw new Error('offline'); } });
+    for (let index = 0; index < 5; index += 1) {
+      await expect(
+        h.resolve({ ...INPUT, localApplyScope: `failed-request-${index}` }),
+      ).resolves.toBeNull();
+      expect(modelResolveLocalApplyStateForTests()).toEqual({
+        trackedSlots: 0,
+        applyTokens: 0,
+        cacheKeys: 0,
+      });
+    }
+  });
+
+  it('automatically releases local apply slots when owner identity changes in flight', async () => {
+    let ownerScope = 'cloud:owner-a:1';
+    let release!: (value: unknown) => void;
+    const h = harness({
+      getOwnerScopeKey: () => ownerScope,
+      fetch: () => new Promise((resolve) => {
+        release = resolve;
+      }),
+    });
+    const localInput: ModelResolveInput = { ...INPUT, localApplyScope: 'identity-race' };
+    const pending = h.resolve(localInput);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledOnce());
+
+    ownerScope = 'cloud:owner-b:2';
+    release(responseFor([localInput], 'r1'));
+
+    await expect(pending).resolves.toBeNull();
+    expect(modelResolveLocalApplyStateForTests()).toEqual({
+      trackedSlots: 0,
+      applyTokens: 0,
+      cacheKeys: 0,
+    });
   });
 
   it('rejects a late result after its provider runtime slot is invalidated', async () => {
