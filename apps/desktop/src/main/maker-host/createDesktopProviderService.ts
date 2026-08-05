@@ -89,7 +89,10 @@ import {
   resetGrokOAuthMemoryCache,
 } from './grok-oauth-login.js';
 import { getAuthState } from '../authManager.js';
-import { resolveProviderModels } from '../model-access/modelResolve.js';
+import {
+  isLatestModelResolveResult,
+  resolveProviderModelEntries,
+} from '../model-access/modelResolve.js';
 import { getActiveAppSession } from '../appSessionState.js';
 import {
   filterProviderCatalogForAccount,
@@ -114,27 +117,32 @@ function resolveDiscoveredCodexModels(models: Catalog['providers'][number]['mode
     ...(model.contextWindowVerified ? { providerReported: { contextWindow: model.contextWindow } } : {}),
   }));
   const ids = models.map((model) => model.id);
-  for (const agent of ['codex', 'claude-code'] as const) {
-    void resolveProviderModels({ providerId: 'openai', agent, models: requestModels })
-      .then((resolved) => {
-        if (!resolved) return;
-        const overlay = resolved.entry.models.map((model) => ({
-          ...model,
-          ...(agent === 'claude-code' ? { id: `chatgpt/${model.id}`, supportsFastMode: false } : {}),
-        }));
-        const overlayIds = overlay.map((model) => model.id);
-        const allIds = agent === 'claude-code' ? ids.map((id) => `chatgpt/${id}`) : ids;
-        setResolvedProviderModels(
-          'openai',
-          agent,
-          overlayIds,
-          overlay,
-          resolved.knowledgeRevision,
-          allIds,
-        );
-      })
-      .catch(() => undefined);
-  }
+  const agents = ['codex', 'claude-code'] as const;
+  void resolveProviderModelEntries(agents.map((agent) => ({
+    providerId: 'openai',
+    agent,
+    sourceIdentity: { kind: 'native' as const, id: 'openai:codex-models-cache' },
+    models: requestModels,
+  }))).then((resolvedEntries) => {
+    for (const [index, agent] of agents.entries()) {
+      const resolved = resolvedEntries[index];
+      if (!resolved || !isLatestModelResolveResult(resolved)) continue;
+      const overlay = resolved.entry.models.map((model) => ({
+        ...model,
+        ...(agent === 'claude-code' ? { id: `chatgpt/${model.id}`, supportsFastMode: false } : {}),
+      }));
+      const overlayIds = overlay.map((model) => model.id);
+      const allIds = agent === 'claude-code' ? ids.map((id) => `chatgpt/${id}`) : ids;
+      setResolvedProviderModels(
+        'openai',
+        agent,
+        overlayIds,
+        overlay,
+        resolved.knowledgeRevision,
+        allIds,
+      );
+    }
+  }).catch(() => undefined);
 }
 
 /**

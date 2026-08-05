@@ -12,6 +12,7 @@ vi.mock('../../serverApiClient.js', () => ({
 
 import {
   createModelResolver,
+  isLatestModelResolveResult,
   modelResolveCacheKey,
   modelResolveRealm,
   resetModelResolveStateForTests,
@@ -22,31 +23,60 @@ const INPUT: ModelResolveInput = {
   providerId: 'acme',
   agent: 'codex',
   wireProtocol: 'openai-responses',
+  sourceIdentity: {
+    kind: 'provider-runtime',
+    upstream: 'https://api.acme.test/openai/v1',
+    modelsUrl: 'https://api.acme.test/openai/v1/models?tenant=one&region=us',
+  },
   models: [{ id: 'model-a', name: 'Model A' }],
 };
 
-function response(revision = 'r1') {
+const CLAUDE_INPUT: ModelResolveInput = {
+  providerId: 'acme',
+  agent: 'claude-code',
+  sourceIdentity: {
+    kind: 'provider-runtime',
+    upstream: 'https://api.acme.test/anthropic',
+    modelsUrl: 'https://api.acme.test/anthropic/v1/models?tenant=one',
+  },
+  models: [{ id: 'model-b', name: 'Model B' }],
+};
+
+const DEFAULT_BASE_URL = 'https://models.example.test/api';
+const DEFAULT_REALM = modelResolveRealm(DEFAULT_BASE_URL)!;
+
+function responseFor(
+  inputs: readonly ModelResolveInput[],
+  revision = 'r1',
+  reverseEntries = false,
+) {
+  const entries = inputs.map((input) => ({
+    providerId: input.providerId,
+    agent: input.agent,
+    models: input.models.map((model) => ({
+      id: model.id,
+      name: model.name ?? model.id,
+      contextWindow: 128_000,
+      efforts: ['high'],
+      defaultEffort: 'high',
+    })),
+  }));
   return {
     schemaVersion: 2,
     knowledgeRevision: revision,
-    entries: [{
-      providerId: 'acme',
-      agent: 'codex',
-      models: [{
-        id: 'model-a',
-        name: 'Model A',
-        contextWindow: 128_000,
-        efforts: ['high'],
-        defaultEffort: 'high',
-      }],
-    }],
+    entries: reverseEntries ? entries.reverse() : entries,
   };
+}
+
+function response(revision = 'r1') {
+  return responseFor([INPUT], revision);
 }
 
 function harness(options: {
   baseUrl?: string;
+  getBaseUrl?: () => string;
   disk?: string | null;
-  fetch?: () => Promise<unknown>;
+  fetch?: (request: unknown) => Promise<unknown>;
   disabled?: boolean;
 } = {}) {
   let disk = options.disk ?? null;
@@ -60,7 +90,7 @@ function harness(options: {
     writeFile: vi.fn(async (_path: string, text: string) => { disk = text; }),
     rename: vi.fn(async () => undefined),
     remove: vi.fn(async () => undefined),
-    getBaseUrl: vi.fn(() => options.baseUrl ?? 'https://models.example.test/api'),
+    getBaseUrl: vi.fn(options.getBaseUrl ?? (() => options.baseUrl ?? DEFAULT_BASE_URL)),
     getUserDataDir: vi.fn(() => '/tmp/model-resolve-test'),
     disabled: vi.fn(() => options.disabled === true),
   };
@@ -72,21 +102,136 @@ afterEach(() => {
 });
 
 describe('model resolve client', () => {
-  it('keys the cache by provider, agent, and ordered model-id hash', () => {
+  it('keys the cache by effective wire, exact source identity, and complete request facts', () => {
     expect(modelResolveCacheKey(INPUT)).toBe(modelResolveCacheKey({ ...INPUT }));
+    expect(modelResolveCacheKey({ ...INPUT, wireProtocol: undefined })).toBe(
+      modelResolveCacheKey(INPUT),
+    );
     expect(modelResolveCacheKey(INPUT)).not.toBe(
       modelResolveCacheKey({ ...INPUT, agent: 'claude-code' }),
     );
     expect(modelResolveCacheKey(INPUT)).not.toBe(
-      modelResolveCacheKey({ ...INPUT, models: [{ id: 'model-b' }] }),
+      modelResolveCacheKey({ ...INPUT, wireProtocol: 'openai-chat' }),
+    );
+    expect(modelResolveCacheKey(INPUT)).not.toBe(
+      modelResolveCacheKey({
+        ...INPUT,
+        sourceIdentity: {
+          ...INPUT.sourceIdentity,
+          requestPath: '/chat/completions',
+        },
+      }),
+    );
+    expect(modelResolveCacheKey(INPUT)).not.toBe(
+      modelResolveCacheKey({
+        ...INPUT,
+        sourceIdentity: {
+          kind: 'provider-runtime',
+          upstream: 'https://api.acme.test/openai/v1',
+          modelsUrl: 'https://api.acme.test/openai/v1/models?region=us&tenant=one',
+        },
+      }),
+    );
+    const tokenized = modelResolveCacheKey({
+      ...INPUT,
+      sourceIdentity: {
+        kind: 'provider-runtime',
+        upstream: 'https://api.acme.test/openai/v1',
+        modelsUrl: 'https://api.acme.test/openai/v1/models?tenant=one&api_key=secret',
+      },
+    });
+    expect(tokenized).not.toBe(modelResolveCacheKey(INPUT));
+    expect(tokenized).not.toContain('secret');
+    expect(modelResolveCacheKey(INPUT)).not.toBe(
+      modelResolveCacheKey({ ...INPUT, models: [{ id: 'model-a', name: 'Renamed' }] }),
+    );
+    expect(modelResolveCacheKey(INPUT)).not.toBe(
+      modelResolveCacheKey({
+        ...INPUT,
+        models: [
+          { id: 'model-a', name: 'Model A', providerReported: { contextWindow: 1_000_000 } },
+        ],
+      }),
+    );
+    expect(
+      modelResolveCacheKey({
+        ...INPUT,
+        models: [{
+          id: 'model-a',
+          name: 'Model A',
+          providerReported: {
+            capabilities: { reasoning: true, toolCall: false },
+            modalities: { input: ['text', 'image'], output: ['text'] },
+          },
+        }],
+      }),
+    ).toBe(
+      modelResolveCacheKey({
+        ...INPUT,
+        models: [{
+          id: 'model-a',
+          name: 'Model A',
+          providerReported: {
+            modalities: { output: ['text'], input: ['text', 'image'] },
+            capabilities: { toolCall: false, reasoning: true },
+          },
+        }],
+      }),
     );
   });
 
-  it('normalizes the endpoint realm to the base host', () => {
-    expect(modelResolveRealm('https://Models.Example.test:8443/path')).toBe(
-      'models.example.test:8443',
+  it('hashes the complete resolve endpoint realm without persisting query credentials', () => {
+    const realm = modelResolveRealm('https://Models.Example.test:8443/path?api_key=secret');
+    expect(realm).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(realm).not.toContain('secret');
+    expect(modelResolveRealm('http://models.example.test/path')).not.toBe(
+      modelResolveRealm('https://models.example.test/path'),
+    );
+    expect(modelResolveRealm('https://models.example.test/tenant-a')).not.toBe(
+      modelResolveRealm('https://models.example.test/tenant-b'),
+    );
+    expect(modelResolveRealm('https://models.example.test/path?token=a')).not.toBe(
+      modelResolveRealm('https://models.example.test/path?token=b'),
     );
     expect(modelResolveRealm('not a URL')).toBeNull();
+  });
+
+  it('invalidates the fingerprint for every provider-reported protocol field', () => {
+    const baseline = modelResolveCacheKey(INPUT);
+    const variants: Array<NonNullable<ModelResolveInput['models'][number]['providerReported']>> = [
+      { contextWindow: 1_000_000 },
+      { maxOutput: 128_000 },
+      { modalities: { input: ['text', 'image'], output: ['text'] } },
+      { capabilities: { reasoning: true, toolCall: true, attachment: true, temperature: false } },
+      { mode: 'chat' },
+      { type: 'responses' },
+    ];
+    for (const providerReported of variants) {
+      expect(modelResolveCacheKey({
+        ...INPUT,
+        models: [{ id: 'model-a', name: 'Model A', providerReported }],
+      })).not.toBe(baseline);
+    }
+  });
+
+  it('sends the same projected facts used by the fingerprint and an explicit effective wire', async () => {
+    const h = harness({
+      fetch: async (request) => {
+        expect(request).toEqual({
+          schemaVersion: 2,
+          entries: [{
+            providerId: 'acme',
+            agent: 'codex',
+            wireProtocol: 'openai-responses',
+            models: [{ id: 'model-a', name: 'Model A' }],
+          }],
+        });
+        return response();
+      },
+    });
+    await expect(h.resolve({ ...INPUT, wireProtocol: undefined })).resolves.toMatchObject({
+      knowledgeRevision: 'r1',
+    });
   });
 
   it('strictly validates the response and degrades to null', async () => {
@@ -98,13 +243,8 @@ describe('model resolve client', () => {
   it('uses matching last-known-good when a refresh response is structurally invalid', async () => {
     const key = modelResolveCacheKey(INPUT);
     const disk = JSON.stringify({
-      version: 1,
-      entries: [{
-        key,
-        realm: 'models.example.test',
-        knowledgeRevision: 'r1',
-        response: response(),
-      }],
+      version: 2,
+      entries: [{ key, realm: DEFAULT_REALM, knowledgeRevision: 'r1', response: response() }],
     });
     const h = harness({ disk, fetch: async () => ({ ...response('broken'), schemaVersion: 1 }) });
     await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
@@ -113,15 +253,19 @@ describe('model resolve client', () => {
 
   it('single-flights identical requests and persists last-known-good atomically', async () => {
     let release!: (value: unknown) => void;
-    const h = harness({ fetch: () => new Promise((resolve) => { release = resolve; }) });
+    const h = harness({
+      fetch: () => new Promise((resolve) => { release = resolve; }),
+    });
     const first = h.resolve(INPUT);
     const second = h.resolve(INPUT);
     await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledOnce());
     release(response());
-    await expect(Promise.all([first, second])).resolves.toEqual([
+    const resolved = await Promise.all([first, second]);
+    expect(resolved).toEqual([
       expect.objectContaining({ knowledgeRevision: 'r1' }),
       expect.objectContaining({ knowledgeRevision: 'r1' }),
     ]);
+    expect(resolved.every((result) => result && isLatestModelResolveResult(result))).toBe(true);
     expect(h.calls.writeFile).toHaveBeenCalledOnce();
     expect(h.calls.rename).toHaveBeenCalledOnce();
     expect(h.disk()).toContain('"knowledgeRevision":"r1"');
@@ -130,15 +274,13 @@ describe('model resolve client', () => {
   it('uses matching-realm last-known-good only when refresh fails', async () => {
     const key = modelResolveCacheKey(INPUT);
     const disk = JSON.stringify({
-      version: 1,
-      entries: [{
-        key,
-        realm: 'models.example.test',
-        knowledgeRevision: 'r1',
-        response: response(),
-      }],
+      version: 2,
+      entries: [{ key, realm: DEFAULT_REALM, knowledgeRevision: 'r1', response: response() }],
     });
-    const matching = harness({ disk, fetch: async () => { throw new Error('offline'); } });
+    const matching = harness({
+      disk,
+      fetch: async () => { throw new Error('offline'); },
+    });
     await expect(matching.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
 
     resetModelResolveStateForTests();
@@ -148,6 +290,183 @@ describe('model resolve client', () => {
       fetch: async () => { throw new Error('offline'); },
     });
     await expect(mismatched.resolve(INPUT)).resolves.toBeNull();
+  });
+
+  it('keeps a network-failure last-known-good in memory for the current fingerprint', async () => {
+    const key = modelResolveCacheKey(INPUT);
+    const disk = JSON.stringify({
+      version: 2,
+      entries: [{ key, realm: DEFAULT_REALM, knowledgeRevision: 'r1', response: response() }],
+    });
+    const h = harness({
+      disk,
+      fetch: async () => { throw new Error('offline'); },
+    });
+    await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
+    await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
+    expect(h.calls.fetch).toHaveBeenCalledOnce();
+  });
+
+  it('drops a response when the model-access realm changes during the request', async () => {
+    let baseUrl = DEFAULT_BASE_URL;
+    const h = harness({
+      getBaseUrl: () => baseUrl,
+      fetch: async () => {
+        baseUrl = 'https://other.example.test/api';
+        return response();
+      },
+    });
+    await expect(h.resolve(INPUT)).resolves.toBeNull();
+    expect(h.calls.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('does not reuse a v1 cache whose fingerprint omitted wire and provider facts', async () => {
+    const disk = JSON.stringify({
+      version: 1,
+      entries: [{
+        key: modelResolveCacheKey(INPUT),
+        realm: DEFAULT_REALM,
+        knowledgeRevision: 'r1',
+        response: response(),
+      }],
+    });
+    const h = harness({
+      disk,
+      fetch: async () => { throw new Error('offline'); },
+    });
+    await expect(h.resolve(INPUT)).resolves.toBeNull();
+  });
+
+  it('resolves multiple agent entries in one request and persists compact per-entry envelopes', async () => {
+    const h = harness({
+      fetch: async (request) => {
+        expect(request).toMatchObject({
+          schemaVersion: 2,
+          entries: [
+            { providerId: 'acme', agent: 'codex', wireProtocol: 'openai-responses' },
+            { providerId: 'acme', agent: 'claude-code', wireProtocol: 'anthropic-messages' },
+          ],
+        });
+        return responseFor([INPUT, CLAUDE_INPUT], 'r2', true);
+      },
+    });
+
+    const resolved = await h.resolve.resolveEntries([INPUT, CLAUDE_INPUT]);
+    expect(resolved.map((result) => result?.entry.agent)).toEqual(['codex', 'claude-code']);
+    expect(resolved.map((result) => result?.entry.models[0]?.id)).toEqual(['model-a', 'model-b']);
+    expect(h.calls.fetch).toHaveBeenCalledOnce();
+    expect(h.calls.writeFile).toHaveBeenCalledOnce();
+
+    const persisted = JSON.parse(h.disk()!) as {
+      version: number;
+      entries: Array<{ response: { entries: unknown[] } }>;
+    };
+    expect(persisted.version).toBe(2);
+    expect(persisted.entries).toHaveLength(2);
+    expect(persisted.entries.every((entry) => entry.response.entries.length === 1)).toBe(true);
+  });
+
+  it('replaces an older fingerprint in the same provider-agent cache slot', async () => {
+    const changed: ModelResolveInput = {
+      ...INPUT,
+      sourceIdentity: {
+        kind: 'provider-runtime',
+        upstream: 'https://api.acme.test/openai/v1',
+        modelsUrl: 'https://api.acme.test/openai/v1/models?tenant=two',
+      },
+    };
+    const h = harness();
+    await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
+    h.calls.fetch.mockImplementation(async () => responseFor([changed], 'r2'));
+    await expect(h.resolve(changed)).resolves.toMatchObject({ knowledgeRevision: 'r2' });
+
+    const persisted = JSON.parse(h.disk()!) as {
+      entries: Array<{ slot: string; knowledgeRevision: string }>;
+    };
+    expect(persisted.entries).toHaveLength(1);
+    expect(persisted.entries[0]).toMatchObject({
+      slot: 'acme\u0000codex',
+      knowledgeRevision: 'r2',
+    });
+
+    h.calls.fetch.mockImplementation(async () => responseFor([INPUT], 'r3'));
+    await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r3' });
+    expect(h.calls.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('allows only the latest differing fingerprint to be applied or persisted', async () => {
+    const changed: ModelResolveInput = {
+      ...INPUT,
+      sourceIdentity: { kind: 'native', id: 'new-source' },
+    };
+    const releases: Array<(value: unknown) => void> = [];
+    const h = harness({
+      fetch: () => new Promise((resolve) => { releases.push(resolve); }),
+    });
+    const older = h.resolve(INPUT);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(1));
+    const newer = h.resolve(changed);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(2));
+    releases[1]!(responseFor([changed], 'r2'));
+    releases[0]!(response('r1'));
+
+    const [olderResult, newerResult] = await Promise.all([older, newer]);
+    expect(olderResult && isLatestModelResolveResult(olderResult)).toBe(false);
+    expect(newerResult && isLatestModelResolveResult(newerResult)).toBe(true);
+    const persisted = JSON.parse(h.disk()!) as {
+      entries: Array<{ knowledgeRevision: string }>;
+    };
+    expect(persisted.entries).toEqual([
+      expect.objectContaining({ knowledgeRevision: 'r2' }),
+    ]);
+  });
+
+  it('sends only cache misses when a batch mixes a memory hit with a new entry', async () => {
+    const h = harness();
+    await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
+    h.calls.fetch.mockImplementation(async () => responseFor([CLAUDE_INPUT], 'r2'));
+
+    const resolved = await h.resolve.resolveEntries([INPUT, CLAUDE_INPUT]);
+    expect(resolved.map((result) => result?.knowledgeRevision)).toEqual(['r1', 'r2']);
+    expect(h.calls.fetch).toHaveBeenCalledTimes(2);
+    expect(h.calls.fetch.mock.calls[1]?.[0]).toMatchObject({
+      entries: [{ providerId: 'acme', agent: 'claude-code' }],
+    });
+  });
+
+  it('accepts valid batch entries independently when another response entry is missing', async () => {
+    const h = harness({ fetch: async () => responseFor([INPUT], 'r2') });
+    const resolved = await h.resolve.resolveEntries([INPUT, CLAUDE_INPUT]);
+    expect(resolved[0]).toMatchObject({ knowledgeRevision: 'r2' });
+    expect(resolved[1]).toBeNull();
+    const persisted = JSON.parse(h.disk()!) as { entries: unknown[] };
+    expect(persisted.entries).toHaveLength(1);
+  });
+
+  it('deduplicates identical entries while preserving input alignment', async () => {
+    const h = harness();
+    const resolved = await h.resolve.resolveEntries([INPUT, { ...INPUT }]);
+    expect(resolved).toHaveLength(2);
+    expect(resolved[0]).toEqual(resolved[1]);
+    expect(h.calls.fetch).toHaveBeenCalledOnce();
+    expect(h.calls.fetch.mock.calls[0]?.[0]).toMatchObject({ entries: [{ agent: 'codex' }] });
+  });
+
+  it('rejects ambiguous duplicate provider-agent entries before endpoint or disk access', async () => {
+    const h = harness();
+    const conflicting: ModelResolveInput = { ...INPUT, wireProtocol: 'openai-chat' };
+    await expect(h.resolve.resolveEntries([INPUT, conflicting])).resolves.toEqual([null, null]);
+    expect(h.calls.getBaseUrl).not.toHaveBeenCalled();
+    expect(h.calls.getUserDataDir).not.toHaveBeenCalled();
+    expect(h.calls.fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects an explicitly empty wire before endpoint or disk access', async () => {
+    const h = harness();
+    await expect(h.resolve({ ...INPUT, wireProtocol: '  ' })).resolves.toBeNull();
+    expect(h.calls.getBaseUrl).not.toHaveBeenCalled();
+    expect(h.calls.readFile).not.toHaveBeenCalled();
+    expect(h.calls.fetch).not.toHaveBeenCalled();
   });
 
   it('disabled flag performs no endpoint, disk, network, or write side effects', async () => {

@@ -202,7 +202,10 @@ import {
   getDesktopMcpToolApprovalPolicy,
 } from './mcp-tool-approval-policy.js';
 import { mapCodexAppServerModelsToCatalog } from './codex-model-discovery.js';
-import { resolveProviderModels } from '../model-access/modelResolve.js';
+import {
+  isLatestModelResolveResult,
+  resolveProviderModelEntries,
+} from '../model-access/modelResolve.js';
 import { prepareSharedProjectSkillLinks } from './shared-global-skills.js';
 import { DESKTOP_CAPABILITY_ROUTING_POLICY } from './capability-routing.js';
 export { withRehydrateCloseSuppressed };
@@ -298,14 +301,29 @@ setAnthropicModelsAppliedListener((models) => {
     name: model.name,
     ...(model.contextWindowVerified ? { providerReported: { contextWindow: model.contextWindow } } : {}),
   }));
-  for (const agent of ['claude-code', 'codex'] as const) {
-    void resolveProviderModels({
+  const provider = getActiveCatalog().providers.find((candidate) => candidate.id === 'anthropic');
+  const discoveryUpstream =
+    provider?.routing['claude-code']?.upstream ?? 'https://api.anthropic.com';
+  const modelsUrl = `${discoveryUpstream.replace(/\/+$/, '')}/v1/models?limit=1000`;
+  const agents = ['claude-code', 'codex'] as const;
+  void resolveProviderModelEntries(agents.map((agent) => {
+    const route = provider?.routing[agent];
+    return {
       providerId: 'anthropic',
       agent,
-      wireProtocol: agent === 'codex' ? 'anthropic-messages' : undefined,
+      wireProtocol: agent === 'codex' ? 'anthropic-messages' : route?.wireProtocol,
+      sourceIdentity: {
+        kind: 'provider-runtime' as const,
+        upstream: route?.upstream ?? discoveryUpstream,
+        ...(route?.requestPath ? { requestPath: route.requestPath } : {}),
+        modelsUrl,
+      },
       models: requestModels,
-    }).then((resolved) => {
-      if (!resolved) return;
+    };
+  })).then((resolvedEntries) => {
+    for (const [index, agent] of agents.entries()) {
+      const resolved = resolvedEntries[index];
+      if (!resolved || !isLatestModelResolveResult(resolved)) continue;
       setResolvedProviderModels(
         'anthropic',
         agent,
@@ -317,8 +335,8 @@ setAnthropicModelsAppliedListener((models) => {
         resolved.knowledgeRevision,
         ids,
       );
-    }).catch(() => undefined);
-  }
+    }
+  }).catch(() => undefined);
 });
 
 setAnthropicDiscoveryFailureListener(() => {
@@ -1101,29 +1119,34 @@ export function getMaker(): Maker {
         if (process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE !== '1' && discovered.length > 0) {
           const ids = discovered.map((model) => model.id);
           const requestModels = discovered.map((model) => ({ id: model.id, name: model.name }));
-          for (const agent of ['codex', 'claude-code'] as const) {
-            void resolveProviderModels({ providerId: 'openai', agent, models: requestModels })
-              .then((resolved) => {
-                if (!resolved) return;
-                const models = resolved.entry.models.map((model) => ({
-                  ...model,
-                  ...(agent === 'claude-code'
-                    ? { id: `chatgpt/${model.id}`, supportsFastMode: false }
-                    : {}),
-                }));
-                const resolvedIds = models.map((model) => model.id);
-                const allIds = agent === 'claude-code' ? ids.map((id) => `chatgpt/${id}`) : ids;
-                setResolvedProviderModels(
-                  'openai',
-                  agent,
-                  resolvedIds,
-                  models,
-                  resolved.knowledgeRevision,
-                  allIds,
-                );
-              })
-              .catch(() => undefined);
-          }
+          const agents = ['codex', 'claude-code'] as const;
+          void resolveProviderModelEntries(agents.map((agent) => ({
+            providerId: 'openai',
+            agent,
+            sourceIdentity: { kind: 'native' as const, id: 'openai:codex-app-server-model-list' },
+            models: requestModels,
+          }))).then((resolvedEntries) => {
+            for (const [index, agent] of agents.entries()) {
+              const resolved = resolvedEntries[index];
+              if (!resolved || !isLatestModelResolveResult(resolved)) continue;
+              const models = resolved.entry.models.map((model) => ({
+                ...model,
+                ...(agent === 'claude-code'
+                  ? { id: `chatgpt/${model.id}`, supportsFastMode: false }
+                  : {}),
+              }));
+              const resolvedIds = models.map((model) => model.id);
+              const allIds = agent === 'claude-code' ? ids.map((id) => `chatgpt/${id}`) : ids;
+              setResolvedProviderModels(
+                'openai',
+                agent,
+                resolvedIds,
+                models,
+                resolved.knowledgeRevision,
+                allIds,
+              );
+            }
+          }).catch(() => undefined);
         }
       },
       // 「后端不可达」终局升级时读一次本次请求的出站路径判定,把通用猜测换成实测事实。
