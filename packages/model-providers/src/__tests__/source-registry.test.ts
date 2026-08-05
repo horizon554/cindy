@@ -377,6 +377,32 @@ describe('mergeWithBundled', () => {
     });
   });
 
+  it('v3 marks materialized static windows verified while preserving an explicit opt-out', () => {
+    const parsed = parseCatalog({
+      version: '3',
+      providers: [{
+        id: 'xai',
+        models: {
+          codex: [
+            model('xai/v3-known', { contextWindow: 262_144 }),
+            model('xai/v3-opted-out', {
+              contextWindow: 272_000,
+              contextWindowVerified: false,
+            }),
+          ],
+        },
+      }],
+    });
+
+    const models = mergeWithBundled(parsed).providers
+      .find((provider) => provider.id === 'xai')!
+      .models.codex!;
+    expect(models.find((entry) => entry.id === 'xai/v3-known')?.contextWindowVerified).toBe(true);
+    expect(
+      models.find((entry) => entry.id === 'xai/v3-opted-out')?.contextWindowVerified,
+    ).toBe(false);
+  });
+
   it('v3 validates duplicate model metadata after materializing bundled provider deltas', () => {
     const bundledXai = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'xai')!;
     const xaiModel = bundledXai.models.codex?.[0];

@@ -19,6 +19,7 @@ import {
   validateProvider,
   validateModelConsistency,
 } from "./catalog.js";
+import { withVerifiedStaticWindows } from "./builtin.js";
 import {
   compareModelRegistryRevisions,
   decideModelRegistrySnapshot,
@@ -369,7 +370,7 @@ export function mergeWithBundled(primary: Catalog): Catalog {
   // xAI is the only provider whose model list is a static part of this Catalog snapshot. When
   // bundled wins the registry revision guard, keep its xAI provider with that same snapshot
   // instead of combining a new registry with an older remote/LKG list.
-  const providers =
+  const selectedProviders =
     selectedRegistry.fromFallback && primary.modelRegistry !== undefined
       ? merged.map((provider) =>
           provider.id === "xai"
@@ -377,6 +378,13 @@ export function mergeWithBundled(primary: Catalog): Catalog {
             : provider,
         )
       : merged;
+  // v1/v2 get this provenance marker in parseCatalog(). A v3 bundled-provider entry is only a
+  // partial delta there, so normalize after identity-card materialization and registry revision
+  // selection instead. Static catalog windows are trusted unless the entry explicitly opts out;
+  // runtime discovery never enters this merge path.
+  const providers = primary.version === "3"
+    ? selectedProviders.map(withVerifiedStaticWindows)
+    : selectedProviders;
   const defaults: Catalog["defaults"] =
     primary.version === "3"
       ? { ...BUNDLED_CATALOG.defaults }
