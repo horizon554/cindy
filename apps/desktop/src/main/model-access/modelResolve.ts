@@ -220,6 +220,15 @@ export function isLatestModelResolveResult(result: ModelResolveResult): boolean 
   return latestApplyTokenBySlot.get(modelResolveSlot(result.entry)) === result.applyToken;
 }
 
+/** Make every already-issued resolve result ineligible for later active-catalog application. */
+export function invalidateModelResolveApplyState(): void {
+  latestApplyTokenBySlot.clear();
+  latestCacheKeyBySlot.clear();
+  // A new auth identity must not join a request started with the previous identity. The old
+  // promise may still settle, but identity checks below keep it from updating cache or disk.
+  inFlight.clear();
+}
+
 export function modelResolveCacheKey(input: ModelResolveInput): string {
   const entry = requestEntry(input);
   const fingerprint = createHash('sha256')
@@ -368,12 +377,19 @@ function compactResponse(result: CachedModelResolveResult): ResolveResponse {
 async function persistResults(
   deps: ModelResolveDeps,
   realm: string,
-  updates: readonly { key: string; slot: string; result: CachedModelResolveResult }[],
+  updates: readonly {
+    key: string;
+    slot: string;
+    applyToken: string;
+    result: CachedModelResolveResult;
+  }[],
 ): Promise<void> {
   if (updates.length === 0) return;
   storeWrite = storeWrite.then(async () => {
     const currentUpdates = updates.filter(
-      ({ key, slot }) => latestCacheKeyBySlot.get(slot) === `${realm}\u0000${key}`,
+      ({ key, slot, applyToken }) =>
+        latestCacheKeyBySlot.get(slot) === `${realm}\u0000${key}` &&
+        latestApplyTokenBySlot.get(slot) === applyToken,
     );
     if (currentUpdates.length === 0) return;
     const store = await loadStore(deps);
@@ -542,15 +558,24 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
           const updates: Array<{
             key: string;
             slot: string;
+            applyToken: string;
             result: CachedModelResolveResult;
           }> = [];
           for (const entry of missing) {
             const result = selectResult(parsed.value, entry.input);
             if (result) {
               resolvedByKey.set(entry.key, result);
-              if (latestCacheKeyBySlot.get(entry.slot) === entry.cacheKey) {
+              if (
+                latestCacheKeyBySlot.get(entry.slot) === entry.cacheKey &&
+                latestApplyTokenBySlot.get(entry.slot) === entry.applyToken
+              ) {
                 setMemoryResult(realm, entry.slot, entry.cacheKey, result);
-                updates.push({ key: entry.key, slot: entry.slot, result });
+                updates.push({
+                  key: entry.key,
+                  slot: entry.slot,
+                  applyToken: entry.applyToken,
+                  result,
+                });
               }
             } else {
               resolvedByKey.set(entry.key, persistedByKey.get(entry.key) ?? null);
@@ -565,7 +590,11 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
               realmBeforeFetch === realm && realmAfterFetch === realm
                 ? (persistedByKey.get(entry.key) ?? null)
                 : null;
-            if (persisted && latestCacheKeyBySlot.get(entry.slot) === entry.cacheKey) {
+            if (
+              persisted &&
+              latestCacheKeyBySlot.get(entry.slot) === entry.cacheKey &&
+              latestApplyTokenBySlot.get(entry.slot) === entry.applyToken
+            ) {
               setMemoryResult(realm, entry.slot, entry.cacheKey, persisted);
             }
             resolvedByKey.set(entry.key, persisted);

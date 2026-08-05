@@ -12,6 +12,7 @@ vi.mock('../../serverApiClient.js', () => ({
 
 import {
   createModelResolver,
+  invalidateModelResolveApplyState,
   isLatestModelResolveResult,
   modelResolveCacheKey,
   modelResolveRealm,
@@ -445,6 +446,32 @@ describe('model resolve client', () => {
     const [olderResult, newerResult] = await Promise.all([older, newer]);
     expect(olderResult && isLatestModelResolveResult(olderResult)).toBe(false);
     expect(newerResult && isLatestModelResolveResult(newerResult)).toBe(true);
+    const persisted = JSON.parse(h.disk()!) as {
+      entries: Array<{ knowledgeRevision: string }>;
+    };
+    expect(persisted.entries).toEqual([expect.objectContaining({ knowledgeRevision: 'r2' })]);
+  });
+
+  it('does not reuse or persist an old-account in-flight result after invalidation', async () => {
+    const releases: Array<(value: unknown) => void> = [];
+    const h = harness({
+      fetch: () =>
+        new Promise((resolve) => {
+          releases.push(resolve);
+        }),
+    });
+    const previous = h.resolve(INPUT);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(1));
+
+    invalidateModelResolveApplyState();
+    const current = h.resolve(INPUT);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(2));
+    releases[1]!(response('r2'));
+    releases[0]!(response('r1'));
+
+    const [previousResult, currentResult] = await Promise.all([previous, current]);
+    expect(previousResult && isLatestModelResolveResult(previousResult)).toBe(false);
+    expect(currentResult && isLatestModelResolveResult(currentResult)).toBe(true);
     const persisted = JSON.parse(h.disk()!) as {
       entries: Array<{ knowledgeRevision: string }>;
     };

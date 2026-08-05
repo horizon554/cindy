@@ -20,6 +20,7 @@ import { Check, ChevronDown, Plug, Plus, RefreshCw, Sparkles, Trash2, X } from '
 
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
+import { subscribeToProviderModelsResolved } from '@/lib/providerModelsResolvedSubscription';
 import { Spinner } from '@/components/ui/spinner';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ClaudeMark } from '@/components/icons/ClaudeMark';
@@ -97,6 +98,9 @@ const TAB_META: Record<DialogAgentKind, { Mark: typeof ClaudeMark; labelKey: str
 
 /** pi 默认 wire protocol:BYOM 本地端点(Ollama/vLLM 的 /v1/chat/completions)最常见。 */
 const PI_DEFAULT_WIRE: ProviderWireProtocol = 'openai-chat';
+
+/** Main 的 resolve 请求超时为 10s；额外留出 token 刷新与 IPC 投递余量后强制释放监听。 */
+const PROVIDER_MODELS_RESOLVE_LISTENER_TIMEOUT_MS = 30_000;
 
 /** 某 agent runtime 的默认 wire protocol。 */
 function defaultWireFor(agent: DialogAgentKind): ProviderWireProtocol {
@@ -356,6 +360,16 @@ export function CustomProviderDialog({
     codex: false,
     pi: false,
   });
+  // Fetch 成功不代表后台 resolve 一定会发 push（禁用/超时/网络失败均可能无事件）。同一
+  // 弹窗只保留最新请求的一个 listener，并在卸载时确定性释放，避免重复打开/拉取后累积。
+  const pendingModelsResolvedStopRef = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      pendingModelsResolvedStopRef.current?.();
+      pendingModelsResolvedStopRef.current = null;
+    },
+    [],
+  );
   // 拉取成功后的勾选弹层：行集合 = 拉取结果 ∪ 表单已填（后者默认勾选、保留用户显示名）。
   const [picker, setPicker] = useState<{
     agent: DialogAgentKind;
@@ -640,33 +654,37 @@ export function CustomProviderDialog({
       initial?.id && savedBaseline && modelFetchCanReuseSavedCredentials(rf, savedBaseline, authMode),
     );
     const requestId = `custom_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    let stopResolved: (() => void) | undefined;
+    pendingModelsResolvedStopRef.current?.();
+    pendingModelsResolvedStopRef.current = null;
     setFetchingModels((prev) => ({ ...prev, [agent]: true }));
     try {
-      stopResolved = window.electronAPI.maker.onProviderModelsResolved((payload) => {
-        if (payload.requestId !== requestId) return;
-        stopResolved?.();
-        stopResolved = undefined;
-        if (
-          providerModelFetchRequestSignature(rtRef.current[agent], authModeRef.current) !==
-          requestSig
-        ) return;
-        const contextById = new Map(
-          payload.models
-            .filter((model) => model.contextWindow !== undefined)
-            .map((model) => [model.id, model.contextWindow!]),
-        );
-        setPicker((currentPicker) => {
-          if (!currentPicker || currentPicker.agent !== agent) return currentPicker;
-          return {
-            ...currentPicker,
-            models: currentPicker.models.map((model) => {
-              if (model.contextWindow !== undefined) return model;
-              const contextWindow = contextById.get(model.id);
-              return contextWindow === undefined ? model : { ...model, contextWindow };
-            }),
-          };
-        });
+      pendingModelsResolvedStopRef.current = subscribeToProviderModelsResolved({
+        requestId,
+        timeoutMs: PROVIDER_MODELS_RESOLVE_LISTENER_TIMEOUT_MS,
+        subscribe: window.electronAPI.maker.onProviderModelsResolved,
+        onResolved: (payload) => {
+          if (
+            providerModelFetchRequestSignature(rtRef.current[agent], authModeRef.current) !==
+            requestSig
+          )
+            return;
+          const contextById = new Map(
+            payload.models
+              .filter((model) => model.contextWindow !== undefined)
+              .map((model) => [model.id, model.contextWindow!]),
+          );
+          setPicker((currentPicker) => {
+            if (!currentPicker || currentPicker.agent !== agent) return currentPicker;
+            return {
+              ...currentPicker,
+              models: currentPicker.models.map((model) => {
+                if (model.contextWindow !== undefined) return model;
+                const contextWindow = contextById.get(model.id);
+                return contextWindow === undefined ? model : { ...model, contextWindow };
+              }),
+            };
+          });
+        },
       });
       const result = await window.electronAPI.maker.fetchProviderModels({
         requestId,
@@ -681,8 +699,11 @@ export function CustomProviderDialog({
       });
       if (
         providerModelFetchRequestSignature(rtRef.current[agent], authModeRef.current) !== requestSig
-      )
+      ) {
+        pendingModelsResolvedStopRef.current?.();
+        pendingModelsResolvedStopRef.current = null;
         return; // 过期响应，静默丢弃
+      }
       if (result.ok && result.models && result.models.length > 0) {
         // 用**响应到达时**的最新表单行构建弹层（rtRef），不是请求发出时的 rf 快照。
         const current = rtRef.current[agent].models
@@ -727,13 +748,13 @@ export function CustomProviderDialog({
         // 请求期间切过 Tab 也不会在错误上下文里确认。
         setActiveTab(agent);
       } else {
-        stopResolved?.();
-        stopResolved = undefined;
+        pendingModelsResolvedStopRef.current?.();
+        pendingModelsResolvedStopRef.current = null;
         toast.error(t(`providerError.${result.code ?? 'UNKNOWN'}`));
       }
     } catch (e) {
-      stopResolved?.();
-      stopResolved = undefined;
+      pendingModelsResolvedStopRef.current?.();
+      pendingModelsResolvedStopRef.current = null;
       if (
         providerModelFetchRequestSignature(rtRef.current[agent], authModeRef.current) !== requestSig
       )

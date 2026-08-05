@@ -231,7 +231,13 @@ function mergeV3Provider(
 ): Provider {
   const merged: Provider = { ...bundled, ...delta };
   if (delta.routing !== undefined) {
-    merged.routing = { ...bundled.routing, ...delta.routing };
+    const routing: Provider['routing'] = { ...bundled.routing };
+    for (const agent of Object.keys(delta.routing) as AgentKind[]) {
+      const routeDelta = delta.routing[agent];
+      if (routeDelta === undefined) continue;
+      routing[agent] = { ...bundled.routing[agent], ...routeDelta };
+    }
+    merged.routing = routing;
   }
   if (delta.models !== undefined) {
     merged.models = { ...bundled.models, ...delta.models };

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BUNDLED_CATALOG, buildUserProvider } from '@cindy/model-providers';
 
 import {
+  clearResolvedProviderModels,
   commitModelPlaneFromCatalog,
   getActiveCatalog,
   getActiveCatalogRevision,
@@ -23,7 +24,7 @@ describe('active catalog revision', () => {
     setCustomProviders([]);
     setDiscoveredCodexModels([]);
     setDiscoveredProviderModels('xai', 'codex', []);
-    setResolvedProviderModels('xai', 'codex', [], [], 'reset');
+    clearResolvedProviderModels();
   });
 
   it('invalidates the merged catalog before notifying one monotonic revision', () => {
@@ -190,6 +191,41 @@ describe('active catalog revision', () => {
     ]);
     expect(models.map((model) => model.category)).toEqual(['anthropic', 'gpt']);
     expect(models.every((model) => model.source === 'resolved')).toBe(true);
+  });
+
+  it('clears resolved metadata without changing live discovery membership', () => {
+    const discovery = [{
+      id: 'xai/account-bound',
+      name: 'Discovery Name',
+      contextWindow: 200_000,
+      efforts: [],
+      defaultEffort: null,
+    }];
+    setDiscoveredProviderModels('xai', 'codex', discovery);
+    const allIds = getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
+      .models.codex!.map((model) => model.id);
+    setResolvedProviderModels(
+      'xai',
+      'codex',
+      discovery.map((model) => model.id),
+      [{ ...discovery[0], name: 'Resolved Name', category: 'grok' }],
+      'account-a-revision',
+      allIds,
+    );
+    expect(
+      getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
+        .models.codex!.find((model) => model.id === 'xai/account-bound'),
+    ).toMatchObject({ name: 'Resolved Name', source: 'resolved' });
+
+    clearResolvedProviderModels();
+
+    const afterClear = getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
+      .models.codex!;
+    expect(afterClear.map((model) => model.id)).toEqual(allIds);
+    expect(afterClear.find((model) => model.id === 'xai/account-bound')).toMatchObject({
+      name: 'Discovery Name',
+    });
+    expect(afterClear.find((model) => model.id === 'xai/account-bound')).not.toHaveProperty('source');
   });
 
   it('refreshes one provider model snapshot without replacing live routing or other providers', () => {

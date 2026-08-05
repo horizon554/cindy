@@ -978,6 +978,13 @@ export function setResolvedProviderModels(
   markChanged();
 }
 
+/** Drop every account-derived resolve overlay without touching live discovery membership. */
+export function clearResolvedProviderModels(): void {
+  if (resolvedByProvider.size === 0) return;
+  resolvedByProvider.clear();
+  markChanged();
+}
+
 /**
  * 注入 XD 网关权威模型清单(model-access 拉取流程写入,重建逻辑见 computeMerged)。
  * 传空数组 = 实时清单不可用,此时 XD 供应商保留但不暴露任何模型。

@@ -13,7 +13,10 @@ import {
   finalizeCodexAfterAuthModeChange,
   cancelCodexAuthModeChange,
 } from '../maker-host/index.js';
-import { setXdGatewayModels } from '../maker-host/active-catalog.js';
+import {
+  clearResolvedProviderModels,
+  setXdGatewayModels,
+} from '../maker-host/active-catalog.js';
 import { replaceGatewayModelPricing, trackGatewayModelPricingSync } from '../usage/modelPricing.js';
 import { isPricedGatewayModel } from '../../shared/modelPriceQuote.js';
 import { throwIpcError } from '../utils/ipcValidate.js';
@@ -37,6 +40,7 @@ import {
 } from './modelsSyncRefresh.js';
 import { getGhostSetupChangeBus } from '../cindy-brain/ghostSetupChangeBus.js';
 import { hasAuthSessionIdentityChanged } from './authSessionIdentity.js';
+import { invalidateModelResolveApplyState } from './modelResolve.js';
 export { isModelAccessReady } from './readiness.js';
 
 const log = createLogger('modelAccess');
@@ -372,7 +376,10 @@ export function initModelAccess(): void {
       )
     ) {
       authGeneration++;
-      // 旧身份模型清单不能跨账号/区域继续显示;新身份拉取成功后再注入。
+      // 旧身份模型清单与 resolve metadata 都不能跨账号/区域继续显示。
+      // 先使旧身份已发出的 resolve 结果失效，再清 overlay，避免在途回包重新落回。
+      invalidateModelResolveApplyState();
+      clearResolvedProviderModels();
       applyGatewayModels([]);
     }
     lastAuthUserId = isAuthenticated ? (userId ?? lastAuthUserId) : null;
