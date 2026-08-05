@@ -2972,6 +2972,16 @@ export class CodexAgent extends BaseAgent {
           model: opts.model,
           authStrategy: this.deps.resolveAuthStrategy?.(opts.providerId, opts.model),
         });
+    const currentCredentialMode = (): AgentCredentialMode | undefined => {
+      if (opts.remoteHostId) return undefined;
+      const model = mutableCatalogModel ?? mutableModel;
+      return resolveAgentCredentialMode({
+        agentKind: 'codex',
+        providerId: mutableProviderId,
+        model,
+        authStrategy: this.deps.resolveAuthStrategy?.(mutableProviderId, model),
+      });
+    };
     const currentHostKey = hostKey(opts.remoteHostId);
     let releaseHostBindingLease: (() => void) | null = null;
     const acquireHostBindingLeaseIfNeeded = (): void => {
@@ -3050,24 +3060,41 @@ export class CodexAgent extends BaseAgent {
             throw new Error('Codex model/list returned an invalid response');
           }
         },
-      }).then(() => assertCurrentHost('model catalog sync'));
+      });
     };
-    const initialCatalogSync = ensureModelCatalogFresh();
+    const synchronizeModelCatalogForCurrentRoute = (
+      phase: 'session startup' | 'turn start',
+    ): Promise<void> | null => {
+      const catalogSync = ensureModelCatalogFresh();
+      if (!catalogSync) return null;
+      return (async () => {
+        try {
+          await catalogSync;
+        } catch (error) {
+          if (currentCredentialMode() === 'provider-oauth') {
+            // 自定义 / 第三方路由不依赖 OpenAI/XD 原生凭证。新安装尚无 native
+            // models_cache 时，model/list 可能失败；目录同步只是描述符增强，不能阻断
+            // 随后的 provider-owned thread/turn start。原生订阅与 Cindy AI 路由仍 fail closed。
+            log.warn('Codex model catalog sync failed on provider-owned route; continuing', {
+              phase,
+              error: String(error),
+            });
+          } else {
+            throw error;
+          }
+        }
+        // 放在 provider-owned 的 best-effort catch 之外：同步失败可以降级，host 被替换
+        // 不能降级，否则旧 session 会继续向已退役 app-server 发 thread/turn start。
+        assertCurrentHost('model catalog sync');
+      })();
+    };
+    const initialCatalogSync = synchronizeModelCatalogForCurrentRoute('session startup');
     if (initialCatalogSync) {
       try {
         await initialCatalogSync;
       } catch (error) {
-        if (credentialMode === 'provider-oauth') {
-          // 自定义 / 第三方路由不依赖 OpenAI/XD 原生凭证。新安装尚无 native
-          // models_cache 时，model/list 可能失败；目录同步只是描述符增强，不能阻断
-          // 随后的 provider-owned thread/start。原生订阅与 Cindy AI 路由仍 fail closed。
-          log.warn('Codex model catalog sync failed on provider-owned route; continuing', {
-            error: String(error),
-          });
-        } else {
-          releaseHostBindingLeaseIfNeeded();
-          throw error;
-        }
+        releaseHostBindingLeaseIfNeeded();
+        throw error;
       }
     }
     // reviewer 路由的凭证模式判定: 远程 daemon 用的是 auth sync 推过去的
@@ -8179,7 +8206,7 @@ export class CodexAgent extends BaseAgent {
             CODEX_INHERITED_CAPABILITY_SELECTION
           ] ?? userMessageText(message.content);
         assertCurrentHost('turn/start');
-        const catalogSync = ensureModelCatalogFresh();
+        const catalogSync = synchronizeModelCatalogForCurrentRoute('turn start');
         if (catalogSync) await catalogSync;
         resubscribeAfterTransportErrorIfNeeded();
         // 新 turn 总是携带当前 (可能已收紧的) 策略, 上一轮残留的延迟中断标记

@@ -408,6 +408,61 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     });
   });
 
+  const mediaDeltaCases = [
+    ['imageModels', 'imageDefaults', 'gpt-image-2'],
+    ['videoModels', 'videoDefaults', 'seedance-fast'],
+    ['embeddingModels', 'embeddingDefaults', 'voyage/voyage-4'],
+  ] as const;
+
+  it.each(mediaDeltaCases)(
+    'v3 rejects malformed bundled %s and %s delta shapes',
+    (modelsField, defaultsField) => {
+      expect(() => parseCatalog({
+        version: '3',
+        providers: [{ id: 'xd', [modelsField]: {} }],
+      })).toThrow(new RegExp(modelsField));
+      expect(() => parseCatalog({
+        version: '3',
+        providers: [{ id: 'xd', [defaultsField]: null }],
+      })).toThrow(new RegExp(defaultsField));
+    },
+  );
+
+  it.each(mediaDeltaCases)(
+    'v3 validates bundled %s and %s as one effective pair',
+    (modelsField, defaultsField, bundledDefault) => {
+      // defaults-only delta legitimately reuses the bundled model list.
+      expect(parseCatalog({
+        version: '3',
+        providers: [{ id: 'xd', [defaultsField]: { standard: bundledDefault } }],
+      }).providers[0]?.[defaultsField]).toEqual({ standard: bundledDefault });
+
+      // models-only replacement still inherits bundled defaults, so removing their targets is invalid.
+      expect(() => parseCatalog({
+        version: '3',
+        providers: [{ id: 'xd', [modelsField]: [{ id: 'replacement', name: 'Replacement' }] }],
+      })).toThrow(new RegExp(defaultsField));
+
+      // Replacing both halves with a self-consistent pair is valid.
+      expect(parseCatalog({
+        version: '3',
+        providers: [{
+          id: 'xd',
+          [modelsField]: [{ id: 'replacement', name: 'Replacement' }],
+          [defaultsField]: { standard: 'replacement' },
+        }],
+      }).providers[0]).toMatchObject({
+        [modelsField]: [{ id: 'replacement', name: 'Replacement' }],
+        [defaultsField]: { standard: 'replacement' },
+      });
+
+      expect(() => parseCatalog({
+        version: '3',
+        providers: [{ id: 'xd', [defaultsField]: { standard: 'missing-model' } }],
+      })).toThrow(new RegExp(defaultsField));
+    },
+  );
+
   it('v3 accepts a fully specified provider that is not bundled in the client', () => {
     const parsed = parseCatalog({
       version: '3',

@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   appendDiscoveredCustomProviderModels,
   createCustomProvider,
+  customProviderModelConfigForSave,
   customProviderModelConfigFromCatalogModel,
+  fillCustomProviderModelMetadata,
   providerViewToCustomProviderConfig,
   refreshCustomProviderModels,
   replaceCustomProviderModelId,
@@ -191,6 +193,55 @@ describe('customProviderModelConfigFromCatalogModel', () => {
       name: 'VLM',
       contextWindow: 1_048_576,
       modalities: { input: ['text', 'image'], output: ['text'] },
+      capabilities: { reasoning: true, toolCall: true },
+    });
+  });
+});
+
+describe('CustomProviderDialog model metadata projection', () => {
+  it('preserves model capability fields through the canonical no-op save projection', () => {
+    const original: ProviderRuntimeModelConfig = {
+      id: '  vlm  ',
+      name: '  Vision Model  ',
+      contextWindow: 1_048_576,
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      capabilities: { reasoning: true, toolCall: true, attachment: false },
+      defaultEnabled: false,
+      supportsImageInput: true,
+      reasoning: true,
+      reasoningEfforts: ['low', 'high'],
+    };
+
+    const saved = customProviderModelConfigForSave(original);
+
+    expect(saved).toEqual({
+      ...original,
+      id: 'vlm',
+      name: 'Vision Model',
+    });
+    expect(saved.modalities).not.toBe(original.modalities);
+    expect(saved.capabilities).not.toBe(original.capabilities);
+    expect(saved.reasoningEfforts).not.toBe(original.reasoningEfforts);
+  });
+
+  it('gap-fills resolved metadata without overriding existing facts or persisting unknown capabilities', () => {
+    expect(fillCustomProviderModelMetadata(
+      {
+        id: 'vlm',
+        name: 'VLM',
+        contextWindow: 128_000,
+        modalities: { input: ['text'], output: ['text'] },
+      },
+      {
+        contextWindow: 1_048_576,
+        modalities: { input: ['text', 'image'], output: ['text'] },
+        capabilities: { reasoning: true, toolCall: true, unknown: true },
+      },
+    )).toEqual({
+      id: 'vlm',
+      name: 'VLM',
+      contextWindow: 128_000,
+      modalities: { input: ['text'], output: ['text'] },
       capabilities: { reasoning: true, toolCall: true },
     });
   });

@@ -705,6 +705,31 @@ function validateV3Provider(entry: Record<string, unknown>): void {
     validateCatalogDefaults(entry.defaults, `provider '${String(entry.id)}' defaults`);
   }
   if (entry.titleModel !== undefined) assert(typeof entry.titleModel === 'string' && entry.titleModel.length > 0, `provider '${String(entry.id)}' titleModel invalid`);
+  // v3 bundled provider 是 partial delta。媒体清单与默认项顶层独立覆盖，所以必须校验
+  // **合并后的有效字段对**：defaults-only 可复用 bundled 清单；models-only 也必须继续
+  // 满足 bundled defaults。否则畸形对象或悬空默认值会先覆盖 LKG，随后在 UI `.map()` /
+  // 媒体候选派生时才崩。显式 null/[] 不是缺省，必须原样交给 validator 拒绝或验证。
+  const bundled = BUNDLED_CATALOG_INTERNAL.providers.find((provider) => provider.id === entry.id);
+  for (const [modelsField, defaultsField] of [
+    ['imageModels', 'imageDefaults'],
+    ['videoModels', 'videoDefaults'],
+    ['embeddingModels', 'embeddingDefaults'],
+  ] as const) {
+    if (entry[modelsField] === undefined && entry[defaultsField] === undefined) continue;
+    const effectiveModels = entry[modelsField] === undefined
+      ? bundled?.[modelsField]
+      : entry[modelsField];
+    const effectiveDefaults = entry[defaultsField] === undefined
+      ? bundled?.[defaultsField]
+      : entry[defaultsField];
+    validateMediaModels(
+      String(entry.id),
+      modelsField,
+      effectiveModels as Provider['imageModels'],
+      defaultsField,
+      effectiveDefaults as Provider['imageDefaults'],
+    );
+  }
   if (entry.models !== undefined && entry.agents !== undefined && entry.auth !== undefined && entry.routing !== undefined) {
     validateProvider(entry as unknown as Provider);
   }

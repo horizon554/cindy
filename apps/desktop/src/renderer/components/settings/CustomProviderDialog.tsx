@@ -29,6 +29,8 @@ import { PiMark } from '@/components/icons/PiMark';
 import { extractIpcError } from '@/utils/ipcError';
 import {
   createCustomProvider,
+  customProviderModelConfigForSave,
+  fillCustomProviderModelMetadata,
   readCustomProviderKey,
   replaceCustomProviderModelId,
   setCustomProviderModelReasoning,
@@ -668,20 +670,14 @@ export function CustomProviderDialog({
             requestSig
           )
             return;
-          const contextById = new Map(
-            payload.models
-              .filter((model) => model.contextWindow !== undefined)
-              .map((model) => [model.id, model.contextWindow!]),
-          );
+          const metadataById = new Map(payload.models.map((model) => [model.id, model]));
           setPicker((currentPicker) => {
             if (!currentPicker || currentPicker.agent !== agent) return currentPicker;
             return {
               ...currentPicker,
-              models: currentPicker.models.map((model) => {
-                if (model.contextWindow !== undefined) return model;
-                const contextWindow = contextById.get(model.id);
-                return contextWindow === undefined ? model : { ...model, contextWindow };
-              }),
+              models: currentPicker.models.map((model) =>
+                fillCustomProviderModelMetadata(model, metadataById.get(model.id)),
+              ),
             };
           });
         },
@@ -707,16 +703,7 @@ export function CustomProviderDialog({
       if (result.ok && result.models && result.models.length > 0) {
         // 用**响应到达时**的最新表单行构建弹层（rtRef），不是请求发出时的 rf 快照。
         const current = rtRef.current[agent].models
-          .map((m) => ({
-            id: m.id.trim(),
-            name: m.name.trim(),
-            ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
-            ...(m.defaultEnabled === false ? { defaultEnabled: false } : {}),
-            ...(m.supportsImageInput === true ? { supportsImageInput: true } : {}),
-            ...(m.reasoning === true && m.reasoningEfforts?.length
-              ? { reasoning: true, reasoningEfforts: [...m.reasoningEfforts] }
-              : {}),
-          }))
+          .map(customProviderModelConfigForSave)
           .filter((m) => m.id.length > 0);
         const currentById = new Map(current.map((m) => [m.id, m]));
         const fetchedIds = new Set(result.models.map((m) => m.id));
@@ -731,16 +718,25 @@ export function CustomProviderDialog({
             // (cur 存在但无值时不得被发现值回填,review P1);只有表单没见过的
             // 新模型才带上端点声明的发现值(否则保存后回落 200K,review P1)。
             const contextWindow = cur ? cur.contextWindow : m.contextWindow;
-            return {
+            const row: ModelRow = {
               id: m.id,
               name: cur?.name || m.name,
               ...(contextWindow !== undefined ? { contextWindow } : {}),
+              ...(cur?.modalities !== undefined ? { modalities: cur.modalities } : {}),
+              ...(cur?.capabilities !== undefined ? { capabilities: cur.capabilities } : {}),
               ...(cur?.defaultEnabled === false ? { defaultEnabled: false } : {}),
               ...(cur?.supportsImageInput === true ? { supportsImageInput: true } : {}),
               ...(cur?.reasoning === true && cur.reasoningEfforts?.length
                 ? { reasoning: true, reasoningEfforts: [...cur.reasoningEfforts] }
                 : {}),
             };
+            // contextWindow 允许用户显式清空，所以已有行不从发现结果回填该字段；
+            // modalities/capabilities 没有手工清空控件，缺失时可安全吸收厂商自报事实。
+            return fillCustomProviderModelMetadata(row, {
+              ...(cur ? {} : { contextWindow: m.providerReported?.contextWindow }),
+              modalities: m.providerReported?.modalities,
+              capabilities: m.providerReported?.capabilities,
+            });
           }),
         ];
         setPicker({ agent, models: rows, selected: new Set(currentById.keys()), query: '' });
@@ -798,10 +794,16 @@ export function CustomProviderDialog({
       const supportsImageInput = latest ? latest.supportsImageInput : m.supportsImageInput;
       const reasoning = latest ? latest.reasoning : m.reasoning;
       const reasoningEfforts = latest ? latest.reasoningEfforts : m.reasoningEfforts;
+      const modalities = latest?.modalities ?? m.modalities;
+      const capabilities = latest?.capabilities ?? m.capabilities;
       return {
         id: m.id,
         name: latest?.name.trim() ? latest.name.trim() : m.name,
         ...(contextWindow !== undefined ? { contextWindow } : {}),
+        ...(modalities !== undefined
+          ? { modalities: { input: [...modalities.input], output: [...modalities.output] } }
+          : {}),
+        ...(capabilities !== undefined ? { capabilities: { ...capabilities } } : {}),
         ...(defaultEnabled === false ? { defaultEnabled: false } : {}),
         ...(supportsImageInput === true ? { supportsImageInput: true } : {}),
         ...(reasoning === true && reasoningEfforts?.length
@@ -816,6 +818,15 @@ export function CustomProviderDialog({
           id,
           name: m.name.trim() || id,
           ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+          ...(m.modalities !== undefined
+            ? {
+                modalities: {
+                  input: [...m.modalities.input],
+                  output: [...m.modalities.output],
+                },
+              }
+            : {}),
+          ...(m.capabilities !== undefined ? { capabilities: { ...m.capabilities } } : {}),
           ...(m.defaultEnabled === false ? { defaultEnabled: false } : {}),
           ...(m.supportsImageInput === true ? { supportsImageInput: true } : {}),
           ...(m.reasoning === true && m.reasoningEfforts?.length
@@ -917,16 +928,7 @@ export function CustomProviderDialog({
         return;
       }
       const models = rf.models
-        .map((m) => ({
-          id: m.id.trim(),
-          name: m.name.trim(),
-          ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
-          ...(m.defaultEnabled === false ? { defaultEnabled: false } : {}),
-          ...(m.supportsImageInput === true ? { supportsImageInput: true } : {}),
-          ...(m.reasoning === true && m.reasoningEfforts?.length
-            ? { reasoning: true, reasoningEfforts: [...m.reasoningEfforts] }
-            : {}),
-        }))
+        .map(customProviderModelConfigForSave)
         .filter((m) => m.id && m.name);
       const requestPath = rf.requestPath.trim();
       if (requestPath && !isProviderRequestPath(requestPath)) {

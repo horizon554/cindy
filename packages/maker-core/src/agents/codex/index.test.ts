@@ -531,6 +531,84 @@ describe('CodexAgent runtime model catalog sync', () => {
       expect.anything(),
     );
   });
+
+  it('continues a provider-owned turn when the per-turn catalog synchronization fails', async () => {
+    let syncAttempt = 0;
+    const ensureCodexModelCatalogFresh = vi.fn(
+      async ({ refresh }: { refresh: () => Promise<void> }) => {
+        syncAttempt += 1;
+        if (syncAttempt === 1) {
+          await refresh();
+          return;
+        }
+        throw new Error('native model/list unavailable on turn');
+      },
+    );
+    const agent = new CodexAgent(createDeps({}, { ensureCodexModelCatalogFresh }));
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ModelList) return { data: [], nextCursor: null };
+      if (method === Method.TurnStart) return { turn: { id: 'provider-turn' } };
+      return undefined;
+    }, { codexHome: '/tmp/mock-codex-home' });
+    const handle = await agent.startSession({
+      sessionId: 'session-provider-turn-model-sync-fallback',
+      model: 'local/custom-model',
+      providerId: 'custom-local',
+      workingDir: '/repo',
+      permissionMode: 'ask',
+    });
+    host.request.mockClear();
+
+    await expect(
+      handle.send({ type: 'user', content: 'continue with the provider model' }),
+    ).resolves.toBeUndefined();
+
+    expect(ensureCodexModelCatalogFresh).toHaveBeenCalledTimes(2);
+    expect(host.request).toHaveBeenCalledWith(
+      Method.TurnStart,
+      expect.objectContaining({ model: 'local/custom-model' }),
+      expect.any(Object),
+    );
+  });
+
+  it('still fails closed when the per-turn catalog synchronization fails on a gateway route', async () => {
+    let syncAttempt = 0;
+    const ensureCodexModelCatalogFresh = vi.fn(
+      async ({ refresh }: { refresh: () => Promise<void> }) => {
+        syncAttempt += 1;
+        if (syncAttempt === 1) {
+          await refresh();
+          return;
+        }
+        throw new Error('native model/list unavailable on gateway turn');
+      },
+    );
+    const agent = new CodexAgent(createDeps({}, { ensureCodexModelCatalogFresh }));
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ModelList) return { data: [], nextCursor: null };
+      if (method === Method.TurnStart) return { turn: { id: 'gateway-turn' } };
+      return undefined;
+    }, { codexHome: '/tmp/mock-codex-home' });
+    const handle = await agent.startSession({
+      sessionId: 'session-gateway-turn-model-sync-failure',
+      model: 'gpt-5.5',
+      providerId: 'xd',
+      workingDir: '/repo',
+      permissionMode: 'ask',
+    });
+    host.request.mockClear();
+
+    await expect(
+      handle.send({ type: 'user', content: 'continue with the gateway model' }),
+    ).rejects.toThrow('native model/list unavailable on gateway turn');
+
+    expect(ensureCodexModelCatalogFresh).toHaveBeenCalledTimes(2);
+    expect(host.request).not.toHaveBeenCalledWith(
+      Method.TurnStart,
+      expect.anything(),
+      expect.anything(),
+    );
+  });
 });
 
 describe('CodexAgent permissions', () => {

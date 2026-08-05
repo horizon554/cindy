@@ -171,14 +171,14 @@ export function providerViewToCustomProviderConfig(p: ProviderView): CustomProvi
  * 厂商 /v1/models 自报的能力事实**入参形状**(对齐 fetch 结果的 ProviderReportedModelHints):
  * capabilities 是宽松的 `Record<string, unknown>`(上游可能报任意键),持久化前再收窄。
  */
-interface DiscoveredReportedInput {
+export interface DiscoveredReportedInput {
   contextWindow?: number;
   modalities?: { input: string[]; output: string[] };
   capabilities?: Record<string, unknown>;
 }
 
 /** 收窄后、可直接写进配置的能力事实(与 ProviderRuntimeModelConfig 同形)。 */
-interface DiscoveredProviderReported {
+export interface DiscoveredProviderReported {
   contextWindow?: number;
   modalities?: ProviderRuntimeModelConfig['modalities'];
   capabilities?: ProviderRuntimeModelConfig['capabilities'];
@@ -188,12 +188,14 @@ interface DiscoveredProviderReported {
 const MODEL_CAPABILITY_KEYS = ['reasoning', 'toolCall', 'attachment', 'temperature'] as const;
 
 /** 从一次上报里提取可持久化的能力字段:正数窗口 / 合法模态 / 收窄后的 boolean 能力。 */
-function pickPersistableReported(pr: DiscoveredReportedInput | undefined): DiscoveredProviderReported {
+export function persistableProviderReportedModelHints(
+  pr: DiscoveredReportedInput | undefined,
+): DiscoveredProviderReported {
   const out: DiscoveredProviderReported = {};
   if (!pr) return out;
   if (typeof pr.contextWindow === 'number' && pr.contextWindow > 0) out.contextWindow = pr.contextWindow;
   if (pr.modalities && Array.isArray(pr.modalities.input) && Array.isArray(pr.modalities.output)) {
-    out.modalities = pr.modalities;
+    out.modalities = { input: [...pr.modalities.input], output: [...pr.modalities.output] };
   }
   if (pr.capabilities) {
     const caps: NonNullable<ProviderRuntimeModelConfig['capabilities']> = {};
@@ -203,6 +205,56 @@ function pickPersistableReported(pr: DiscoveredReportedInput | undefined): Disco
     if (Object.keys(caps).length > 0) out.capabilities = caps;
   }
   return out;
+}
+
+/**
+ * 用发现 / resolve 的能力事实逐字段回填表单行。已存在值优先，避免异步响应覆盖用户当前配置；
+ * 上游宽松 capability map 会先收窄成客户端可持久化的四个 boolean 键。
+ */
+export function fillCustomProviderModelMetadata(
+  model: ProviderRuntimeModelConfig,
+  reported: DiscoveredReportedInput | undefined,
+): ProviderRuntimeModelConfig {
+  const picked = persistableProviderReportedModelHints(reported);
+  return {
+    ...model,
+    ...(model.contextWindow === undefined && picked.contextWindow !== undefined
+      ? { contextWindow: picked.contextWindow }
+      : {}),
+    ...(model.modalities === undefined && picked.modalities !== undefined
+      ? { modalities: picked.modalities }
+      : {}),
+    ...(model.capabilities === undefined && picked.capabilities !== undefined
+      ? { capabilities: picked.capabilities }
+      : {}),
+  };
+}
+
+/** CustomProviderDialog 保存 / picker 重建行时的唯一可持久化投影。 */
+export function customProviderModelConfigForSave(
+  model: ProviderRuntimeModelConfig,
+): ProviderRuntimeModelConfig {
+  return {
+    id: model.id.trim(),
+    name: model.name.trim(),
+    ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+    ...(model.modalities !== undefined
+      ? {
+          modalities: {
+            input: [...model.modalities.input],
+            output: [...model.modalities.output],
+          },
+        }
+      : {}),
+    ...(model.capabilities !== undefined
+      ? { capabilities: { ...model.capabilities } }
+      : {}),
+    ...(model.defaultEnabled === false ? { defaultEnabled: false } : {}),
+    ...(model.supportsImageInput === true ? { supportsImageInput: true } : {}),
+    ...(model.reasoning === true && model.reasoningEfforts?.length
+      ? { reasoning: true, reasoningEfforts: [...model.reasoningEfforts] }
+      : {}),
+  };
 }
 
 /**
@@ -229,7 +281,7 @@ export function appendDiscoveredCustomProviderModels(
   const reported = new Map<string, DiscoveredProviderReported>();
   for (const model of discovered) {
     if (!model.id || reported.has(model.id)) continue;
-    const picked = pickPersistableReported(model.providerReported);
+    const picked = persistableProviderReportedModelHints(model.providerReported);
     if (picked.contextWindow !== undefined || picked.modalities !== undefined || picked.capabilities !== undefined) {
       reported.set(model.id, picked);
     }
