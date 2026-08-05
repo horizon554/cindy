@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { buildUserProvider, type Catalog } from '@cindy/model-providers';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   codexModelCatalogStatePath,
@@ -60,6 +60,7 @@ async function writeVendorCache(codexHome: string, models: unknown[]): Promise<v
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => fsp.rm(root, { recursive: true, force: true })));
 });
 
@@ -107,6 +108,91 @@ describe('Codex model catalog cache', () => {
     const state = JSON.parse(await fsp.readFile(codexModelCatalogStatePath(codexHome), 'utf8'));
     expect(next.models.map((model: { slug: string }) => model.slug)).toEqual(['gpt-template']);
     expect(state).toEqual({ revision: 2, injectedSlugs: [] });
+  });
+
+  it('keeps old provenance when the vendor-cache rename fails, then removes the stale model on retry', async () => {
+    const codexHome = await createHome();
+    const modelsCachePath = path.join(codexHome, 'models_cache.json');
+    await writeVendorCache(codexHome, [nativeModel()]);
+    await writeCodexModelCatalogCache({
+      codexHome,
+      catalog: catalogWithModel(),
+      revision: 1,
+    });
+
+    const rename = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if (String(to) === modelsCachePath) throw new Error('vendor cache rename failed');
+      return rename(from, to);
+    });
+    await expect(writeCodexModelCatalogCache({
+      codexHome,
+      catalog: { version: 'test', providers: [] } as Catalog,
+      revision: 2,
+    })).rejects.toThrow('vendor cache rename failed');
+
+    const pending = JSON.parse(await fsp.readFile(codexModelCatalogStatePath(codexHome), 'utf8'));
+    expect(pending).toEqual({
+      revision: 2,
+      injectedSlugs: ['deepseek-v4-pro'],
+      pendingInjectedSlugs: [],
+    });
+    expect(readNativeCodexModelsFromCache(codexHome)?.map((model) => model.slug))
+      .toEqual(['gpt-template']);
+
+    vi.restoreAllMocks();
+    await writeCodexModelCatalogCache({
+      codexHome,
+      catalog: { version: 'test', providers: [] } as Catalog,
+      revision: 2,
+    });
+    const vendor = JSON.parse(await fsp.readFile(modelsCachePath, 'utf8'));
+    const state = JSON.parse(await fsp.readFile(codexModelCatalogStatePath(codexHome), 'utf8'));
+    expect(vendor.models.map((model: { slug: string }) => model.slug)).toEqual(['gpt-template']);
+    expect(state).toEqual({ revision: 2, injectedSlugs: [] });
+  });
+
+  it('recovers a committed vendor cache when the final sidecar rename fails', async () => {
+    const codexHome = await createHome();
+    const statePath = codexModelCatalogStatePath(codexHome);
+    await writeVendorCache(codexHome, [nativeModel()]);
+    await writeCodexModelCatalogCache({
+      codexHome,
+      catalog: catalogWithModel(),
+      revision: 1,
+    });
+
+    const rename = fsp.rename.bind(fsp);
+    let stateRenames = 0;
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if (String(to) === statePath && ++stateRenames === 2) {
+        throw new Error('final sidecar rename failed');
+      }
+      return rename(from, to);
+    });
+    await expect(writeCodexModelCatalogCache({
+      codexHome,
+      catalog: { version: 'test', providers: [] } as Catalog,
+      revision: 2,
+    })).rejects.toThrow('final sidecar rename failed');
+
+    const pending = JSON.parse(await fsp.readFile(statePath, 'utf8'));
+    expect(pending).toEqual({
+      revision: 2,
+      injectedSlugs: ['deepseek-v4-pro'],
+      pendingInjectedSlugs: [],
+    });
+    expect(readNativeCodexModelsFromCache(codexHome)?.map((model) => model.slug))
+      .toEqual(['gpt-template']);
+
+    vi.restoreAllMocks();
+    await writeCodexModelCatalogCache({
+      codexHome,
+      catalog: { version: 'test', providers: [] } as Catalog,
+      revision: 2,
+    });
+    expect(JSON.parse(await fsp.readFile(statePath, 'utf8')))
+      .toEqual({ revision: 2, injectedSlugs: [] });
   });
 
   it('uses an observed native snapshot to recover provenance after first-run warm-up', async () => {

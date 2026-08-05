@@ -53,6 +53,11 @@ export interface CodexModelsCache extends CodexModelsResponse {
 export interface CodexModelCatalogState {
   revision: number;
   injectedSlugs: string[];
+  /**
+   * Target provenance for a two-file publish that has not been finalized yet. While present,
+   * injectedSlugs is the protective union of the old and target sets.
+   */
+  pendingInjectedSlugs?: string[];
 }
 
 interface ProjectedModel {
@@ -245,14 +250,24 @@ export function parseCodexModelCatalogState(value: unknown): CodexModelCatalogSt
   if (!value || typeof value !== 'object') return null;
   const revision = (value as { revision?: unknown }).revision;
   const injectedSlugs = (value as { injectedSlugs?: unknown }).injectedSlugs;
+  const pendingInjectedSlugs = (value as { pendingInjectedSlugs?: unknown }).pendingInjectedSlugs;
   if (!Number.isInteger(revision) || (revision as number) < 0 || !Array.isArray(injectedSlugs)) {
     return null;
   }
+  if (pendingInjectedSlugs !== undefined && !Array.isArray(pendingInjectedSlugs)) return null;
   const normalized = injectedSlugs.filter(
     (slug): slug is string => typeof slug === 'string' && slug.length > 0,
   );
   if (normalized.length !== injectedSlugs.length) return null;
-  return { revision: revision as number, injectedSlugs: [...new Set(normalized)] };
+  const pending = pendingInjectedSlugs?.filter(
+    (slug): slug is string => typeof slug === 'string' && slug.length > 0,
+  );
+  if (pending && pending.length !== pendingInjectedSlugs?.length) return null;
+  return {
+    revision: revision as number,
+    injectedSlugs: [...new Set(normalized)],
+    ...(pending ? { pendingInjectedSlugs: [...new Set(pending)] } : {}),
+  };
 }
 
 export function nativeCodexModelsFromCache(

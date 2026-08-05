@@ -92,6 +92,21 @@ function readCatalogStateSync(codexHome: string): CodexModelCatalogState | null 
   }
 }
 
+function effectiveCatalogState(
+  cache: Pick<CodexModelsCache, 'etag'>,
+  state: CodexModelCatalogState | null,
+): CodexModelCatalogState | null {
+  if (!state?.pendingInjectedSlugs) return state;
+  // The cache rename is the transaction commit point. A matching Cindy etag proves that it
+  // succeeded even if the final sidecar rename failed; otherwise retain the protective union so
+  // the old vendor cache cannot reclassify stale Cindy injections as native models.
+  if (cache.etag !== `"cindy-catalog-${state.revision}"`) return state;
+  return {
+    revision: state.revision,
+    injectedSlugs: state.pendingInjectedSlugs,
+  };
+}
+
 async function writeJsonAtomically(filePath: string, value: unknown): Promise<void> {
   const tempPath = `${filePath}.tmp-${process.pid}-${Date.now().toString(36)}`;
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
@@ -130,6 +145,7 @@ export async function writeCodexModelCatalogCache(
     if (!input.nativeModels || input.nativeModels.length === 0) throw error;
     state = null;
   }
+  state = effectiveCatalogState(parsed, state);
   if (state) parsed.cindy_injected_slugs = state.injectedSlugs;
   const nativeModels = !state && input.nativeModels && input.nativeModels.length > 0
     ? input.nativeModels.map((model) => ({ ...model }))
@@ -159,17 +175,30 @@ export async function writeCodexModelCatalogCache(
   }
 
   const injectedSlugs = payload.cindy_injected_slugs ?? [];
+  const previousInjectedSlugs = state?.injectedSlugs ?? parsed.cindy_injected_slugs ?? [];
+  const protectiveInjectedSlugs = [
+    ...new Set([...injectedSlugs, ...previousInjectedSlugs]),
+  ];
+  const needsFinalSidecar = protectiveInjectedSlugs.length > injectedSlugs.length;
   const { cindy_injected_slugs: _legacyMarker, ...vendorCache } = payload;
-  // Publish provenance first. If the vendor-cache rename subsequently fails,
-  // the sidecar merely filters ids that are not present yet; the inverse order
-  // could leave newly injected ids permanently indistinguishable from native.
+  // Publish a protective provenance union first. If the vendor-cache rename fails, old injected
+  // ids stay classified as Cindy-owned; if the final sidecar rename fails, pendingInjectedSlugs plus
+  // the cache etag make the transaction recoverable on the next attempt.
   ensureCurrent(input.isCurrent);
   await writeJsonAtomically(codexModelCatalogStatePath(input.codexHome), {
     revision: input.revision,
-    injectedSlugs,
+    injectedSlugs: protectiveInjectedSlugs,
+    ...(needsFinalSidecar ? { pendingInjectedSlugs: injectedSlugs } : {}),
   } satisfies CodexModelCatalogState);
   ensureCurrent(input.isCurrent);
   await writeJsonAtomically(file, vendorCache);
+  if (needsFinalSidecar) {
+    ensureCurrent(input.isCurrent);
+    await writeJsonAtomically(codexModelCatalogStatePath(input.codexHome), {
+      revision: input.revision,
+      injectedSlugs,
+    } satisfies CodexModelCatalogState);
+  }
 }
 
 /** Read-through for the proxy. A malformed/missing sidecar fails closed. */
@@ -178,7 +207,7 @@ export function readNativeCodexModelsFromCache(codexHome: string): CodexModelInf
     const raw = JSON.parse(readFileSync(cachePath(codexHome), 'utf8')) as unknown;
     const cache = parseModelsCache(raw);
     if (!cache) return null;
-    const state = readCatalogStateSync(codexHome);
+    const state = effectiveCatalogState(cache, readCatalogStateSync(codexHome));
     const hasSidecar = (() => {
       try {
         readFileSync(codexModelCatalogStatePath(codexHome), 'utf8');
