@@ -38,6 +38,7 @@ import {
   prefetchDeviceCapabilities,
   useAgentCapabilities,
   type AgentKind,
+  type ModelDescriptor,
 } from '@/hooks/useAgentCapabilities';
 import { useApiKey } from '@/hooks/useApiKey';
 import { useConnectedSource } from '@/hooks/useConnectedSource';
@@ -995,9 +996,10 @@ function ModelSelectorContentView({
   const modelDisabledOf = (id: string): boolean => {
     if (!deviceId) {
       if (subscriptionDirectDisabledReason(id)) return true;
-      const model = currentAgentKind === 'codex'
-        ? codex.capabilities?.availableModels.find((entry) => entry.id === id)
-        : cc.capabilities?.availableModels.find((entry) => entry.id === id);
+      const model =
+        currentAgentKind === 'codex'
+          ? codex.capabilities?.availableModels.find((entry) => entry.id === id)
+          : cc.capabilities?.availableModels.find((entry) => entry.id === id);
       return isCatalogBudgetModel(model ?? { id }) && !hasSavedKey;
     }
     if (remoteModelListStatus !== 'ready') return true;
@@ -2106,7 +2108,62 @@ export function ModelSelector({
     ],
   );
 
-  const currentModel = visibleModels.find((m) => m.id === modelId);
+  const flattenedCurrentModel = visibleModels.find((m) => m.id === modelId);
+
+  const currentAgentKind: AgentKind | null = useMemo(() => {
+    if (agentKind) return agentKind;
+    if (!flattenedCurrentModel) return null;
+    if (providers.some((p) => providerOffersModel(p, flattenedCurrentModel.id, 'claude-code'))) {
+      return 'claude-code';
+    }
+    if (providers.some((p) => providerOffersModel(p, flattenedCurrentModel.id, 'codex'))) {
+      return 'codex';
+    }
+    return null;
+  }, [flattenedCurrentModel, providers, agentKind]);
+
+  // trigger 必须显示**实际生效来源**的模型描述符。同一 model id 可同时来自订阅、XD 与
+  // BYOM，名称、窗口、effort/fast 都可能不同；直接读跨来源 first-wins 的 visibleModels
+  // 会出现「XD 路由 + OpenRouter 名称/档位」的错源组合。device-link 老端没有 provider
+  // 快照时仍回退拍平 capabilities，保持原有兼容行为。
+  const activeSourceId = useMemo<string | null>(
+    () =>
+      currentAgentKind
+        ? (actualRoute ? actualSourceIdForModel : effectiveSourceIdForModel)(
+            providers,
+            currentProviderId,
+            modelId,
+            currentAgentKind,
+          )
+        : null,
+    [providers, currentAgentKind, currentProviderId, modelId, actualRoute],
+  );
+  const currentModel = useMemo<ModelDescriptor | undefined>(() => {
+    if (!activeSourceId || !currentAgentKind) return flattenedCurrentModel;
+    const provider = providers.find((candidate) => candidate.id === activeSourceId);
+    const model = provider ? getModel(provider, modelId, currentAgentKind) : undefined;
+    if (!model) return flattenedCurrentModel;
+    const descriptor: ModelDescriptor = {
+      id: model.id,
+      displayName: model.name,
+      contextWindow: model.contextWindow,
+      efforts: model.efforts,
+      defaultEffort: model.defaultEffort,
+    };
+    if (model.category !== undefined) descriptor.category = model.category;
+    if (model.group !== undefined) descriptor.group = model.group;
+    if (model.mode !== undefined) descriptor.mode = model.mode;
+    if (model.description !== undefined) descriptor.description = model.description;
+    if (model.effortDisplayNames !== undefined) {
+      descriptor.effortDisplayNames = model.effortDisplayNames;
+    }
+    if (model.supportsFastMode !== undefined) descriptor.supportsFastMode = model.supportsFastMode;
+    if (model.sortOrder !== undefined) descriptor.sortOrder = model.sortOrder;
+    if (model.defaultEnabled !== undefined) descriptor.defaultEnabled = model.defaultEnabled;
+    if (model.newSessionDefault?.includes(currentAgentKind)) descriptor.newSessionDefault = true;
+    return descriptor;
+  }, [activeSourceId, currentAgentKind, flattenedCurrentModel, modelId, providers]);
+
   // 已保存的模型不在可见清单里(被隐藏 / 供应商断开 / 目录下架)时,默认落到「选择模型」
   // 占位符 —— 对会话是对的(没选过),但对「展示一条已持久化偏好」的调用方是信息丢失:
   // 用户既看不到自己存的是什么,也看不到实际会跑什么。unknownModelLabel 让这类调用方
@@ -2147,18 +2204,6 @@ export function ModelSelector({
     : baseDisplayIdentityLabel;
   const efforts = currentModel?.efforts ?? [];
 
-  const currentAgentKind: AgentKind | null = useMemo(() => {
-    if (agentKind) return agentKind;
-    if (!currentModel) return null;
-    if (providers.some((p) => providerOffersModel(p, currentModel.id, 'claude-code'))) {
-      return 'claude-code';
-    }
-    if (providers.some((p) => providerOffersModel(p, currentModel.id, 'codex'))) {
-      return 'codex';
-    }
-    return null;
-  }, [currentModel, providers, agentKind]);
-
   const effortMeta = useMemo(() => {
     const levels =
       currentAgentKind === 'claude-code'
@@ -2175,20 +2220,6 @@ export function ModelSelector({
   const { hasConnectedSource, loading: providersLoading } = useConnectedSource(
     currentAgentKind,
     modelId,
-  );
-  // trigger 左侧来源 icon 必须是当前模型真正可路由的来源，不能拿“支持该 agent 但不提供
-  // 此模型”的供应商作兜底。
-  const activeSourceId = useMemo<string | null>(
-    () =>
-      currentAgentKind
-        ? (actualRoute ? actualSourceIdForModel : effectiveSourceIdForModel)(
-            providers,
-            currentProviderId,
-            modelId,
-            currentAgentKind,
-          )
-        : null,
-    [providers, currentAgentKind, currentProviderId, modelId, actualRoute],
   );
   // 空態:当前模型一个已连接来源都没有 → trigger 改「连接来源」CTA。
   // device-link 远程会话不走此 CTA(控制端无法替被控端连来源;hasConnectedSource 是本机口径)。

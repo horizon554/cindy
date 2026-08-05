@@ -639,6 +639,28 @@ describe('parseModelsListResponseDetailed', () => {
       { id: 'model-b', name: 'model-b' },
     ]);
   });
+
+  it('preserves raw upstream mode and type for the resolve wire adapter', () => {
+    expect(
+      parseModelsListResponseDetailed({
+        data: [
+          { id: 'responses-model', mode: 'responses' },
+          { id: 'embedding-model', mode: 'embedding', type: 'embedding' },
+        ],
+      }),
+    ).toEqual([
+      {
+        id: 'responses-model',
+        name: 'responses-model',
+        providerReported: { mode: 'responses' },
+      },
+      {
+        id: 'embedding-model',
+        name: 'embedding-model',
+        providerReported: { mode: 'embedding', type: 'embedding' },
+      },
+    ]);
+  });
 });
 describe('deriveModelsDiscoveryUrl', () => {
   it('/vN 结尾只追加 /models，其余追加 /v1/models（尾斜杠归一）', () => {

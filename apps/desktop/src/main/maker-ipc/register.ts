@@ -497,6 +497,7 @@ import {
   isLatestModelResolveResult,
   resolveProviderModelEntries,
   resolveProviderModels,
+  toModelResolveRequestModels,
   type ModelResolveInput,
 } from '../model-access/modelResolve.js';
 import {
@@ -4869,6 +4870,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         || (spec.agent !== 'claude-code' && spec.agent !== 'codex')
       ) return;
       const models = result.models;
+      const resolveModels = toModelResolveRequestModels(models);
+      if (resolveModels.length === 0) return;
       // 未保存的表单没有正式 provider 身份,**绝不**从主机名推导一个:那既可能与真实
       // provider id 撞名而借用它的 override 作用域,也不是知识库的匹配键。服务端按
       // 模型 id 匹配知识库(providerId 只额外追加 `<provider>/<model>` 作用域候选键),
@@ -4890,7 +4893,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           ...(savedRoute?.requestPath ? { requestPath: savedRoute.requestPath } : {}),
           modelsUrl,
         },
-        models,
+        models: resolveModels,
       }).then(async (resolved) => {
         if (!resolved) return;
         // 表单预填(仅当有 requestId)。
@@ -5037,7 +5040,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           const fetched = new Map<string, Awaited<ReturnType<typeof discoverGenericOAuthModelsDetailed>>>();
           const pendingResolves: Array<{
             agent: 'claude-code' | 'codex';
-            models: ModelResolveInput['models'];
+            discoveredModelIds: string[];
             input: ModelResolveInput;
           }> = [];
           let customChanged = false;
@@ -5057,22 +5060,25 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE !== '1'
               && (agent === 'claude-code' || agent === 'codex')
             ) {
-              pendingResolves.push({
-                agent,
-                models,
-                input: {
-                  providerId,
+              const resolveModels = toModelResolveRequestModels(models);
+              if (resolveModels.length > 0) {
+                pendingResolves.push({
                   agent,
-                  wireProtocol: route?.wireProtocol,
-                  sourceIdentity: {
-                    kind: 'provider-runtime',
-                    upstream: route?.upstream ?? url,
-                    ...(route?.requestPath ? { requestPath: route.requestPath } : {}),
-                    modelsUrl: url,
+                  discoveredModelIds: models.map((model) => model.id),
+                  input: {
+                    providerId,
+                    agent,
+                    wireProtocol: route?.wireProtocol,
+                    sourceIdentity: {
+                      kind: 'provider-runtime',
+                      upstream: route?.upstream ?? url,
+                      ...(route?.requestPath ? { requestPath: route.requestPath } : {}),
+                      modelsUrl: url,
+                    },
+                    models: resolveModels,
                   },
-                  models,
-                },
-              });
+                });
+              }
             }
             const effectiveModels: Array<{
               id: string;
@@ -5163,7 +5169,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             const resolvedEntries = await resolveProviderModelEntries(
               pendingResolves.map(({ input }) => input),
             );
-            for (const [index, { agent, models }] of pendingResolves.entries()) {
+            for (const [index, { agent, discoveredModelIds }] of pendingResolves.entries()) {
               const metadata = resolvedEntries[index];
               if (!metadata || !isCurrent() || !isLatestModelResolveResult(metadata)) continue;
               const overlay = metadata.entry.models.map((m) => ({
@@ -5192,7 +5198,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 metadata.entry.models.map((model) => model.id),
                 overlay,
                 metadata.knowledgeRevision,
-                models.map((model) => model.id),
+                discoveredModelIds,
               );
             }
           }

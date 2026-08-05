@@ -72,13 +72,15 @@ function response(revision = 'r1') {
   return responseFor([INPUT], revision);
 }
 
-function harness(options: {
-  baseUrl?: string;
-  getBaseUrl?: () => string;
-  disk?: string | null;
-  fetch?: (request: unknown) => Promise<unknown>;
-  disabled?: boolean;
-} = {}) {
+function harness(
+  options: {
+    baseUrl?: string;
+    getBaseUrl?: () => string;
+    disk?: string | null;
+    fetch?: (request: unknown) => Promise<unknown>;
+    disabled?: boolean;
+  } = {},
+) {
   let disk = options.disk ?? null;
   const calls = {
     fetch: vi.fn(options.fetch ?? (async () => response())),
@@ -87,7 +89,9 @@ function harness(options: {
       return disk;
     }),
     mkdir: vi.fn(async () => undefined),
-    writeFile: vi.fn(async (_path: string, text: string) => { disk = text; }),
+    writeFile: vi.fn(async (_path: string, text: string) => {
+      disk = text;
+    }),
     rename: vi.fn(async () => undefined),
     remove: vi.fn(async () => undefined),
     getBaseUrl: vi.fn(options.getBaseUrl ?? (() => options.baseUrl ?? DEFAULT_BASE_URL)),
@@ -103,6 +107,10 @@ afterEach(() => {
 
 describe('model resolve client', () => {
   it('keys the cache by effective wire, exact source identity, and complete request facts', () => {
+    const sourceIdentity = INPUT.sourceIdentity;
+    if (sourceIdentity.kind !== 'provider-runtime') {
+      throw new Error('provider-runtime fixture expected');
+    }
     expect(modelResolveCacheKey(INPUT)).toBe(modelResolveCacheKey({ ...INPUT }));
     expect(modelResolveCacheKey({ ...INPUT, wireProtocol: undefined })).toBe(
       modelResolveCacheKey(INPUT),
@@ -117,7 +125,7 @@ describe('model resolve client', () => {
       modelResolveCacheKey({
         ...INPUT,
         sourceIdentity: {
-          ...INPUT.sourceIdentity,
+          ...sourceIdentity,
           requestPath: '/chat/completions',
         },
       }),
@@ -156,26 +164,30 @@ describe('model resolve client', () => {
     expect(
       modelResolveCacheKey({
         ...INPUT,
-        models: [{
-          id: 'model-a',
-          name: 'Model A',
-          providerReported: {
-            capabilities: { reasoning: true, toolCall: false },
-            modalities: { input: ['text', 'image'], output: ['text'] },
+        models: [
+          {
+            id: 'model-a',
+            name: 'Model A',
+            providerReported: {
+              capabilities: { reasoning: true, toolCall: false },
+              modalities: { input: ['text', 'image'], output: ['text'] },
+            },
           },
-        }],
+        ],
       }),
     ).toBe(
       modelResolveCacheKey({
         ...INPUT,
-        models: [{
-          id: 'model-a',
-          name: 'Model A',
-          providerReported: {
-            modalities: { output: ['text'], input: ['text', 'image'] },
-            capabilities: { toolCall: false, reasoning: true },
+        models: [
+          {
+            id: 'model-a',
+            name: 'Model A',
+            providerReported: {
+              modalities: { output: ['text'], input: ['text', 'image'] },
+              capabilities: { toolCall: false, reasoning: true },
+            },
           },
-        }],
+        ],
       }),
     );
   });
@@ -207,10 +219,12 @@ describe('model resolve client', () => {
       { type: 'responses' },
     ];
     for (const providerReported of variants) {
-      expect(modelResolveCacheKey({
-        ...INPUT,
-        models: [{ id: 'model-a', name: 'Model A', providerReported }],
-      })).not.toBe(baseline);
+      expect(
+        modelResolveCacheKey({
+          ...INPUT,
+          models: [{ id: 'model-a', name: 'Model A', providerReported }],
+        }),
+      ).not.toBe(baseline);
     }
   });
 
@@ -219,12 +233,14 @@ describe('model resolve client', () => {
       fetch: async (request) => {
         expect(request).toEqual({
           schemaVersion: 2,
-          entries: [{
-            providerId: 'acme',
-            agent: 'codex',
-            wireProtocol: 'openai-responses',
-            models: [{ id: 'model-a', name: 'Model A' }],
-          }],
+          entries: [
+            {
+              providerId: 'acme',
+              agent: 'codex',
+              wireProtocol: 'openai-responses',
+              models: [{ id: 'model-a', name: 'Model A' }],
+            },
+          ],
         });
         return response();
       },
@@ -254,7 +270,10 @@ describe('model resolve client', () => {
   it('single-flights identical requests and persists last-known-good atomically', async () => {
     let release!: (value: unknown) => void;
     const h = harness({
-      fetch: () => new Promise((resolve) => { release = resolve; }),
+      fetch: () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
     });
     const first = h.resolve(INPUT);
     const second = h.resolve(INPUT);
@@ -279,7 +298,9 @@ describe('model resolve client', () => {
     });
     const matching = harness({
       disk,
-      fetch: async () => { throw new Error('offline'); },
+      fetch: async () => {
+        throw new Error('offline');
+      },
     });
     await expect(matching.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
 
@@ -287,7 +308,9 @@ describe('model resolve client', () => {
     const mismatched = harness({
       disk,
       baseUrl: 'https://other.example.test',
-      fetch: async () => { throw new Error('offline'); },
+      fetch: async () => {
+        throw new Error('offline');
+      },
     });
     await expect(mismatched.resolve(INPUT)).resolves.toBeNull();
   });
@@ -300,7 +323,9 @@ describe('model resolve client', () => {
     });
     const h = harness({
       disk,
-      fetch: async () => { throw new Error('offline'); },
+      fetch: async () => {
+        throw new Error('offline');
+      },
     });
     await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
     await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
@@ -323,16 +348,20 @@ describe('model resolve client', () => {
   it('does not reuse a v1 cache whose fingerprint omitted wire and provider facts', async () => {
     const disk = JSON.stringify({
       version: 1,
-      entries: [{
-        key: modelResolveCacheKey(INPUT),
-        realm: DEFAULT_REALM,
-        knowledgeRevision: 'r1',
-        response: response(),
-      }],
+      entries: [
+        {
+          key: modelResolveCacheKey(INPUT),
+          realm: DEFAULT_REALM,
+          knowledgeRevision: 'r1',
+          response: response(),
+        },
+      ],
     });
     const h = harness({
       disk,
-      fetch: async () => { throw new Error('offline'); },
+      fetch: async () => {
+        throw new Error('offline');
+      },
     });
     await expect(h.resolve(INPUT)).resolves.toBeNull();
   });
@@ -401,7 +430,10 @@ describe('model resolve client', () => {
     };
     const releases: Array<(value: unknown) => void> = [];
     const h = harness({
-      fetch: () => new Promise((resolve) => { releases.push(resolve); }),
+      fetch: () =>
+        new Promise((resolve) => {
+          releases.push(resolve);
+        }),
     });
     const older = h.resolve(INPUT);
     await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(1));
@@ -416,9 +448,7 @@ describe('model resolve client', () => {
     const persisted = JSON.parse(h.disk()!) as {
       entries: Array<{ knowledgeRevision: string }>;
     };
-    expect(persisted.entries).toEqual([
-      expect.objectContaining({ knowledgeRevision: 'r2' }),
-    ]);
+    expect(persisted.entries).toEqual([expect.objectContaining({ knowledgeRevision: 'r2' })]);
   });
 
   it('sends only cache misses when a batch mixes a memory hit with a new entry', async () => {

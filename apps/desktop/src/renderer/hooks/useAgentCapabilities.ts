@@ -162,7 +162,8 @@ function isModelDescriptor(value: unknown): value is ModelDescriptor {
     isOptionalStringRecord(value.effortDisplayNames) &&
     isOptionalBoolean(value.supportsFastMode) &&
     isOptionalFiniteNumber(value.sortOrder) &&
-    isOptionalBoolean(value.defaultEnabled)
+    isOptionalBoolean(value.defaultEnabled) &&
+    isOptionalBoolean(value.newSessionDefault)
   );
 }
 

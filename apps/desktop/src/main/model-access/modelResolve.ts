@@ -3,10 +3,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import {
+  MODEL_ACCESS_CHAT_MODES,
   MODEL_ACCESS_RESOLVE_SCHEMA_VERSION,
   parseResolveRequest,
   parseResolveResponse,
   type ModelAgent,
+  type ModelChatMode,
+  type ProviderReportedModel,
   type ResolveRequest,
   type ResolveRequestEntry,
   type ResolveRequestModel,
@@ -40,6 +43,10 @@ export interface ModelResolveInput {
   sourceIdentity: ModelResolveSourceIdentity;
   models: ResolveRequestModel[];
 }
+
+type ModelResolveCandidate = Omit<ResolveRequestModel, 'providerReported'> & {
+  providerReported?: Omit<ProviderReportedModel, 'mode'> & { mode?: string };
+};
 
 interface CachedModelResolveResult {
   knowledgeRevision: string;
@@ -133,6 +140,36 @@ function normalizedSourceIdentity(source: ModelResolveSourceIdentity): ModelReso
 function effectiveWireProtocol(input: ModelResolveInput): string {
   return input.wireProtocol?.trim()
     ?? (input.agent === 'claude-code' ? 'anthropic-messages' : 'openai-responses');
+}
+
+function isModelChatMode(value: string): value is ModelChatMode {
+  return MODEL_ACCESS_CHAT_MODES.some((mode) => mode === value);
+}
+
+/**
+ * Projects raw provider discovery records onto the closed v2 resolve wire contract. Explicitly
+ * non-chat models stay available to local discovery consumers but do not enter a chat resolve batch.
+ */
+export function toModelResolveRequestModels(
+  models: readonly ModelResolveCandidate[],
+): ResolveRequestModel[] {
+  return models.flatMap((model) => {
+    if (model.providerReported === undefined) {
+      return [{ id: model.id, ...(model.name !== undefined ? { name: model.name } : {}) }];
+    }
+    const { mode, ...providerFacts } = model.providerReported;
+    if (mode !== undefined && !isModelChatMode(mode)) return [];
+    return [
+      {
+        id: model.id,
+        ...(model.name !== undefined ? { name: model.name } : {}),
+        providerReported: {
+          ...providerFacts,
+          ...(mode !== undefined ? { mode } : {}),
+        },
+      },
+    ];
+  });
 }
 
 function projectRequestModel(model: ResolveRequestModel): ResolveRequestModel {

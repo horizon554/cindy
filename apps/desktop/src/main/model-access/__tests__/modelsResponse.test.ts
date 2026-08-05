@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { isStrictlyResolvedGatewayModels, normalizeGatewayModelsPayload } from '../modelsResponse.js';
+import {
+  isStrictlyResolvedGatewayModels,
+  normalizeGatewayModelsPayload,
+} from '../modelsResponse.js';
 
 const MODEL = {
   id: 'gpt-5.5',
@@ -28,6 +31,7 @@ const ENRICHED_V2_MODEL = {
   sortOrder: 44,
   supportsFastMode: false,
   defaultEnabled: true,
+  newSessionDefault: ['claude-code', 'codex'],
   capabilities: { attachment: true, reasoning: true },
   modalities: { input: ['text', 'image'], output: ['text'] },
   costDiscount: 0,
@@ -62,9 +66,9 @@ describe('normalizeGatewayModelsPayload', () => {
   });
 
   it('trusts model currency and falls back only when it is absent', () => {
-    expect(normalizeGatewayModelsPayload({ models: [{ ...MODEL, currency: 'CNY' }] }, 'USD')).toMatchObject([
-      { currency: 'CNY' },
-    ]);
+    expect(
+      normalizeGatewayModelsPayload({ models: [{ ...MODEL, currency: 'CNY' }] }, 'USD'),
+    ).toMatchObject([{ currency: 'CNY' }]);
     const { currency: _currency, ...withoutCurrency } = MODEL;
     expect(normalizeGatewayModelsPayload({ models: [withoutCurrency] }, 'CNY')).toMatchObject([
       { currency: 'CNY' },

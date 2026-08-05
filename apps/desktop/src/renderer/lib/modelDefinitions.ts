@@ -51,8 +51,8 @@ function allCachedModels(deviceId?: string): ModelDefinition[] {
   const cc = getCachedCapabilities('claude-code', deviceId);
   const codex = getCachedCapabilities('codex', deviceId);
   return [
-    ...((cc?.availableModels ?? []).map((m) => toLegacy(m, 'cc'))),
-    ...((codex?.availableModels ?? []).map((m) => toLegacy(m, 'codex'))),
+    ...(cc?.availableModels ?? []).map((m) => toLegacy(m, 'cc')),
+    ...(codex?.availableModels ?? []).map((m) => toLegacy(m, 'codex')),
   ];
 }
 
@@ -121,8 +121,9 @@ function firstByCatalogOrder(models: readonly ModelDefinition[]): ModelDefinitio
   const visible = models.filter((m) => m.defaultEnabled !== false);
   // slice() 后再 sort：sort 原地改数组，直接排会打乱调用方（capabilities 缓存）的清单顺序。
   const pool = visible.length > 0 ? visible : models;
-  // 显式「新会话默认」标记优先于纯 sortOrder;多个标记时仍按 sortOrder 取最低者。
-  const marked = pool.filter((m) => m.newSessionDefault === true);
+  // 显式「新会话默认」标记只在默认可见模型中生效;多个标记时仍按 sortOrder 取最低者。
+  // 整份清单都默认收起时退回纯排序,避免误配 marker 把默认落到用户找不到的模型。
+  const marked = visible.filter((m) => m.newSessionDefault === true);
   return (marked.length > 0 ? marked : pool).slice().sort(byOrder)[0];
 }
 
@@ -140,7 +141,10 @@ function firstByCatalogOrder(models: readonly ModelDefinition[]): ModelDefinitio
  * 自动化任务（scheduler）的默认**故意不同**：无人值守场景成本保守，走 useScheduleForm.ts
  * getScheduleDefaultModel 三级回退（冷启动 Sonnet），不要把这里的默认接到 scheduler 上。
  */
-export function getDefaultModelForVendor(vendorKey: 'cc' | 'codex' | 'pi', deviceId?: string): ModelDefinition {
+export function getDefaultModelForVendor(
+  vendorKey: 'cc' | 'codex' | 'pi',
+  deviceId?: string,
+): ModelDefinition {
   const list = getModelsForVendor(vendorKey, deviceId);
   // capabilities 还没拉到时退化到一个静态 placeholder, 让调用方拿到非 undefined。
   // 调用方真正需要值时通常已经在 useEffect 后, capabilities 已就绪。

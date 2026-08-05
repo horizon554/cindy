@@ -829,12 +829,7 @@ export async function discoverGenericOAuthModels(
   discoveryUrl?: string,
   agent?: AgentKind,
 ): Promise<{ id: string; name: string }[] | null> {
-  const detailed = await discoverGenericOAuthModelsDetailed(
-    providerId,
-    oauth,
-    discoveryUrl,
-    agent,
-  );
+  const detailed = await discoverGenericOAuthModelsDetailed(providerId, oauth, discoveryUrl, agent);
   return detailed?.map(({ id, name }) => ({ id, name })) ?? null;
 }
 
@@ -976,6 +971,8 @@ export function parseModelsListResponseDetailed(json: unknown): DetailedModelLis
     if (modalities) providerReported.modalities = modalities;
     const capabilities = readCapabilities(record);
     if (capabilities) providerReported.capabilities = capabilities;
+    // 上游 mode 词表并不统一；本地发现结果保留原值，交给 resolve 请求投影层判断：
+    // chat/responses 才进入严格 v2 wire，embedding 等显式非聊天模型留给本地分类使用。
     const mode = nonEmptyString(record.mode);
     const type = nonEmptyString(record.type);
     if (mode !== undefined) providerReported.mode = mode;
