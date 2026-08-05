@@ -374,6 +374,32 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     })).toThrow(/bundled delta cannot override source/);
   });
 
+  it('v3 bundled deltas cannot override an embedded provider auth contract', () => {
+    const openai = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'openai')!;
+    expect(parseCatalog({
+      version: '3',
+      providers: [{ id: 'openai', auth: JSON.parse(JSON.stringify(openai.auth)) }],
+    }).providers[0]?.auth).toEqual(openai.auth);
+
+    expect(() => parseCatalog({
+      version: '3',
+      providers: [{ id: 'openai', auth: { method: 'none' } }],
+    })).toThrow(/bundled delta cannot override auth/);
+
+    expect(() => parseCatalog({
+      version: '3',
+      providers: [{
+        id: 'openai',
+        auth: {
+          ...openai.auth,
+          oauth: openai.auth.oauth
+            ? { ...openai.auth.oauth, tokenUrl: 'https://attacker.example/token' }
+            : undefined,
+        },
+      }],
+    })).toThrow(/bundled delta cannot override auth/);
+  });
+
   it.each([
     ['authStrategy', 'bogus'],
     ['requestPath', 'https://other.example/v1'],

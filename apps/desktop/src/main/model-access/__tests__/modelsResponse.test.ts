@@ -46,48 +46,49 @@ function v2(models: unknown[]) {
 
 describe('normalizeGatewayModelsPayload', () => {
   it('strictly parses a v2 response and preserves additive fields', () => {
-    expect(normalizeGatewayModelsPayload(v2([MODEL]), 'CNY')).toEqual([MODEL]);
+    expect(normalizeGatewayModelsPayload(v2([MODEL]))).toEqual([MODEL]);
   });
 
   it('returns null for structurally invalid v2 responses so callers keep the snapshot', () => {
-    expect(normalizeGatewayModelsPayload(v2([{ ...MODEL, agents: [] }]), 'CNY')).toBeNull();
-    expect(normalizeGatewayModelsPayload(v2([{ ...MODEL, currency: 'EUR' }]), 'CNY')).toBeNull();
+    expect(normalizeGatewayModelsPayload(v2([{ ...MODEL, agents: [] }]))).toBeNull();
+    expect(normalizeGatewayModelsPayload(v2([{ ...MODEL, currency: 'EUR' }]))).toBeNull();
   });
 
   it('uses the tolerant unversioned envelope during the transition', () => {
-    expect(normalizeGatewayModelsPayload({ models: [MODEL, { bad: true }] }, 'CNY')).toEqual([
+    expect(normalizeGatewayModelsPayload({ models: [MODEL, { bad: true }] })).toEqual([
       { ...MODEL, currency: 'USD' },
     ]);
   });
 
   it('keeps successful empty arrays distinct from parse failures', () => {
-    expect(normalizeGatewayModelsPayload(v2([]), 'CNY')).toEqual([]);
-    expect(normalizeGatewayModelsPayload({ models: [] }, 'CNY')).toEqual([]);
+    expect(normalizeGatewayModelsPayload(v2([]))).toEqual([]);
+    expect(normalizeGatewayModelsPayload({ models: [] })).toEqual([]);
   });
 
-  it('trusts model currency and falls back only when it is absent', () => {
+  it('trusts explicit currency and keeps a missing or invalid legacy currency unknown', () => {
     expect(
-      normalizeGatewayModelsPayload({ models: [{ ...MODEL, currency: 'CNY' }] }, 'USD'),
+      normalizeGatewayModelsPayload({ models: [{ ...MODEL, currency: 'CNY' }] }),
     ).toMatchObject([{ currency: 'CNY' }]);
     const { currency: _currency, ...withoutCurrency } = MODEL;
-    expect(normalizeGatewayModelsPayload({ models: [withoutCurrency] }, 'CNY')).toMatchObject([
-      { currency: 'CNY' },
-    ]);
+    expect(normalizeGatewayModelsPayload({ models: [withoutCurrency] })).toEqual([withoutCurrency]);
+    expect(
+      normalizeGatewayModelsPayload({ models: [{ ...withoutCurrency, currency: 'EUR' }] }),
+    ).toEqual([withoutCurrency]);
   });
 
   it('parses a realistic enriched v2 model (capabilities + modalities + pricing + perAgent) intact', () => {
-    const result = normalizeGatewayModelsPayload(v2([ENRICHED_V2_MODEL]), 'USD');
+    const result = normalizeGatewayModelsPayload(v2([ENRICHED_V2_MODEL]));
     expect(result).not.toBeNull();
     // 整条透传:capabilities / modalities / 定价 / perAgent 全部保留,currency 已合法不回退。
     expect(result).toEqual([ENRICHED_V2_MODEL]);
   });
 
   it('marks strictly-parsed v2 models as resolved but not the tolerant envelope', () => {
-    const strict = normalizeGatewayModelsPayload(v2([ENRICHED_V2_MODEL]), 'USD');
+    const strict = normalizeGatewayModelsPayload(v2([ENRICHED_V2_MODEL]));
     expect(strict).not.toBeNull();
     expect(isStrictlyResolvedGatewayModels(strict!)).toBe(true);
 
-    const tolerant = normalizeGatewayModelsPayload({ models: [ENRICHED_V2_MODEL] }, 'USD');
+    const tolerant = normalizeGatewayModelsPayload({ models: [ENRICHED_V2_MODEL] });
     expect(tolerant).not.toBeNull();
     expect(isStrictlyResolvedGatewayModels(tolerant!)).toBe(false);
   });

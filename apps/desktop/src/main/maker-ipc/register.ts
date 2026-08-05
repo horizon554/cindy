@@ -5414,6 +5414,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 id: m.id,
                 name: m.name,
                 contextWindow: m.contextWindow,
+                contextWindowVerified: m.contextWindowVerified,
                 maxOutput: m.maxOutput,
                 description: m.description,
                 family: m.family,

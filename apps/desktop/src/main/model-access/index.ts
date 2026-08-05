@@ -1,6 +1,8 @@
 import { BrowserWindow, ipcMain } from 'electron';
-import { CURRENT_CINDY_REGION } from '../../shared/brandRegion.js';
-import { isStrictlyResolvedGatewayModels, normalizeGatewayModelsPayload } from './modelsResponse.js';
+import {
+  isStrictlyResolvedGatewayModels,
+  normalizeGatewayModelsPayload,
+} from './modelsResponse.js';
 
 import { createLogger } from '../logger.js';
 import * as authManager from '../authManager.js';
@@ -155,10 +157,7 @@ let authGeneration = 0;
 let lastAuthUserId: string | null = null;
 let lastAuthRealm: ReturnType<typeof authManager.getActiveAuthRealm> | null = null;
 
-function applyGatewayModels(
-  models: ModelAccessGatewayModel[],
-  authenticatedUserId?: string,
-): void {
+function applyGatewayModels(models: ModelAccessGatewayModel[], authenticatedUserId?: string): void {
   // 同一次 /models 响应建立 XD 模型与价格投影。空成功响应会同时清空模型和价格；请求失败不会调用本函数，
   // 因而保留上一份完整成功快照。
   const pricing = replaceGatewayModelPricing(models, authenticatedUserId);
@@ -193,9 +192,7 @@ async function runModelsSync(
 ): Promise<void> {
   let payload: unknown;
   try {
-    const request = buildModelsSyncRequest(() =>
-      getClientEndpoint('modelAccessApiBaseUrl'),
-    );
+    const request = buildModelsSyncRequest(() => getClientEndpoint('modelAccessApiBaseUrl'));
     payload = await withModelsSyncOverallDeadline(
       serverApiFetch<unknown>(request.path, request.options),
     );
@@ -206,10 +203,7 @@ async function runModelsSync(
     return;
   }
   if (myGen !== authGeneration) return; // 响应归属旧账号,丢弃
-  const models = normalizeGatewayModelsPayload(
-    payload,
-    CURRENT_CINDY_REGION === 'global' ? 'USD' : 'CNY',
-  );
+  const models = normalizeGatewayModelsPayload(payload);
   if (models === null) {
     log.warn('xd gateway models response invalid; keeping last valid list');
     return;

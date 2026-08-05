@@ -174,9 +174,10 @@ export interface ModelAccessGatewayModel extends ModelGroupPricing {
   family?: string;
   category?: string;
   /**
-   * Gateway 原生价格币种,是该账号计价与记账的权威来源;旧版服务端未下发时才按
-   * 运行区域回退。它不保证等于构建区域 —— 结算币种由服务端按账号所属租户下发,
-   * 消费方一律以本字段(或其派生的 currentLedgerCurrency)为准,不按区域推断。
+   * Gateway 原生价格币种,是该账号计价与记账的权威来源。旧版服务端未下发时保持未知，
+   * 由 account-scoped ledger 的 last-known → USD 链保守回退。它不保证等于构建区域 ——
+   * 结算币种由服务端按账号所属租户下发,消费方一律以本字段(或其派生的
+   * currentLedgerCurrency)为准,不按区域推断。
    */
   currency?: 'USD' | 'CNY';
   /** 进哪些 runtime tab;缺省 = 仅 claude-code(网关 /v1/messages 翻译覆盖面最广)。 */

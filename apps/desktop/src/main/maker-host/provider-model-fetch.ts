@@ -17,10 +17,7 @@ import {
   type ProviderWireProtocol,
 } from '@cindy/model-providers';
 
-import {
-  classifyProviderError,
-  type ProviderErrorCode,
-} from '../../shared/providerErrors.js';
+import { classifyProviderError, type ProviderErrorCode } from '../../shared/providerErrors.js';
 import { deriveModelsDiscoveryUrl, parseModelsListResponseDetailed } from './generic-oauth.js';
 import { outboundFetch } from './outbound-fetch.js';
 
@@ -34,13 +31,6 @@ export interface ProviderModelsFetchSpec {
   agent: AgentKind;
   /** Opaque renderer request identity used only for asynchronous metadata prefill. */
   requestId?: string;
-  /**
-   * 已保存自定义供应商的真实 id(刷新已存 provider 时传)。存在则 resolve 结果除表单
-   * 预填外,还按此 id 把完整补全 hints 落 active-catalog overlay —— 让未命中知识库的
-   * 模型也保留厂商上报的 contextWindow/maxOutput/modalities/capabilities。添加向导阶段
-   * (provider 尚未保存)不传,仅走表单预填。
-   */
-  providerId?: string;
   /** 上游 wire protocol；用于区分 Codex 原生 OpenAI 与 Anthropic Messages 桥。 */
   wireProtocol?: ProviderWireProtocol;
   baseUrl: string;
@@ -123,15 +113,18 @@ function normalizedHeaders(headers: Record<string, string> | undefined): Record<
 }
 
 /** 构造列模型请求（纯函数，单测直断言）。鉴权头组合与 buildProbeRequest 同口径。 */
-export function buildModelsFetchRequest(spec: ProviderModelsFetchSpec): { url: string; init: RequestInit } {
+export function buildModelsFetchRequest(spec: ProviderModelsFetchSpec): {
+  url: string;
+  init: RequestInit;
+} {
   const mustStripCredentialHeaders =
     !!spec.apiKey || spec.authMethod === 'none' || spec.authMethod === 'oauth';
   const headers: Record<string, string> = mustStripCredentialHeaders
     ? withoutCredentialHeaders(spec.headers)
     : normalizedHeaders(spec.headers);
   const anthropicMessages =
-    spec.wireProtocol === 'anthropic-messages'
-    || (spec.wireProtocol === undefined && spec.agent === 'claude-code');
+    spec.wireProtocol === 'anthropic-messages' ||
+    (spec.wireProtocol === undefined && spec.agent === 'claude-code');
   if (anthropicMessages) {
     // Anthropic wire 的所有端点（含 GET /v1/models）都要求 anthropic-version，缺失直接 400。
     headers['anthropic-version'] = headers['anthropic-version'] ?? '2023-06-01';
@@ -148,7 +141,10 @@ export function buildModelsFetchRequest(spec: ProviderModelsFetchSpec): { url: s
   // 防止用户改了 baseUrl 后，key 仍被发往快照里的旧主机 / 被降级成明文（现有预设全部同源）。
   const explicit = spec.modelsUrl?.trim();
   return {
-    url: explicit && sameOrigin(explicit, spec.baseUrl) ? explicit : deriveModelsDiscoveryUrl(spec.baseUrl),
+    url:
+      explicit && sameOrigin(explicit, spec.baseUrl)
+        ? explicit
+        : deriveModelsDiscoveryUrl(spec.baseUrl),
     init: { method: 'GET', headers },
   };
 }
@@ -170,11 +166,9 @@ export async function fetchProviderModels(
   fetchImpl: typeof fetch = outboundFetch,
 ): Promise<ProviderModelsFetchResult> {
   if (
-    spec.authMethod === 'none'
-    && (
-      !isLoopbackProviderUrl(spec.baseUrl)
-      || (!!spec.modelsUrl?.trim() && !isLoopbackProviderUrl(spec.modelsUrl.trim()))
-    )
+    spec.authMethod === 'none' &&
+    (!isLoopbackProviderUrl(spec.baseUrl) ||
+      (!!spec.modelsUrl?.trim() && !isLoopbackProviderUrl(spec.modelsUrl.trim())))
   ) {
     return {
       ok: false,
@@ -204,12 +198,22 @@ export async function fetchProviderModels(
   try {
     json = await res.json();
   } catch {
-    return { ok: false, code: 'UNKNOWN', status: res.status, detail: 'models response is not JSON' };
+    return {
+      ok: false,
+      code: 'UNKNOWN',
+      status: res.status,
+      detail: 'models response is not JSON',
+    };
   }
   const models = parseModelsListResponseDetailed(json);
   if (!models || models.length === 0) {
     // 端点 200 但响应不是可识别的模型列表（或为空）——按「模型不存在」类引导用户手填。
-    return { ok: false, code: 'UNKNOWN', status: res.status, detail: 'no models found in response' };
+    return {
+      ok: false,
+      code: 'UNKNOWN',
+      status: res.status,
+      detail: 'no models found in response',
+    };
   }
   return { ok: true, models };
 }

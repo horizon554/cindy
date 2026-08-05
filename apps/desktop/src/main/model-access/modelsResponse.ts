@@ -1,8 +1,4 @@
-import {
-  isModelCurrency,
-  parseListModelsResponseV2,
-  type ModelCurrency,
-} from '@cindy/model-access-protocol';
+import { isModelCurrency, parseListModelsResponseV2 } from '@cindy/model-access-protocol';
 
 import type { ModelAccessGatewayModel } from '../../shared/modelAccess.js';
 
@@ -10,14 +6,14 @@ import type { ModelAccessGatewayModel } from '../../shared/modelAccess.js';
 export function isStrictlyResolvedGatewayModels(
   models: readonly ModelAccessGatewayModel[],
 ): boolean {
-  return (models as readonly ModelAccessGatewayModel[] & { resolvedSource?: unknown }).resolvedSource === true;
+  return (
+    (models as readonly ModelAccessGatewayModel[] & { resolvedSource?: unknown }).resolvedSource ===
+    true
+  );
 }
 
 /** Parse ListModels v2 or the pre-S3 unversioned envelope without replacing last-good data. */
-export function normalizeGatewayModelsPayload(
-  payload: unknown,
-  fallbackCurrency: ModelCurrency,
-): ModelAccessGatewayModel[] | null {
+export function normalizeGatewayModelsPayload(payload: unknown): ModelAccessGatewayModel[] | null {
   if (
     payload &&
     typeof payload === 'object' &&
@@ -28,7 +24,6 @@ export function normalizeGatewayModelsPayload(
     if (!parsed.ok) return null;
     const models = parsed.value.models.map((model) => ({
       ...(model as unknown as ModelAccessGatewayModel),
-      currency: isModelCurrency(model.currency) ? model.currency : fallbackCurrency,
     }));
     Object.defineProperty(models, 'resolvedSource', { value: true, enumerable: false });
     return models;
@@ -41,30 +36,20 @@ export function normalizeGatewayModelsPayload(
   const rawModels = (payload as { models?: unknown }).models;
   if (!Array.isArray(rawModels)) return null;
   return rawModels
-    .filter(
-      (model): model is ModelAccessGatewayModel =>
-        Boolean(
-          model &&
-            typeof model === 'object' &&
-            typeof (model as { id?: unknown }).id === 'string' &&
-            (model as { id: string }).id,
-        ),
+    .filter((model): model is ModelAccessGatewayModel =>
+      Boolean(
+        model &&
+        typeof model === 'object' &&
+        typeof (model as { id?: unknown }).id === 'string' &&
+        (model as { id: string }).id,
+      ),
     )
-    .map((model) => ({
-      ...model,
-      currency: isModelCurrency(model.currency) ? model.currency : fallbackCurrency,
-    }));
+    .map((model) => {
+      const normalized = { ...model };
+      // A legacy server may omit currency. Preserve that as unknown so the account-scoped ledger
+      // fallback can use its last-known value; stamping the build-region currency onto an upstream
+      // quote would turn USD numbers into CNY (or vice versa) without conversion.
+      if (!isModelCurrency(normalized.currency)) delete normalized.currency;
+      return normalized;
+    });
 }
-
-/** Apply server currency when present, otherwise infer it from the current build region. */
-export function applyGatewayModelCurrency(
-  models: readonly ModelAccessGatewayModel[],
-  fallbackCurrency: ModelCurrency,
-): ModelAccessGatewayModel[] {
-  return models.map((model) => ({
-    ...model,
-    currency: model.currency ?? fallbackCurrency,
-  }));
-}
-
-export type { ModelCurrency };

@@ -357,7 +357,7 @@ export function pickMostRecentSessionRuntime(
  *   1) 该 agent 的最近一次会话模型(pickMostRecentSessionRuntime,按 deviceId scope);
  *   2) 否则该 agent 的模型列表最上面那个(modelRows[0] —— providers 已加载时同步可得,
  *      与下拉渲染的第一项一致);
- *   3) 否则使用站点默认；Claude 从 BUNDLED_CATALOG defaults 解析，Codex 保留差异值。
+ *   3) 否则两种 agent 都从 BUNDLED_CATALOG defaults 解析，再落到各自 FALLBACK_MODELS。
  * effort:reconcile 到目标 model 的合法档(reconcileEffortForModel,base = 最近会话 effort ?? 当前 effort);
  *   拿不到目标 model 对应的 SectionModel(model 不在 modelRows 里,如走了目录默认兜底或历史模型已下架)
  *   时保留 base effort 不动。providerId 由调用方统一置 null(各 agent 供应商集不同,回默认路由)。

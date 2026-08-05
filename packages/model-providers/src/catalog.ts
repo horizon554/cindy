@@ -32,6 +32,29 @@ const AUTH_STRATEGIES = [
 ] as const;
 const BUNDLED_PROVIDER_IDS = new Set(BUNDLED_CATALOG_INTERNAL.providers.map((provider) => provider.id));
 
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left)
+      && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => sameJsonValue(value, right[index]))
+    );
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftEntries = Object.entries(left as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  const rightEntries = Object.entries(right as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  return (
+    leftEntries.length === rightEntries.length
+    && leftEntries.every(
+      ([key, value], index) =>
+        rightEntries[index]?.[0] === key
+        && sameJsonValue(value, rightEntries[index]?.[1]),
+    )
+  );
+}
+
 function isWireProtocol(value: unknown): value is (typeof WIRE_PROTOCOLS)[number] {
   return typeof value === 'string' && (WIRE_PROTOCOLS as readonly string[]).includes(value);
 }
@@ -595,9 +618,14 @@ function parseV3Catalog(input: Record<string, unknown>): Catalog {
     // v3 只允许客户端内置身份卡按 id 接收 partial delta。服务端新增的 provider
     // 没有 bundled 基底可补字段，必须在 wire 边界就是一张完整、可独立使用的身份卡。
     if (BUNDLED_PROVIDER_IDS.has(entry.id)) {
+      const bundled = BUNDLED_CATALOG_INTERNAL.providers.find((provider) => provider.id === entry.id)!;
       assert(
         entry.source === undefined || entry.source === 'builtin',
         `provider '${entry.id}' bundled delta cannot override source`,
+      );
+      assert(
+        entry.auth === undefined || sameJsonValue(entry.auth, bundled.auth),
+        `provider '${entry.id}' bundled delta cannot override auth`,
       );
     } else {
       validateProvider(entry as unknown as Provider);

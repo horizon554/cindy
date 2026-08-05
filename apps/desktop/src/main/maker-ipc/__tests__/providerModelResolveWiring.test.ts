@@ -9,9 +9,26 @@ const registerSource = readFileSync(resolve(__dirname, '..', 'register.ts'), 'ut
 );
 
 describe('provider model resolve wiring', () => {
+  it('preserves provider-verified context windows in discovered catalog additions', () => {
+    const additionsStart = registerSource.indexOf(
+      'const additions = effectiveModels.map((m) => ({',
+    );
+    const additionsEnd = registerSource.indexOf(
+      'setDiscoveredProviderModels(providerId, agent, additions);',
+      additionsStart,
+    );
+    const additions = registerSource.slice(additionsStart, additionsEnd);
+
+    expect(additionsStart).toBeGreaterThan(-1);
+    expect(additionsEnd).toBeGreaterThan(additionsStart);
+    expect(additions).toContain('contextWindowVerified: m.contextWindowVerified,');
+  });
+
   it('rechecks the latest apply token before any resolved model reaches a consumer', () => {
-    const resolveStart = registerSource.indexOf('.then(async (resolved) => {',
-      registerSource.indexOf('resolveFetchedModels: (spec, result) => {'));
+    const resolveStart = registerSource.indexOf(
+      '.then(async (resolved) => {',
+      registerSource.indexOf('resolveFetchedModels: (spec, result) => {'),
+    );
     const resolveEnd = registerSource.indexOf('.catch(() => undefined);', resolveStart);
     const consumer = registerSource.slice(resolveStart, resolveEnd);
 
