@@ -5426,6 +5426,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 defaultEffort: m.defaultEffort,
                 supportsFastMode: m.supportsFastMode,
                 defaultEnabled: m.defaultEnabled,
+                ...(m.modalities ? { modalities: m.modalities } : {}),
+                ...(m.capabilities && Object.keys(m.capabilities).length > 0
+                  ? { capabilities: m.capabilities }
+                  : {}),
               }));
               setDiscoveredProviderModels(providerId, agent, additions);
             }

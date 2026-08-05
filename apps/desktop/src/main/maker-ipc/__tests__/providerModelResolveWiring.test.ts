@@ -22,6 +22,8 @@ describe('provider model resolve wiring', () => {
     expect(additionsStart).toBeGreaterThan(-1);
     expect(additionsEnd).toBeGreaterThan(additionsStart);
     expect(additions).toContain('contextWindowVerified: m.contextWindowVerified,');
+    expect(additions).toContain('modalities: m.modalities');
+    expect(additions).toContain('capabilities: m.capabilities');
   });
 
   it('rechecks the latest apply token before any resolved model reaches a consumer', () => {
