@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeGatewayModelsPayload } from '../modelsResponse.js';
+import { isStrictlyResolvedGatewayModels, normalizeGatewayModelsPayload } from '../modelsResponse.js';
 
 const MODEL = {
   id: 'gpt-5.5',
@@ -10,6 +10,30 @@ const MODEL = {
   contextWindow: 272_000,
   efforts: ['low', 'medium', 'high'],
   defaultEffort: 'high',
+};
+
+// 服务端 /models 富化后按 v2 下发的真实条目形状:网关权威字段(定价 / perAgent)+
+// 知识库富化补的 capabilities / modalities。跨仓契约锁:v2 严格解析必须整条透传保留,
+// 不能因定价等字段而拒收(否则客户端会清空网关模型列表)。
+const ENRICHED_V2_MODEL = {
+  id: 'deepseek-v4-pro',
+  currency: 'CNY',
+  agents: ['claude-code', 'codex'],
+  name: 'DeepSeek V4 Pro',
+  group: 'deepseek',
+  contextWindow: 1_000_000,
+  maxOutputTokens: 65_536,
+  efforts: ['low', 'medium', 'high'],
+  defaultEffort: 'high',
+  sortOrder: 44,
+  supportsFastMode: false,
+  defaultEnabled: true,
+  capabilities: { attachment: true, reasoning: true },
+  modalities: { input: ['text', 'image'], output: ['text'] },
+  costDiscount: 0,
+  inputCostPerToken: 0.00000027,
+  outputCostPerToken: 0.0000011,
+  perAgent: { 'claude-code': { contextWindow: 1_000_000 } },
 };
 
 function v2(models: unknown[]) {
@@ -45,5 +69,22 @@ describe('normalizeGatewayModelsPayload', () => {
     expect(normalizeGatewayModelsPayload({ models: [withoutCurrency] }, 'CNY')).toMatchObject([
       { currency: 'CNY' },
     ]);
+  });
+
+  it('parses a realistic enriched v2 model (capabilities + modalities + pricing + perAgent) intact', () => {
+    const result = normalizeGatewayModelsPayload(v2([ENRICHED_V2_MODEL]), 'USD');
+    expect(result).not.toBeNull();
+    // 整条透传:capabilities / modalities / 定价 / perAgent 全部保留,currency 已合法不回退。
+    expect(result).toEqual([ENRICHED_V2_MODEL]);
+  });
+
+  it('marks strictly-parsed v2 models as resolved but not the tolerant envelope', () => {
+    const strict = normalizeGatewayModelsPayload(v2([ENRICHED_V2_MODEL]), 'USD');
+    expect(strict).not.toBeNull();
+    expect(isStrictlyResolvedGatewayModels(strict!)).toBe(true);
+
+    const tolerant = normalizeGatewayModelsPayload({ models: [ENRICHED_V2_MODEL] }, 'USD');
+    expect(tolerant).not.toBeNull();
+    expect(isStrictlyResolvedGatewayModels(tolerant!)).toBe(false);
   });
 });

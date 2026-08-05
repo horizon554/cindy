@@ -61,8 +61,12 @@ function firstModelByOrder(provider: ProviderView, agent: AgentKind): CatalogMod
   if (chatModels.length === 0) return undefined;
   const visible = chatModels.filter((m) => m.defaultEnabled !== false);
   const pool = visible.length > 0 ? visible : chatModels;
+  // 显式「新会话默认」标记(命中当前 agent)优先于纯 sortOrder;并列时仍取 sortOrder 最低者。
+  // 与 modelDefinitions.firstByCatalogOrder 的种子偏好一致,保证兜底路径也尊重该标记。
+  const marked = pool.filter((m) => m.newSessionDefault?.includes(agent));
+  const ranked = marked.length > 0 ? marked : pool;
   // slice() 再 sort：sort 原地改数组，直接排会打乱传入的 ProviderView 的清单顺序。
-  return pool
+  return ranked
     .slice()
     .sort(
       (a, b) =>

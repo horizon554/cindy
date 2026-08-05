@@ -199,6 +199,8 @@ export interface ModelAccessGatewayModel extends ModelGroupPricing {
   maxOutputTokens?: number;
   /** 输入 / 输出模态(服务端由 Gateway architecture 归一化而来)。 */
   modalities?: { input: string[]; output: string[] };
+  /** 新会话默认 seed 的 agent 列表(服务端由 registry newSessionDefault 投影,已按 route 求交)。 */
+  newSessionDefault?: readonly ('claude-code' | 'codex')[];
   efforts?: string[];
   defaultEffort?: string | null;
   sortOrder?: number;

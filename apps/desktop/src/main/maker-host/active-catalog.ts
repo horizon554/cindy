@@ -141,6 +141,8 @@ export interface XdGatewayModelInfo {
   releaseDate?: string;
   status?: CatalogModel['status'];
   modalities?: { input: string[]; output: string[] };
+  /** 新会话默认 seed 的 agent 列表(服务端由 registry newSessionDefault 投影,已按 route 求交)。 */
+  newSessionDefault?: readonly AgentKind[];
   /** per-tab 能力覆盖。 */
   perAgent?: Partial<Record<AgentKind, XdGatewayAgentOverride>>;
 }
@@ -772,6 +774,9 @@ function computeMerged(): Catalog {
           ...(gm.category !== undefined ? { category: gm.category } : {}),
           ...(gm.capabilities !== undefined ? { capabilities: gm.capabilities } : {}),
           ...(gm.modalities !== undefined ? { modalities: gm.modalities } : {}),
+          ...(gm.newSessionDefault !== undefined
+            ? { newSessionDefault: gm.newSessionDefault }
+            : {}),
           ...(gm.releaseDate !== undefined ? { releaseDate: gm.releaseDate } : {}),
           ...(gm.status !== undefined ? { status: gm.status } : {}),
           ...(gm.source !== undefined ? { source: gm.source } : {}),

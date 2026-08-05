@@ -52,6 +52,12 @@ export interface ModelDescriptor {
    * 消费点见 modelDefinitions.getDefaultModelForVendor:种子默认只从默认可见的模型里取。
    */
   defaultEnabled?: boolean;
+  /**
+   * 该模型是否被标记为**本 agent** 的新会话默认 seed(由 CatalogModel.newSessionDefault
+   * 按 agent 求值而来;descriptor 已按 agent 分组,故此处是 per-agent 布尔)。
+   * getDefaultModelForVendor 对被标记且默认可见的模型优先取用,否则回退 sortOrder。
+   */
+  newSessionDefault?: boolean;
 }
 
 export interface EffortDescriptor {

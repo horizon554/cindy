@@ -574,3 +574,36 @@ describe('resolveDraftSessionProviderId', () => {
     ).toBe('xd');
   });
 });
+
+describe('pickConnectedModelForAgent — newSessionDefault 标记优先于 sortOrder', () => {
+  it('种子不可用回退时优先取被标记(命中当前 agent)的模型,即使 sortOrder 更高', () => {
+    const gateway = provider('xd', true, {
+      'claude-code': [
+        model('claude-opus-5', { sortOrder: 0 }),
+        model('deepseek-v4-pro', { sortOrder: 44, newSessionDefault: ['claude-code'] }),
+      ],
+    });
+    // preferredModelId 不在清单 → 走 Step 2 firstModelByOrder;标记赢过更低 sortOrder。
+    expect(pickId([gateway], 'claude-code', 'unavailable-seed')).toBe('deepseek-v4-pro');
+  });
+
+  it('标记只命中其它 agent 时不影响本 agent(codex 标记不改 cc 默认)', () => {
+    const gateway = provider('xd', true, {
+      'claude-code': [
+        model('claude-opus-5', { sortOrder: 0 }),
+        model('deepseek-v4-pro', { sortOrder: 44, newSessionDefault: ['codex'] }),
+      ],
+    });
+    expect(pickId([gateway], 'claude-code', 'unavailable-seed')).toBe('claude-opus-5');
+  });
+
+  it('无任何标记时仍按 sortOrder 取最低(回归)', () => {
+    const gateway = provider('xd', true, {
+      'claude-code': [
+        model('claude-opus-5', { sortOrder: 0 }),
+        model('deepseek-v4-pro', { sortOrder: 44 }),
+      ],
+    });
+    expect(pickId([gateway], 'claude-code', 'unavailable-seed')).toBe('claude-opus-5');
+  });
+});

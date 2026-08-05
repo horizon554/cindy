@@ -24,6 +24,8 @@ export interface ModelDefinition {
   sortOrder?: number;
   /** 选择器里默认是否可见;缺省 ⇒ 可见(见 getDefaultModelForVendor)。 */
   defaultEnabled?: boolean;
+  /** 被标记为本 vendor 的新会话默认 seed;种子选择优先取它(见 firstByCatalogOrder)。 */
+  newSessionDefault?: boolean;
 }
 
 function toLegacy(m: ModelDescriptor, vendorKey: 'cc' | 'codex' | 'pi'): ModelDefinition {
@@ -38,6 +40,7 @@ function toLegacy(m: ModelDescriptor, vendorKey: 'cc' | 'codex' | 'pi'): ModelDe
     supportsFastMode: m.supportsFastMode,
     sortOrder: m.sortOrder,
     defaultEnabled: m.defaultEnabled,
+    newSessionDefault: m.newSessionDefault,
   };
 }
 
@@ -118,7 +121,9 @@ function firstByCatalogOrder(models: readonly ModelDefinition[]): ModelDefinitio
   const visible = models.filter((m) => m.defaultEnabled !== false);
   // slice() 后再 sort：sort 原地改数组，直接排会打乱调用方（capabilities 缓存）的清单顺序。
   const pool = visible.length > 0 ? visible : models;
-  return pool.slice().sort(byOrder)[0];
+  // 显式「新会话默认」标记优先于纯 sortOrder;多个标记时仍按 sortOrder 取最低者。
+  const marked = pool.filter((m) => m.newSessionDefault === true);
+  return (marked.length > 0 ? marked : pool).slice().sort(byOrder)[0];
 }
 
 /**

@@ -368,6 +368,14 @@ export interface CatalogModel {
    */
   defaultEnabled?: boolean;
   /**
+   * 该模型被标记为「新会话默认」seed 的 agent 列表(由 registry newSessionDefault 投影下发,
+   * 已按当前 route 的 agents 求交)。与 `sortOrder`(仅决定选择器排序)、`defaultEnabled`
+   * (仅决定可见性)正交:渲染层种子(getDefaultModelForVendor / draftModelCalibration)
+   * 对被标记且可用可见的模型优先取用,否则回退 sortOrder。语义 per-agent(模型已按 agent
+   * 嵌在 `Provider.models[agent]` 下),故意不纳入 `modelSignature` 跨供应商一致性校验。
+   */
+  newSessionDefault?: readonly AgentKind[];
+  /**
    * 该来源下的模型是否已由用户确认支持图片输入。目前只供 Pi 自定义 provider 使用；
    * 缺省按 false 处理，避免把纯文本端点误报成视觉模型。它是 per-provider 能力，不参与
    * `modelSignature` 的同 id 跨供应商一致性校验。

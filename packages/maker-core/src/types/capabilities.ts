@@ -266,6 +266,12 @@ export interface ModelDescriptor {
   */
   defaultEnabled?: boolean;
   /**
+   * 该模型是否被标记为**本 agent** 的新会话默认 seed(host 派生时由 CatalogModel
+   * `newSessionDefault` 按 agent 求值透传;descriptor 已按 agent 分组,故为 per-agent 布尔)。
+   * 渲染层种子默认据它优先于纯 sortOrder 选取。maker-core 运行时不读它。
+   */
+  newSessionDefault?: boolean;
+  /**
    * 模型计费($/1M tokens,源自目录/网关刷新,host 派生时透传)。pi 用它生成
    * models.json 的 cost 让 pi 自行计价;缺省按 0 计(用量页不显示钱数)。
    */
