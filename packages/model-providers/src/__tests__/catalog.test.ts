@@ -362,6 +362,18 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     })).toThrow(/provider\.name missing/);
   });
 
+  it('v3 bundled deltas cannot change an embedded provider into a user provider', () => {
+    expect(parseCatalog({
+      version: '3',
+      providers: [{ id: 'xai', source: 'builtin' }],
+    }).providers[0]?.source).toBe('builtin');
+
+    expect(() => parseCatalog({
+      version: '3',
+      providers: [{ id: 'xai', source: 'user' }],
+    })).toThrow(/bundled delta cannot override source/);
+  });
+
   it.each([
     ['authStrategy', 'bogus'],
     ['requestPath', 'https://other.example/v1'],

@@ -13,7 +13,11 @@
  * 保证包可独立单测，也保证跨平台路径 / CORS 等细节留在 host。
  */
 
-import { BUNDLED_CATALOG, parseCatalog } from "./catalog.js";
+import {
+  BUNDLED_CATALOG,
+  parseCatalog,
+  validateModelConsistency,
+} from "./catalog.js";
 import {
   compareModelRegistryRevisions,
   decideModelRegistrySnapshot,
@@ -384,7 +388,7 @@ export function mergeWithBundled(primary: Catalog): Catalog {
       };
     }
   }
-  return {
+  const catalog: Catalog = {
     version: primary.version,
     providers,
     ...(defaults ? { defaults } : {}),
@@ -393,6 +397,12 @@ export function mergeWithBundled(primary: Catalog): Catalog {
       ? { modelRegistry: selectedRegistry.modelRegistry }
       : {}),
   };
+  // v3 provider entries may be partial deltas, so their cross-provider model invariants can only
+  // be checked after every bundled identity card has been materialized. Without this final check,
+  // the first-wins model projection can pair a selected provider route with another provider's
+  // context/effort metadata for the same model id.
+  if (primary.version === "3") validateModelConsistency(catalog);
+  return catalog;
 }
 
 function log(

@@ -377,6 +377,22 @@ describe('mergeWithBundled', () => {
     });
   });
 
+  it('v3 validates duplicate model metadata after materializing bundled provider deltas', () => {
+    const bundledXai = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'xai')!;
+    const xaiModel = bundledXai.models.codex?.[0];
+    if (!xaiModel) throw new Error('missing bundled xAI Codex model');
+
+    expect(() => mergeWithBundled({
+      version: '3',
+      providers: [{
+        id: 'openai',
+        models: {
+          codex: [{ ...xaiModel, contextWindow: xaiModel.contextWindow + 1 }],
+        },
+      } as Catalog['providers'][number]],
+    })).toThrow(/inconsistent metadata across providers/);
+  });
+
   it('does not infer bundled billing when a same-id primary changes auth or upstream', () => {
     const apiKeyPrimary: Catalog = {
       ...MINIMAL,

@@ -387,7 +387,7 @@ function modelSignature(m: CatalogModel): string {
  * 元数据分叉会导致「选了同名模型但 ctx / effort 不同」的静默漂移。
  * 注：跨 agent 不约束（gpt-5.5 在 cc=1M / codex=272k 本就分叉，正是 per-agent 拆分的意义）。
  */
-function validateModelConsistency(catalog: Catalog): void {
+export function validateModelConsistency(catalog: Catalog): void {
   const sigByKey = new Map<string, string>();
   for (const p of catalog.providers) {
     for (const agent of p.agents) {
@@ -594,7 +594,12 @@ function parseV3Catalog(input: Record<string, unknown>): Catalog {
     validateV3Provider(entry);
     // v3 只允许客户端内置身份卡按 id 接收 partial delta。服务端新增的 provider
     // 没有 bundled 基底可补字段，必须在 wire 边界就是一张完整、可独立使用的身份卡。
-    if (!BUNDLED_PROVIDER_IDS.has(entry.id)) {
+    if (BUNDLED_PROVIDER_IDS.has(entry.id)) {
+      assert(
+        entry.source === undefined || entry.source === 'builtin',
+        `provider '${entry.id}' bundled delta cannot override source`,
+      );
+    } else {
       validateProvider(entry as unknown as Provider);
     }
     providerEntries.push(entry as unknown as Provider);
