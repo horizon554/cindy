@@ -119,6 +119,23 @@ describe('buildUserProvider (per-runtime)', () => {
     expect(p.models.codex?.[0].defaultEnabled).toBe(false);
   });
 
+  it('projects persisted provider mode into the catalog', () => {
+    const p = buildUserProvider({
+      ...codexOnly,
+      runtimes: {
+        codex: {
+          ...codexOnly.runtimes.codex!,
+          models: [{ id: 'embedding-model', name: 'Embedding', mode: 'embedding' }],
+        },
+      },
+    });
+    expect(p.models.codex?.[0]).toMatchObject({
+      id: 'embedding-model',
+      mode: 'embedding',
+      group: 'custom:openrouter',
+    });
+  });
+
   it('uses explicit runtime model contextWindow and defaults only when absent', () => {
     const p = buildUserProvider({
       ...codexOnly,

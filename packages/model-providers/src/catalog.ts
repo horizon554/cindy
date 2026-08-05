@@ -455,6 +455,14 @@ function isValidPreset(v: unknown): v is ProviderPreset {
         mm.contextWindow !== undefined
         && (typeof mm.contextWindow !== 'number' || !Number.isFinite(mm.contextWindow) || mm.contextWindow <= 0)
       ) return false;
+      if (
+        mm.mode !== undefined
+        && (
+          typeof mm.mode !== 'string'
+          || mm.mode.trim().length === 0
+          || mm.mode.trim().length > 128
+        )
+      ) return false;
       if (mm.supportsImageInput !== undefined && typeof mm.supportsImageInput !== 'boolean') {
         return false;
       }

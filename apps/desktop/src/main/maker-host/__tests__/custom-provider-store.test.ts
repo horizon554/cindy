@@ -336,6 +336,36 @@ describe('custom-provider-store CRUD (per-runtime)', () => {
     expect(got?.runtimes.codex?.headers).toBeUndefined();
   });
 
+  it('normalizes and round-trips a provider-reported model mode', async () => {
+    mountDb();
+    await createCustomProvider({
+      ...valid,
+      runtimes: {
+        codex: {
+          ...valid.runtimes.codex!,
+          models: [{ id: 'embedding-model', name: 'Embedding', mode: '  embedding  ' }],
+        },
+      },
+    });
+    expect((await getCustomProvider('openrouter'))?.runtimes.codex?.models).toEqual([
+      { id: 'embedding-model', name: 'Embedding', mode: 'embedding' },
+    ]);
+  });
+
+  it('rejects blank or oversized provider-reported model modes', () => {
+    for (const mode of ['   ', 'x'.repeat(129)]) {
+      expect(validateCustomProviderConfig({
+        ...valid,
+        runtimes: {
+          codex: {
+            ...valid.runtimes.codex!,
+            models: [{ id: 'model', name: 'Model', mode }],
+          },
+        },
+      }).ok).toBe(false);
+    }
+  });
+
   it('round-trips only an explicitly enabled Pi image-input capability', async () => {
     mountDb();
     await createCustomProvider({

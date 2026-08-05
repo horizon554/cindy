@@ -253,6 +253,36 @@ describe('mergeDiscoveredModelsIntoConfig（发现结果持久化的 additions-o
       { id: 'bogus', name: 'Bogus' },
     ]);
   });
+
+  it('持久化并回填厂商上报的 mode，重启后仍保留非聊天分类', () => {
+    const withModes: CustomProviderConfig = {
+      ...BASE,
+      runtimes: {
+        'claude-code': {
+          ...BASE.runtimes['claude-code']!,
+          models: [
+            { id: 'm1', name: 'M1', mode: 'chat' },
+            { id: 'old-embedding', name: 'Old Embedding', mode: 'embedding' },
+          ],
+        },
+      },
+    };
+    const merged = mergeDiscoveredModelsIntoConfig(withModes, 'claude-code', [
+      { id: 'm1', name: 'M1', mode: 'embedding' },
+      { id: 'old-embedding', name: 'Old Embedding', mode: 'chat' },
+      { id: 'new-responses', name: 'New Responses', mode: 'responses' },
+    ]);
+    expect(merged?.runtimes['claude-code']?.models).toEqual([
+      { id: 'm1', name: 'M1', mode: 'embedding' },
+      { id: 'old-embedding', name: 'Old Embedding', mode: 'chat' },
+      { id: 'new-responses', name: 'New Responses', mode: 'responses' },
+    ]);
+    expect(buildUserProvider(merged!).models['claude-code']).toEqual([
+      expect.objectContaining({ id: 'm1', mode: 'embedding' }),
+      expect.objectContaining({ id: 'old-embedding', mode: 'chat' }),
+      expect.objectContaining({ id: 'new-responses', mode: 'responses' }),
+    ]);
+  });
 });
 
 describe('parseModelsListResponse contextWindow 提取(#386)', () => {

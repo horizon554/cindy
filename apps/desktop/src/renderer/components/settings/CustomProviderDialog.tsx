@@ -31,6 +31,8 @@ import {
   createCustomProvider,
   customProviderModelConfigForSave,
   fillCustomProviderModelMetadata,
+  fillCustomProviderModelsMetadata,
+  fillMatchingCustomProviderPickerModels,
   readCustomProviderKey,
   replaceCustomProviderModelId,
   setCustomProviderModelReasoning,
@@ -374,6 +376,7 @@ export function CustomProviderDialog({
   );
   // 拉取成功后的勾选弹层：行集合 = 拉取结果 ∪ 表单已填（后者默认勾选、保留用户显示名）。
   const [picker, setPicker] = useState<{
+    requestId: string;
     agent: DialogAgentKind;
     models: ModelRow[];
     selected: Set<string>;
@@ -659,6 +662,9 @@ export function CustomProviderDialog({
     pendingModelsResolvedStopRef.current?.();
     pendingModelsResolvedStopRef.current = null;
     setFetchingModels((prev) => ({ ...prev, [agent]: true }));
+    // Resolve cache 命中时 push 可能早于 fetch IPC 返回；先保存在本次请求闭包里，创建
+    // picker 时再 replay。晚到的 push 仍走下面的 setPicker 增量回填。
+    let resolvedModels: Parameters<typeof fillCustomProviderModelsMetadata>[1];
     try {
       pendingModelsResolvedStopRef.current = subscribeToProviderModelsResolved({
         requestId,
@@ -670,16 +676,15 @@ export function CustomProviderDialog({
             requestSig
           )
             return;
-          const metadataById = new Map(payload.models.map((model) => [model.id, model]));
-          setPicker((currentPicker) => {
-            if (!currentPicker || currentPicker.agent !== agent) return currentPicker;
-            return {
-              ...currentPicker,
-              models: currentPicker.models.map((model) =>
-                fillCustomProviderModelMetadata(model, metadataById.get(model.id)),
-              ),
-            };
-          });
+          resolvedModels = payload.models;
+          setPicker((currentPicker) =>
+            fillMatchingCustomProviderPickerModels(
+              currentPicker,
+              requestId,
+              agent,
+              payload.models,
+            ),
+          );
         },
       });
       const result = await window.electronAPI.maker.fetchProviderModels({
@@ -721,6 +726,7 @@ export function CustomProviderDialog({
             const row: ModelRow = {
               id: m.id,
               name: cur?.name || m.name,
+              ...(cur?.mode !== undefined ? { mode: cur.mode } : {}),
               ...(contextWindow !== undefined ? { contextWindow } : {}),
               ...(cur?.modalities !== undefined ? { modalities: cur.modalities } : {}),
               ...(cur?.capabilities !== undefined ? { capabilities: cur.capabilities } : {}),
@@ -730,16 +736,23 @@ export function CustomProviderDialog({
                 ? { reasoning: true, reasoningEfforts: [...cur.reasoningEfforts] }
                 : {}),
             };
-            // contextWindow 允许用户显式清空，所以已有行不从发现结果回填该字段；
-            // modalities/capabilities 没有手工清空控件，缺失时可安全吸收厂商自报事实。
+            // mode 没有手工编辑入口,最新有效上报是权威事实；contextWindow 允许用户显式
+            // 清空，所以已有行不回填；modalities/capabilities 缺失时可安全吸收厂商事实。
             return fillCustomProviderModelMetadata(row, {
+              mode: m.providerReported?.mode,
               ...(cur ? {} : { contextWindow: m.providerReported?.contextWindow }),
               modalities: m.providerReported?.modalities,
               capabilities: m.providerReported?.capabilities,
             });
           }),
         ];
-        setPicker({ agent, models: rows, selected: new Set(currentById.keys()), query: '' });
+        setPicker({
+          requestId,
+          agent,
+          models: fillCustomProviderModelsMetadata(rows, resolvedModels),
+          selected: new Set(currentById.keys()),
+          query: '',
+        });
         // 弹层锁定所属 runtime：把背景 Tab 同步切回请求的 runtime（标题也带 runtime 名），
         // 请求期间切过 Tab 也不会在错误上下文里确认。
         setActiveTab(agent);
@@ -791,6 +804,7 @@ export function CustomProviderDialog({
       const latest = latestById.get(m.id);
       const contextWindow = latest?.contextWindow ?? m.contextWindow;
       const defaultEnabled = latest?.defaultEnabled ?? m.defaultEnabled;
+      const mode = latest?.mode ?? m.mode;
       const supportsImageInput = latest ? latest.supportsImageInput : m.supportsImageInput;
       const reasoning = latest ? latest.reasoning : m.reasoning;
       const reasoningEfforts = latest ? latest.reasoningEfforts : m.reasoningEfforts;
@@ -799,6 +813,7 @@ export function CustomProviderDialog({
       return {
         id: m.id,
         name: latest?.name.trim() ? latest.name.trim() : m.name,
+        ...(mode !== undefined ? { mode } : {}),
         ...(contextWindow !== undefined ? { contextWindow } : {}),
         ...(modalities !== undefined
           ? { modalities: { input: [...modalities.input], output: [...modalities.output] } }
@@ -817,6 +832,7 @@ export function CustomProviderDialog({
         merged.push({
           id,
           name: m.name.trim() || id,
+          ...(m.mode !== undefined ? { mode: m.mode } : {}),
           ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
           ...(m.modalities !== undefined
             ? {
@@ -1828,8 +1844,15 @@ function ModelPickerOverlay({
   onConfirm,
   onClose,
 }: {
-  picker: { agent: DialogAgentKind; models: ModelRow[]; selected: Set<string>; query: string };
+  picker: {
+    requestId: string;
+    agent: DialogAgentKind;
+    models: ModelRow[];
+    selected: Set<string>;
+    query: string;
+  };
   onChange: (next: {
+    requestId: string;
     agent: DialogAgentKind;
     models: ModelRow[];
     selected: Set<string>;

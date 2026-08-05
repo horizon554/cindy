@@ -246,9 +246,9 @@ export interface CatalogModel {
   category?: string;
   /**
    * 厂商分组 id —— 决定模型在选择器右栏的分组归属（替代渲染层按 id 前缀硬猜）。
-   * 当前取值与渲染层 ModelCategory 对齐：'anthropic' | 'gpt' | 'gpt-budget' | 'google' | 'china'。
-   * 缺省时渲染层回退到 id 前缀归类（categorize）。新增未知分组需在渲染层补 i18n 标签。
-  */
+   * 已知取值由 `classification.ts` 的 `ModelCategory` 统一定义；未知分组不会直接创建新分组，
+   * 分类层会忽略它并按模型 id 启发式回退。缺省同样走该回退链。
+   */
   group?: string;
   /**
    * Gateway 原生模型能力类型(issue #882:'chat' / 'embedding' / 'image_generation' /
@@ -499,6 +499,11 @@ export interface ProviderRuntimeModelConfig {
   id: string;
   name: string;
   contextWindow?: number;
+  /**
+   * 厂商模型列表明确上报的用途类型（chat / responses / embedding / image_generation / …）。
+   * 随自定义供应商配置持久化并投影回 CatalogModel，避免重启后丢失非聊天分类事实。
+   */
+  mode?: string;
   /**
    * 厂商 /v1/models 自报的输入/输出模态与能力(形状对齐 `CatalogModel`)。与 contextWindow
    * 同理随用户配置持久化:未命中知识库的第三方模型也能保留厂商自报的真实能力,而非在 resolve

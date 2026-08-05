@@ -4989,8 +4989,27 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         wireProtocol: runtime.wireProtocol,
         modelsUrl: runtime.modelsUrl,
       }).url;
+      const resolveModels = toModelResolveRequestModels(
+        runtime.models.map((m) => {
+          // 持久化配置里的厂商自报事实全部随 resolve 上传；显式非聊天 mode 会由统一
+          // wire 投影过滤，避免 embedding/image 等在服务端被重新解释成聊天模型。
+          const providerReported = {
+            ...(m.mode !== undefined ? { mode: m.mode } : {}),
+            ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+            ...(m.modalities ? { modalities: m.modalities } : {}),
+            ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+          };
+          return {
+            id: m.id,
+            name: m.name,
+            ...(Object.keys(providerReported).length > 0 ? { providerReported } : {}),
+          };
+        }),
+      );
+      if (resolveModels.length === 0) continue;
       pending.push({
         agent,
+        // 全量 membership guard 仍包含显式非聊天模型；只有 resolve wire payload 过滤它们。
         uploadedIds: runtime.models.map((m) => m.id),
         input: {
           providerId,
@@ -5002,20 +5021,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             ...(runtime.requestPath ? { requestPath: runtime.requestPath } : {}),
             modelsUrl,
           },
-          models: runtime.models.map((m) => {
-            // 配置里持久化的厂商自报事实全部随 resolve 上传:未命中知识库的第三方模型
-            // 也保留厂商窗口/模态/能力,不落保守默认(与刷新 fetch-resolve 同口径)。
-            const providerReported = {
-              ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
-              ...(m.modalities ? { modalities: m.modalities } : {}),
-              ...(m.capabilities ? { capabilities: m.capabilities } : {}),
-            };
-            return {
-              id: m.id,
-              name: m.name,
-              ...(Object.keys(providerReported).length > 0 ? { providerReported } : {}),
-            };
-          }),
+          models: resolveModels,
         },
       });
     }
@@ -5071,6 +5077,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         resolved.entry.models.map((m) => ({
           id: m.id,
           name: m.name,
+          ...(m.mode ? { mode: m.mode } : {}),
           ...(m.modalities ? { modalities: m.modalities } : {}),
           ...(m.capabilities && Object.keys(m.capabilities).length > 0
             ? { capabilities: m.capabilities }
@@ -5201,6 +5208,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                   resolved.entry.models.map((m) => ({
                     id: m.id,
                     name: m.name,
+                    ...(m.mode ? { mode: m.mode } : {}),
                     ...(m.modalities ? { modalities: m.modalities } : {}),
                     ...(m.capabilities && Object.keys(m.capabilities).length > 0
                       ? { capabilities: m.capabilities }
@@ -5390,7 +5398,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                   models.map((m) => ({
                     id: m.id,
                     name: m.name,
-                    // 厂商自报的窗口/模态/能力全部持久化(未命中知识库的模型也不落默认)。
+                    // 厂商自报的分类/窗口/模态/能力全部持久化(未命中知识库也不落默认)。
+                    ...(m.providerReported?.mode
+                      ? { mode: m.providerReported.mode }
+                      : {}),
                     ...(m.providerReported?.contextWindow
                       ? { contextWindow: m.providerReported.contextWindow }
                       : {}),

@@ -1011,6 +1011,28 @@ describe('registry visibility & sources(运行时注入 fixture)', () => {
       'custom-p',
     );
   });
+
+  it('用户自定义来源的显式非聊天 mode 优先于 custom group 放行', () => {
+    const catalog: Catalog = {
+      version: 'test',
+      providers: [{
+        id: 'custom-p',
+        name: 'Custom',
+        source: 'user',
+        agents: ['codex'],
+        auth: { method: 'apiKey' },
+        routing: {
+          codex: { upstream: 'https://custom.test', authStrategy: 'api-key-header' },
+        },
+        models: {
+          codex: [model('ambiguous-id', { group: 'custom:custom-p', mode: 'embedding' })],
+        },
+      }],
+    };
+    const views = buildRegistry(catalog, { 'custom-p': true });
+    expect(chatEligibleSourcesForModel(views, 'ambiguous-id', 'codex')).toEqual([]);
+    expect(effectiveSourceIdForModel(views, 'custom-p', 'ambiguous-id', 'codex')).toBeNull();
+  });
 });
 
 describe('resolveRoute(运行时注入 fixture)', () => {

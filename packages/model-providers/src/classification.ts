@@ -295,8 +295,9 @@ export function isAgentSelectableModel(
   model: { id: string; category?: string; group?: string; mode?: string },
   opts?: { userProvider?: boolean },
 ): boolean {
-  // A server category is a capability fact and must win over the user-provider group fallback.
-  if (model.category !== undefined) return isChatEligible(model);
+  // Server category / provider-reported mode are capability facts and must both win over the
+  // user-provider custom-group fallback. That fallback is only for genuinely unclassified models.
+  if (model.category !== undefined || model.mode !== undefined) return isChatEligible(model);
   if (opts?.userProvider === true && model.group && !KNOWN_CATEGORIES.has(model.group)) {
     return true;
   }

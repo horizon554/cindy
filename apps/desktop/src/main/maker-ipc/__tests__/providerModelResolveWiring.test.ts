@@ -9,6 +9,23 @@ const registerSource = readFileSync(resolve(__dirname, '..', 'register.ts'), 'ut
 );
 
 describe('provider model resolve wiring', () => {
+  it('projects saved runtime models through the chat-mode resolve boundary', () => {
+    const savedStart = registerSource.indexOf(
+      'async function resolveSavedCustomProviderModels(providerId: string)',
+    );
+    const savedEnd = registerSource.indexOf(
+      'registerProviderHandlers(createElectronIpcHandlerRegistry()',
+      savedStart,
+    );
+    const saved = registerSource.slice(savedStart, savedEnd);
+
+    expect(savedStart).toBeGreaterThan(-1);
+    expect(savedEnd).toBeGreaterThan(savedStart);
+    expect(saved).toContain('...(m.mode !== undefined ? { mode: m.mode } : {})');
+    expect(saved).toContain('const resolveModels = toModelResolveRequestModels(');
+    expect(saved).toContain('models: resolveModels,');
+  });
+
   it('preserves provider-verified context windows in discovered catalog additions', () => {
     const additionsStart = registerSource.indexOf(
       'const additions = effectiveModels.map((m) => ({',

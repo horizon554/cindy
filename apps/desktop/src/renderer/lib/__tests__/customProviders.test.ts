@@ -6,6 +6,8 @@ import {
   customProviderModelConfigForSave,
   customProviderModelConfigFromCatalogModel,
   fillCustomProviderModelMetadata,
+  fillCustomProviderModelsMetadata,
+  fillMatchingCustomProviderPickerModels,
   providerViewToCustomProviderConfig,
   refreshCustomProviderModels,
   replaceCustomProviderModelId,
@@ -203,6 +205,7 @@ describe('CustomProviderDialog model metadata projection', () => {
     const original: ProviderRuntimeModelConfig = {
       id: '  vlm  ',
       name: '  Vision Model  ',
+      mode: 'responses',
       contextWindow: 1_048_576,
       modalities: { input: ['text', 'image'], output: ['text'] },
       capabilities: { reasoning: true, toolCall: true, attachment: false },
@@ -224,15 +227,30 @@ describe('CustomProviderDialog model metadata projection', () => {
     expect(saved.reasoningEfforts).not.toBe(original.reasoningEfforts);
   });
 
+  it('normalizes bounded provider modes and drops unsafe mode values on save', () => {
+    expect(customProviderModelConfigForSave({
+      id: 'm',
+      name: 'M',
+      mode: '  responses  ',
+    })).toEqual({ id: 'm', name: 'M', mode: 'responses' });
+    expect(customProviderModelConfigForSave({
+      id: 'm',
+      name: 'M',
+      mode: 'x'.repeat(129),
+    })).toEqual({ id: 'm', name: 'M' });
+  });
+
   it('gap-fills resolved metadata without overriding existing facts or persisting unknown capabilities', () => {
     expect(fillCustomProviderModelMetadata(
       {
         id: 'vlm',
         name: 'VLM',
+        mode: 'chat',
         contextWindow: 128_000,
         modalities: { input: ['text'], output: ['text'] },
       },
       {
+        mode: 'embedding',
         contextWindow: 1_048_576,
         modalities: { input: ['text', 'image'], output: ['text'] },
         capabilities: { reasoning: true, toolCall: true, unknown: true },
@@ -240,10 +258,61 @@ describe('CustomProviderDialog model metadata projection', () => {
     )).toEqual({
       id: 'vlm',
       name: 'VLM',
+      mode: 'embedding',
       contextWindow: 128_000,
       modalities: { input: ['text'], output: ['text'] },
       capabilities: { reasoning: true, toolCall: true },
     });
+  });
+
+  it('replays metadata that arrived before picker rows were created', () => {
+    const earlyResolved = [{
+      id: 'model-a',
+      mode: 'responses',
+      contextWindow: 1_000_000,
+      capabilities: { reasoning: true },
+    }];
+
+    expect(fillCustomProviderModelsMetadata(
+      [{ id: 'model-a', name: 'Model A' }],
+      earlyResolved,
+    )).toEqual([{
+      id: 'model-a',
+      name: 'Model A',
+      mode: 'responses',
+      contextWindow: 1_000_000,
+      capabilities: { reasoning: true },
+    }]);
+  });
+
+  it('applies a late resolve push only to its exact request picker', () => {
+    const picker = {
+      requestId: 'request-new',
+      agent: 'codex',
+      models: [{ id: 'model-a', name: 'Model A' }],
+      selected: new Set(['model-a']),
+      query: '',
+    };
+    const resolved = [{ id: 'model-a', mode: 'responses' }];
+
+    expect(fillMatchingCustomProviderPickerModels(
+      picker,
+      'request-new',
+      'codex',
+      resolved,
+    )?.models).toEqual([{ id: 'model-a', name: 'Model A', mode: 'responses' }]);
+    expect(fillMatchingCustomProviderPickerModels(
+      picker,
+      'request-old',
+      'codex',
+      resolved,
+    )).toBe(picker);
+    expect(fillMatchingCustomProviderPickerModels(
+      picker,
+      'request-new',
+      'claude-code',
+      resolved,
+    )).toBe(picker);
   });
 });
 
@@ -408,6 +477,34 @@ describe('appendDiscoveredCustomProviderModels', () => {
       { id: 'b', name: 'B', defaultEnabled: false },
       { id: 'c', name: 'C', defaultEnabled: false },
     ]);
+  });
+
+  it('persists provider-reported mode so non-chat classification survives restart', () => {
+    const result = appendDiscoveredCustomProviderModels(
+      [
+        { id: 'existing-chat', name: 'Existing Chat', mode: 'chat' },
+        { id: 'existing-embedding', name: 'Existing Embedding', mode: 'embedding' },
+      ],
+      [
+        {
+          id: 'existing-chat',
+          name: 'Existing Chat',
+          providerReported: { mode: 'embedding' },
+        },
+        {
+          id: 'existing-embedding',
+          name: 'Existing Embedding',
+          providerReported: { mode: 'chat' },
+        },
+        { id: 'new-responses', name: 'New Responses', providerReported: { mode: 'responses' } },
+      ],
+    );
+    expect(result.models).toEqual([
+      { id: 'existing-chat', name: 'Existing Chat', mode: 'embedding' },
+      { id: 'existing-embedding', name: 'Existing Embedding', mode: 'chat' },
+      { id: 'new-responses', name: 'New Responses', mode: 'responses', defaultEnabled: false },
+    ]);
+    expect(result.changed).toBe(true);
   });
 
   it('persists provider-reported modalities/capabilities on new models, narrowing unknown capability keys', () => {

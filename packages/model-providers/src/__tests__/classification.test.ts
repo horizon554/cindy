@@ -37,6 +37,20 @@ describe('isModelSelectableForNewRoute', () => {
         { userProvider: true },
       ),
     ).toBe(true);
+    expect(
+      isModelSelectableForNewRoute(
+        { id: 'opaque', group: 'custom:mine', mode: 'embedding' },
+        { userProvider: true },
+      ),
+    ).toBe(false);
+    for (const mode of ['chat', 'responses']) {
+      expect(
+        isModelSelectableForNewRoute(
+          { id: 'opaque', group: 'custom:mine', mode },
+          { userProvider: true },
+        ),
+      ).toBe(true);
+    }
   });
 });
 

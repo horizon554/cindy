@@ -45,6 +45,30 @@ const VALID_PRESET = {
 };
 
 describe('sanitizePresets', () => {
+  it('accepts bounded model modes and rejects blank or oversized values', () => {
+    const withMode = {
+      ...VALID_PRESET,
+      runtimes: {
+        'claude-code': {
+          ...VALID_PRESET.runtimes['claude-code'],
+          models: [{ id: 'a', name: 'A', mode: 'responses' }],
+        },
+      },
+    };
+    expect(sanitizePresets([withMode])).toEqual([withMode]);
+    for (const mode of ['   ', 'x'.repeat(129)]) {
+      expect(sanitizePresets([{
+        ...withMode,
+        runtimes: {
+          'claude-code': {
+            ...withMode.runtimes['claude-code'],
+            models: [{ id: 'a', name: 'A', mode }],
+          },
+        },
+      }])).toEqual([]);
+    }
+  });
+
   it('accepts explicit Pi reasoning metadata and rejects ambiguous capability declarations', () => {
     const piReasoning = {
       ...VALID_PRESET,

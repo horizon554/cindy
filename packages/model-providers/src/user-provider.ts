@@ -71,6 +71,7 @@ function toCatalogModel(
     // 显式配置的窗口打标:编辑表单回转配置时必须与「缺省物化成的默认值」可区分,
     // 哪怕用户显式填的恰好等于当前默认(未来默认升级后显式值要原样保留)。
     ...(m.contextWindow !== undefined ? { contextWindowExplicit: true } : {}),
+    ...(m.mode !== undefined ? { mode: m.mode } : {}),
     efforts,
     defaultEffort,
     // 选择器右栏按 group 聚合：同一自定义来源的模型聚成一组（渲染层用 provider 名兜底标签）。

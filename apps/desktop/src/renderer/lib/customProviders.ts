@@ -109,6 +109,7 @@ export function customProviderModelConfigFromCatalogModel(
     | 'name'
     | 'contextWindow'
     | 'contextWindowExplicit'
+    | 'mode'
     | 'defaultEnabled'
     | 'supportsImageInput'
     | 'modalities'
@@ -129,6 +130,7 @@ export function customProviderModelConfigFromCatalogModel(
     ...(model.contextWindowExplicit === true || model.contextWindow !== DEFAULT_CUSTOM_CONTEXT_WINDOW
       ? { contextWindow: model.contextWindow }
       : {}),
+    ...(model.mode !== undefined ? { mode: model.mode } : {}),
     // 厂商自报的模态/能力随编辑往返保留(与 contextWindow 同理,缺省不写)。
     ...(model.modalities ? { modalities: model.modalities } : {}),
     ...(model.capabilities ? { capabilities: model.capabilities } : {}),
@@ -168,10 +170,12 @@ export function providerViewToCustomProviderConfig(p: ProviderView): CustomProvi
 }
 
 /**
- * 厂商 /v1/models 自报的能力事实**入参形状**(对齐 fetch 结果的 ProviderReportedModelHints):
- * capabilities 是宽松的 `Record<string, unknown>`(上游可能报任意键),持久化前再收窄。
+ * 厂商 /v1/models 自报的分类/能力事实**入参形状**(对齐 fetch 结果的
+ * ProviderReportedModelHints):capabilities 是宽松的 `Record<string, unknown>`(上游可能报
+ * 任意键),持久化前再收窄。
  */
 export interface DiscoveredReportedInput {
+  mode?: string;
   contextWindow?: number;
   modalities?: { input: string[]; output: string[] };
   capabilities?: Record<string, unknown>;
@@ -179,6 +183,7 @@ export interface DiscoveredReportedInput {
 
 /** 收窄后、可直接写进配置的能力事实(与 ProviderRuntimeModelConfig 同形)。 */
 export interface DiscoveredProviderReported {
+  mode?: string;
   contextWindow?: number;
   modalities?: ProviderRuntimeModelConfig['modalities'];
   capabilities?: ProviderRuntimeModelConfig['capabilities'];
@@ -187,12 +192,16 @@ export interface DiscoveredProviderReported {
 /** 已知能力键(对齐 CatalogModel.capabilities);上游宽松 capabilities 只取这些 boolean。 */
 const MODEL_CAPABILITY_KEYS = ['reasoning', 'toolCall', 'attachment', 'temperature'] as const;
 
-/** 从一次上报里提取可持久化的能力字段:正数窗口 / 合法模态 / 收窄后的 boolean 能力。 */
+/** 从一次上报里提取可持久化的分类/能力字段。 */
 export function persistableProviderReportedModelHints(
   pr: DiscoveredReportedInput | undefined,
 ): DiscoveredProviderReported {
   const out: DiscoveredProviderReported = {};
   if (!pr) return out;
+  if (typeof pr.mode === 'string') {
+    const mode = pr.mode.trim();
+    if (mode.length > 0 && mode.length <= 128) out.mode = mode;
+  }
   if (typeof pr.contextWindow === 'number' && pr.contextWindow > 0) out.contextWindow = pr.contextWindow;
   if (pr.modalities && Array.isArray(pr.modalities.input) && Array.isArray(pr.modalities.output)) {
     out.modalities = { input: [...pr.modalities.input], output: [...pr.modalities.output] };
@@ -208,7 +217,8 @@ export function persistableProviderReportedModelHints(
 }
 
 /**
- * 用发现 / resolve 的能力事实逐字段回填表单行。已存在值优先，避免异步响应覆盖用户当前配置；
+ * 用发现 / resolve 的能力事实更新表单行。mode 没有手工编辑入口，最新有效上报是权威事实，
+ * 可覆盖旧值；其余可编辑/可显式配置字段仍只 gap-fill，避免异步响应覆盖用户当前配置。
  * 上游宽松 capability map 会先收窄成客户端可持久化的四个 boolean 键。
  */
 export function fillCustomProviderModelMetadata(
@@ -218,6 +228,7 @@ export function fillCustomProviderModelMetadata(
   const picked = persistableProviderReportedModelHints(reported);
   return {
     ...model,
+    ...(picked.mode !== undefined && model.mode !== picked.mode ? { mode: picked.mode } : {}),
     ...(model.contextWindow === undefined && picked.contextWindow !== undefined
       ? { contextWindow: picked.contextWindow }
       : {}),
@@ -234,9 +245,11 @@ export function fillCustomProviderModelMetadata(
 export function customProviderModelConfigForSave(
   model: ProviderRuntimeModelConfig,
 ): ProviderRuntimeModelConfig {
+  const mode = persistableProviderReportedModelHints({ mode: model.mode }).mode;
   return {
     id: model.id.trim(),
     name: model.name.trim(),
+    ...(mode !== undefined ? { mode } : {}),
     ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
     ...(model.modalities !== undefined
       ? {
@@ -260,13 +273,13 @@ export function customProviderModelConfigForSave(
 /**
  * 刷新时把接口发现结果合并进配置:新模型追加(默认隐藏),已存在模型保持成员资格不变。
  *
- * 厂商自报的能力事实(contextWindow / modalities / capabilities,来自 OpenRouter 等
+ * 厂商自报的分类/能力事实(mode / contextWindow / modalities / capabilities,来自 OpenRouter 等
  * /v1/models)会持久化进配置,离线/重启后仍在,并让「保存即 resolve」把它作为 providerReported
  * 上传——未命中知识库的第三方模型也能保留厂商自报的真实窗口与能力,而非在 resolve 时落保守默认。
  *
- * **关键**:不仅新模型,已存在但配置里缺某字段的模型也在此**逐字段回填**(gap-fill,不覆盖
- * 既有值 / 用户手填)。否则老 provider 首次在新版刷新时,存量模型永远拿不到这些字段,重启后
- * boot 的 config-resolve 仍是稀疏输入 → 又落默认。
+ * **关键**:不仅新模型,已存在模型也会更新。mode 没有手工编辑入口,最新有效上报覆盖旧值；
+ * 其余字段只在缺失时 gap-fill,不覆盖用户配置。否则老 provider 首次在新版刷新时,存量模型
+ * 永远拿不到这些字段,重启后 boot 的 config-resolve 仍是稀疏输入 → 又落默认。
  *
  * `changed` 标记配置是否实际变化(新增 或 任一字段回填)。调用方据此决定是否落盘持久化:仅看
  * `addedIds` 会漏掉「无新增、仅回填」的刷新,导致回填不被保存。
@@ -282,7 +295,12 @@ export function appendDiscoveredCustomProviderModels(
   for (const model of discovered) {
     if (!model.id || reported.has(model.id)) continue;
     const picked = persistableProviderReportedModelHints(model.providerReported);
-    if (picked.contextWindow !== undefined || picked.modalities !== undefined || picked.capabilities !== undefined) {
+    if (
+      picked.mode !== undefined ||
+      picked.contextWindow !== undefined ||
+      picked.modalities !== undefined ||
+      picked.capabilities !== undefined
+    ) {
       reported.set(model.id, picked);
     }
   }
@@ -292,6 +310,10 @@ export function appendDiscoveredCustomProviderModels(
     const r = reported.get(model.id);
     if (!r) return model;
     let next = model;
+    if (r.mode !== undefined && next.mode !== r.mode) {
+      next = { ...next, mode: r.mode };
+      changed = true;
+    }
     if (next.contextWindow === undefined && r.contextWindow !== undefined) {
       next = { ...next, contextWindow: r.contextWindow };
       changed = true;
@@ -315,6 +337,7 @@ export function appendDiscoveredCustomProviderModels(
       id: model.id,
       name: model.name,
       defaultEnabled: false,
+      ...(r?.mode !== undefined ? { mode: r.mode } : {}),
       ...(r?.contextWindow !== undefined ? { contextWindow: r.contextWindow } : {}),
       ...(r?.modalities !== undefined ? { modalities: r.modalities } : {}),
       ...(r?.capabilities !== undefined ? { capabilities: r.capabilities } : {}),
@@ -324,6 +347,35 @@ export function appendDiscoveredCustomProviderModels(
     changed = true;
   }
   return { models, addedIds, changed };
+}
+
+/**
+ * 把同一请求的 resolve 结果按 id 回填到 picker 行。调用方可先缓存早到的 push，再在
+ * fetch IPC 返回并创建 picker 时调用，避免内存/磁盘 cache 命中导致 metadata 丢失。
+ */
+export function fillCustomProviderModelsMetadata(
+  models: readonly ProviderRuntimeModelConfig[],
+  resolved: readonly ({ id: string } & DiscoveredReportedInput)[] | undefined,
+): ProviderRuntimeModelConfig[] {
+  if (!resolved || resolved.length === 0) return [...models];
+  const byId = new Map(resolved.map((model) => [model.id, model]));
+  return models.map((model) => fillCustomProviderModelMetadata(model, byId.get(model.id)));
+}
+
+/**
+ * 只把 resolve push 应用到创建它的 picker。单靠 agent 不足以隔离连续两次同 runtime 拉取：
+ * 后一次请求的缓存命中 push 可能在新 picker 创建前到达，此时旧 picker 仍可能存在。
+ */
+export function fillMatchingCustomProviderPickerModels<
+  T extends { requestId: string; agent: string; models: ProviderRuntimeModelConfig[] },
+>(
+  picker: T | null,
+  requestId: string,
+  agent: string,
+  resolved: readonly ({ id: string } & DiscoveredReportedInput)[],
+): T | null {
+  if (!picker || picker.requestId !== requestId || picker.agent !== agent) return picker;
+  return { ...picker, models: fillCustomProviderModelsMetadata(picker.models, resolved) };
 }
 
 /**

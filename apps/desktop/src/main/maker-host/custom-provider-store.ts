@@ -137,6 +137,16 @@ function validateRuntime(agent: string, rt: unknown): ValidationResult {
     ) {
       return invalid(`runtime '${agent}' model.contextWindow must be a positive number`);
     }
+    if (
+      mm.mode !== undefined
+      && (
+        typeof mm.mode !== 'string'
+        || mm.mode.trim().length === 0
+        || mm.mode.trim().length > 128
+      )
+    ) {
+      return invalid(`runtime '${agent}' model.mode must be a non-empty string up to 128 characters`);
+    }
     if (mm.defaultEnabled !== undefined && typeof mm.defaultEnabled !== 'boolean') {
       return invalid(`runtime '${agent}' model.defaultEnabled must be a boolean`);
     }
@@ -393,6 +403,12 @@ function sanitizeModelCapabilities(v: unknown): ProviderRuntimeModelConfig['capa
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+function sanitizeModelMode(v: unknown): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const mode = v.trim();
+  return mode.length > 0 && mode.length <= 128 ? mode : undefined;
+}
+
 /** 规整单个 runtime（trim baseUrl、去重 models、裁 headers）。 */
 function normalizeRuntime(
   agent: AgentKind,
@@ -401,11 +417,13 @@ function normalizeRuntime(
   const seen = new Set<string>();
   const models = rt.models
     .map((m) => {
+      const mode = sanitizeModelMode(m.mode);
       const modalities = sanitizeModelModalities(m.modalities);
       const capabilities = sanitizeModelCapabilities(m.capabilities);
       return {
         id: m.id.trim(),
         name: m.name.trim(),
+        ...(mode !== undefined ? { mode } : {}),
         ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
         // 厂商自报能力随配置持久化(未命中知识库的第三方模型也保留真实能力)。
         ...(modalities ? { modalities } : {}),
@@ -478,9 +496,9 @@ function normalizeConfig(config: CustomProviderConfig): CustomProviderConfig {
  * 已有 id first-wins（用户手填 / 上次发现的条目不被覆盖）；持久化发现结果是自定义 OAuth
  * 供应商「重启后模型仍在」的保证——内存 augment 会随进程消失。
  *
- * 除追加新模型外,还会**逐字段回填**存量模型缺失的能力事实(contextWindow / modalities /
- * capabilities;gap-fill,不覆盖既有值):老 provider 首次在新版发现时,存量模型才能拿到厂商
- * 上报的真实窗口与能力,重启后 boot 的 config-resolve 不再是稀疏输入、不再退回保守默认。
+ * 除追加新模型外,还会更新存量模型的分类/能力事实。mode 没有手工编辑入口,最新有效上报
+ * 覆盖旧值；contextWindow / modalities / capabilities 只 gap-fill、不覆盖既有值。老 provider
+ * 首次在新版发现时才能拿到厂商真实能力,重启后 boot 的 config-resolve 不再退回保守默认。
  * 无新增且无回填时返回 null(调用方免写库)。
  */
 export function mergeDiscoveredModelsIntoConfig(
@@ -491,6 +509,7 @@ export function mergeDiscoveredModelsIntoConfig(
   discovered: {
     id: string;
     name: string;
+    mode?: string;
     contextWindow?: number;
     modalities?: ProviderRuntimeModelConfig['modalities'];
     capabilities?: ProviderRuntimeModelConfig['capabilities'];
@@ -500,26 +519,43 @@ export function mergeDiscoveredModelsIntoConfig(
   if (!rt) return null;
   // 厂商这次上报的能力字段按 id 索引(首次出现胜出),供新增写入 + 存量回填共用。
   const reported = new Map<string, {
+    mode?: string;
     contextWindow?: number;
     modalities?: ProviderRuntimeModelConfig['modalities'];
     capabilities?: ProviderRuntimeModelConfig['capabilities'];
   }>();
   for (const m of discovered) {
     if (!m.id || reported.has(m.id)) continue;
-    const entry: { contextWindow?: number; modalities?: ProviderRuntimeModelConfig['modalities']; capabilities?: ProviderRuntimeModelConfig['capabilities'] } = {};
+    const entry: {
+      mode?: string;
+      contextWindow?: number;
+      modalities?: ProviderRuntimeModelConfig['modalities'];
+      capabilities?: ProviderRuntimeModelConfig['capabilities'];
+    } = {};
+    const mode = sanitizeModelMode(m.mode);
+    if (mode !== undefined) entry.mode = mode;
     if (typeof m.contextWindow === 'number' && m.contextWindow > 0) entry.contextWindow = m.contextWindow;
     if (m.modalities) entry.modalities = m.modalities;
     if (m.capabilities) entry.capabilities = m.capabilities;
-    if (entry.contextWindow !== undefined || entry.modalities !== undefined || entry.capabilities !== undefined) {
+    if (
+      entry.mode !== undefined ||
+      entry.contextWindow !== undefined ||
+      entry.modalities !== undefined ||
+      entry.capabilities !== undefined
+    ) {
       reported.set(m.id, entry);
     }
   }
   let changed = false;
-  // 回填:存量模型缺某字段且厂商上报了 → 逐字段补上(不覆盖既有值,含用户手填)。
+  // mode 取最新有效厂商事实；其余字段只在缺失时 gap-fill(不覆盖用户配置)。
   const backfilled = rt.models.map((m) => {
     const r = reported.get(m.id);
     if (!r) return m;
     let next = m;
+    if (r.mode !== undefined && next.mode !== r.mode) {
+      next = { ...next, mode: r.mode };
+      changed = true;
+    }
     if (next.contextWindow === undefined && r.contextWindow !== undefined) {
       next = { ...next, contextWindow: r.contextWindow };
       changed = true;
@@ -549,6 +585,7 @@ export function mergeDiscoveredModelsIntoConfig(
           return {
             id: m.id,
             name: m.name,
+            ...(r?.mode !== undefined ? { mode: r.mode } : {}),
             ...(r?.contextWindow !== undefined ? { contextWindow: r.contextWindow } : {}),
             ...(r?.modalities !== undefined ? { modalities: r.modalities } : {}),
             ...(r?.capabilities !== undefined ? { capabilities: r.capabilities } : {}),
@@ -596,11 +633,13 @@ function parseRuntimes(raw: string): Partial<Record<AgentKind, CustomProviderRun
             !!m && typeof m === 'object' && typeof (m as { id?: unknown }).id === 'string',
           )
           .map((m) => {
+            const mode = sanitizeModelMode(m.mode);
             const modalities = sanitizeModelModalities(m.modalities);
             const capabilities = sanitizeModelCapabilities(m.capabilities);
             return {
               id: String(m.id),
               name: String(m.name ?? ''),
+              ...(mode !== undefined ? { mode } : {}),
               ...(typeof m.contextWindow === 'number'
                 && Number.isFinite(m.contextWindow)
                 && m.contextWindow > 0
