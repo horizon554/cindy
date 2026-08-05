@@ -38,6 +38,7 @@ import {
   applyLocalConsumerOverrides,
   applyLocalOverridesToRoot,
   hasLocalAddition,
+  locallyPinnedFields,
   EMPTY_MODEL_CATALOG_OVERRIDES,
   resolveLocalBridgeExclusions,
   type ModelCatalogOverrides,
@@ -45,6 +46,7 @@ import {
 import {
   applyRegistryConsumerOverlay,
   applyRootRegistryPlan,
+  MODEL_PLANE_POLICIES,
   planRegistryRoots,
   toChatgptBridgeModel,
   rootPlanKey,
@@ -304,14 +306,30 @@ function applyResolvedOverlay(
     return p;
   }
   const overlay = new Map(resolved.models.map((model) => [model.id, model]));
+  // pi 不是 root:它按 provider 的 policy.piRoot 派生,override key 也挂在那个 root 上。
+  const rootAgent: RootAgentKind | null =
+    agent === 'claude-code' || agent === 'codex'
+      ? agent
+      : MODEL_PLANE_POLICIES.get(p.id)?.piRoot ?? null;
   let changed = false;
   const models = existing.map((model) => {
     const replacement = overlay.get(model.id);
     if (!replacement) return model;
+    // 「local 永远最高」:resolve 排在 local override 之后(为了让 snapshot key 守住
+    // membership/顺序),所以必须在这里显式剔掉用户已经钉住的字段 —— 否则本地改动会
+    // 在下一次 resolve 回来时被静默盖掉(localOverrideVsResolve.test.ts 锁此不变量)。
+    const pinned = rootAgent
+      ? locallyPinnedFields(localOverrides, p.id, model.id, rootAgent)
+      : new Set<string>();
+    const enrichment = pinned.size === 0
+      ? replacement
+      : Object.fromEntries(
+          Object.entries(replacement).filter(([field]) => !pinned.has(field)),
+        );
     changed = true;
     return {
       ...model,
-      ...replacement,
+      ...enrichment,
       id: model.id,
       source: 'resolved' as const,
       knowledgeRevision: resolved.knowledgeRevision,
