@@ -312,6 +312,77 @@ export async function updateCustomProvider(
   await window.electronAPI.maker.updateCustomProvider(config, keys);
 }
 
+export interface CustomProviderModelRefreshResult {
+  ok: boolean;
+  added: number;
+  changed: boolean;
+}
+
+/**
+ * Refresh every configured runtime first, then resolve provider metadata once.
+ *
+ * Fetch remains per runtime because upstream endpoints and wire-specific headers can differ. The
+ * Model Access enrichment step is provider-scoped: individual fetch IPC calls defer resolve, then
+ * either the persisted config update triggers the existing save-resolve batch or an unchanged
+ * config explicitly asks Main to resolve all saved entries in one request.
+ */
+export async function refreshCustomProviderModels(
+  provider: ProviderView,
+): Promise<CustomProviderModelRefreshResult> {
+  const config = providerViewToCustomProviderConfig(provider);
+  const authMethod =
+    provider.auth.method === 'none'
+      ? 'none'
+      : provider.auth.method === 'oauth'
+        ? 'oauth'
+        : 'apiKey';
+  const fetched = await Promise.all(provider.agents.map(async (agent) => {
+    const runtime = config.runtimes[agent];
+    if (!runtime?.baseUrl) return null;
+    const apiKey = authMethod === 'apiKey'
+      ? await readCustomProviderKey(provider.id, agent)
+      : null;
+    const result = await window.electronAPI.maker.fetchProviderModels({
+      agent,
+      baseUrl: runtime.baseUrl,
+      authMethod,
+      ...(runtime.wireProtocol ? { wireProtocol: runtime.wireProtocol } : {}),
+      modelsUrl: runtime.modelsUrl ?? null,
+      apiKey,
+      // Main pins the request back to this saved route and injects main-only header credentials.
+      savedProviderId: provider.id,
+      // Resolve is intentionally delayed until all agent discovery results have completed.
+      deferResolve: true,
+    });
+    return { agent, result };
+  }));
+
+  let added = 0;
+  let changed = false;
+  let anyOk = false;
+  for (const item of fetched) {
+    if (!item?.result.ok || !item.result.models) continue;
+    const runtime = config.runtimes[item.agent];
+    if (!runtime) continue;
+    anyOk = true;
+    const merged = appendDiscoveredCustomProviderModels(runtime.models, item.result.models);
+    runtime.models = merged.models;
+    added += merged.addedIds.length;
+    if (merged.changed) changed = true;
+  }
+  if (!anyOk) return { ok: false, added: 0, changed: false };
+
+  if (changed) {
+    // The update handler refreshes active-catalog, then invokes the existing provider-level
+    // save-resolve path once with all supported agent entries.
+    await updateCustomProvider(config, {});
+  } else {
+    // No persistence mutation means UPDATE would not run, so explicitly execute that same batch.
+    await window.electronAPI.maker.resolveSavedProviderModels(provider.id);
+  }
+  return { ok: true, added, changed };
+}
+
 /** 删除：main 在同一 provider mutation queue 内清配置与所有凭证。 */
 export async function deleteCustomProvider(providerId: string): Promise<void> {
   await window.electronAPI.maker.deleteCustomProvider(providerId);

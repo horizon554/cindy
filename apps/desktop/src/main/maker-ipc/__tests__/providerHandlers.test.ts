@@ -2301,6 +2301,56 @@ describe('provider:models-fetch handler', () => {
     expect(resolveFetchedModels).toHaveBeenCalledOnce();
   });
 
+  it('defers saved-provider resolve while a multi-agent manual refresh is still fetching', async () => {
+    const harness = new IpcHarness();
+    const resolveFetchedModels = vi.fn(() => undefined);
+    const fetchModels = vi.fn(async () => ({
+      ok: true as const,
+      models: [{ id: 'm1', name: 'M1' }],
+    }));
+    registerProviderHandlers(harness, makeDeps({ fetchModels, resolveFetchedModels }));
+
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_MODELS_FETCH, {
+      agent: 'codex',
+      baseUrl: 'https://models.example/v1',
+      authMethod: 'apiKey',
+      savedProviderId: 'openrouter',
+      deferResolve: true,
+    })).resolves.toMatchObject({ ok: true });
+    expect(fetchModels).toHaveBeenCalledWith(expect.objectContaining({
+      agent: 'codex',
+      savedProviderId: 'openrouter',
+      deferResolve: true,
+    }));
+    expect(resolveFetchedModels).not.toHaveBeenCalled();
+  });
+
+  it('rejects deferred resolve for an unsaved form discovery request', async () => {
+    const harness = new IpcHarness();
+    const deps = makeDeps();
+    registerProviderHandlers(harness, deps);
+
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_MODELS_FETCH, {
+      agent: 'codex',
+      baseUrl: 'https://models.example/v1',
+      authMethod: 'apiKey',
+      deferResolve: true,
+    })).rejects.toThrow(/INVALID_PARAMS/);
+    expect(deps.fetchModels).not.toHaveBeenCalled();
+  });
+
+  it('runs one explicit saved-provider resolve batch and awaits completion', async () => {
+    const harness = new IpcHarness();
+    const resolveSavedProviderModels = vi.fn(async () => undefined);
+    registerProviderHandlers(harness, makeDeps({ resolveSavedProviderModels }));
+
+    await expect(
+      harness.invoke(MAKER_INVOKE.PROVIDER_MODELS_RESOLVE_SAVED, 'openrouter'),
+    ).resolves.toEqual({ ok: true });
+    expect(resolveSavedProviderModels).toHaveBeenCalledOnce();
+    expect(resolveSavedProviderModels).toHaveBeenCalledWith('openrouter');
+  });
+
   it('preserves the Codex Anthropic Messages wire protocol for API-key discovery', async () => {
     const harness = new IpcHarness();
     const fetchModels = vi.fn(async () => ({ ok: true as const, models: [] }));

@@ -491,6 +491,11 @@ export const MAKER_INVOKE = {
    */
   PROVIDER_MODELS_FETCH: 'maker:provider:models-fetch',
   /**
+   * 对一个已保存自定义供应商的全部 Claude Code / Codex runtime 做一次 entries[] resolve。
+   * 供设置页手动刷新在所有上游清单 fetch 完成后收口请求；不带供应商密钥材料。
+   */
+  PROVIDER_MODELS_RESOLVE_SAVED: 'maker:provider:models-resolve-saved',
+  /**
    * 通用 OAuth 供应商（目录 auth.oauth 描述符驱动、非 bespoke 四家）的登录 / 登出 / 取消。
    * 入参 = providerId；login 走 generic-oauth Runner（PKCE 浏览器流），成功后拉动态模型
    * 发现（若描述符声明）并广播 PROVIDER_CHANGED。bespoke 供应商（anthropic/openai/xai）

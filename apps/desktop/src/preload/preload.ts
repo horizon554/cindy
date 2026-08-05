@@ -4666,6 +4666,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
        * (renderer 不回读明文头);renderer 显式头优先。端点一改就不传,避免凭证外泄给新主机。
        */
       savedProviderId?: string;
+      /** Saved-provider manual refresh batches resolve after all agent fetches finish. */
+      deferResolve?: boolean;
     }): Promise<{
       ok: boolean;
       models?: Array<{
@@ -4688,6 +4690,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       status?: number;
       detail?: string;
     }> => ipcRenderer.invoke('maker:provider:models-fetch', input),
+    /** Resolve every saved Claude Code / Codex runtime for one provider in one entries[] request. */
+    resolveSavedProviderModels: (providerId: string): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('maker:provider:models-resolve-saved', providerId),
     /**
      * 本机 agent CLI 安装 / 登录态扫描（设置「检测建议」用）。只 stat 不读凭证内容;
      * 失败降级空数组。

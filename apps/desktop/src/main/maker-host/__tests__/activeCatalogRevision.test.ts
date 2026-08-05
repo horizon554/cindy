@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { BUNDLED_CATALOG } from '@cindy/model-providers';
+import { BUNDLED_CATALOG, buildUserProvider } from '@cindy/model-providers';
 
 import {
   commitModelPlaneFromCatalog,
@@ -9,6 +9,7 @@ import {
   setActiveCatalog,
   setActiveCatalogChangedListener,
   setAnthropicDiscoveredModels,
+  setCustomProviders,
   setDiscoveredCodexModels,
   setDiscoveredProviderModels,
   setResolvedProviderModels,
@@ -19,6 +20,7 @@ describe('active catalog revision', () => {
     setActiveCatalogChangedListener(null);
     setActiveCatalog(BUNDLED_CATALOG);
     setAnthropicDiscoveredModels([]);
+    setCustomProviders([]);
     setDiscoveredCodexModels([]);
     setDiscoveredProviderModels('xai', 'codex', []);
     setResolvedProviderModels('xai', 'codex', [], [], 'reset');
@@ -141,6 +143,53 @@ describe('active catalog revision', () => {
     const refreshed = getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
       .models.codex!;
     expect(refreshed.find((model) => model.id === 'xai/resolved-a')).not.toHaveProperty('source');
+  });
+
+  it('applies resolved metadata when additions-only discovery preserves a different live order', () => {
+    const providerId = 'reordered-user';
+    const configured = [
+      {
+        id: 'vendor/pinned-first',
+        name: 'Pinned First',
+      },
+      {
+        id: 'vendor/upstream-first',
+        name: 'Upstream First',
+      },
+    ];
+    setCustomProviders([buildUserProvider({
+      id: providerId,
+      name: 'Reordered User Provider',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://models.example/v1',
+          models: configured,
+        },
+      },
+    })]);
+    const liveModels = getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+      .models.codex!;
+
+    setResolvedProviderModels(
+      providerId,
+      'codex',
+      ['vendor/upstream-first', 'vendor/pinned-first'],
+      [
+        { ...liveModels[1], category: 'gpt' },
+        { ...liveModels[0], category: 'anthropic' },
+      ],
+      'knowledge-reordered',
+      ['vendor/upstream-first', 'vendor/pinned-first'],
+    );
+
+    const models = getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+      .models.codex!;
+    expect(models.map((model) => model.id)).toEqual([
+      'vendor/pinned-first',
+      'vendor/upstream-first',
+    ]);
+    expect(models.map((model) => model.category)).toEqual(['anthropic', 'gpt']);
+    expect(models.every((model) => model.source === 'resolved')).toBe(true);
   });
 
   it('refreshes one provider model snapshot without replacing live routing or other providers', () => {

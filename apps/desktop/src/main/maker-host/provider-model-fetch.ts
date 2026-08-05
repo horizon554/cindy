@@ -58,6 +58,12 @@ export interface ProviderModelsFetchSpec {
    * isRendererAccessibleSafeStorageKey）。仅用于“刷新模型”复用已存请求头鉴权的端点。
    */
   savedProviderId?: string;
+  /**
+   * Manual multi-agent refresh fetches every runtime first, then resolves the saved provider once
+   * through an entries[] batch. Only valid with savedProviderId; form discovery keeps immediate
+   * per-request resolve so metadata prefill behavior is unchanged.
+   */
+  deferResolve?: boolean;
 }
 
 /** 结构化结果（查询型返回：renderer 需要 code 渲染分类文案，不走 throwIpcError）。 */

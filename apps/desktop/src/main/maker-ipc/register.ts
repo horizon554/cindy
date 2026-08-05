@@ -5099,7 +5099,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     listPresets: () => getActiveCatalog().presets ?? [],
     testConnection: (input) => testProviderConnection(input),
     fetchModels: (spec) => fetchProviderModels(spec),
-    resolveSavedProviderModels: (providerId) => void resolveSavedCustomProviderModels(providerId),
+    resolveSavedProviderModels: resolveSavedCustomProviderModels,
     resolveFetchedModels: (spec, result) => {
       if (
         process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1' ||

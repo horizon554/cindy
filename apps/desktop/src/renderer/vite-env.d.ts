@@ -4361,6 +4361,8 @@ interface ElectronAPI {
       headers?: Record<string, string>;
       /** 已保存供应商 id:main 侧据此并入 main-only 鉴权请求头(renderer 不回读明文头)。 */
       savedProviderId?: string;
+      /** 已保存供应商手动刷新时延后 resolve，待全部 agent fetch 完成后统一批处理。 */
+      deferResolve?: boolean;
     }) => Promise<{
       ok: boolean;
       models?: Array<{
@@ -4383,6 +4385,8 @@ interface ElectronAPI {
       status?: number;
       detail?: string;
     }>;
+    /** 把一个已保存供应商的全部 Claude Code / Codex runtime 合并成一次 entries[] resolve。 */
+    resolveSavedProviderModels: (providerId: string) => Promise<{ ok: true }>;
     /**
      * 本机 agent CLI 安装 / 登录态扫描（设置「检测建议」用）。只 stat 不读凭证内容;
      * 失败降级空数组。

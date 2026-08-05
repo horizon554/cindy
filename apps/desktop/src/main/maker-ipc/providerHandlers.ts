@@ -239,7 +239,7 @@ export interface ProviderHandlerDeps {
    * overlay 写进 active-catalog —— 预设/手填添加的 provider 不必再手动点刷新即可富化。
    * fire-and-forget,受 XDT_DISABLE_MODEL_CATALOG_RESOLVE 门控,失败静默降级。
    */
-  resolveSavedProviderModels?(providerId: string): void;
+  resolveSavedProviderModels?(providerId: string): void | Promise<void>;
   /** 内置四家的模型真源刷新；生产按 providerId 分派到既有 discovery 机制。 */
   refreshBuiltinModels(providerId: BuiltinRefreshableProviderId): Promise<void>;
   /** Renderer 自动刷新提示；Main 侧负责静默失败、冷却和跨窗口去重。 */
@@ -468,6 +468,8 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
   if (spec.savedProviderId !== undefined) {
     if (typeof spec.savedProviderId !== 'string' || !/^[a-z0-9_-]+$/.test(spec.savedProviderId)) return null;
   }
+  if (spec.deferResolve !== undefined && typeof spec.deferResolve !== 'boolean') return null;
+  if (spec.deferResolve === true && typeof spec.savedProviderId !== 'string') return null;
   return {
     agent: spec.agent as AgentKind,
     baseUrl: spec.baseUrl,
@@ -477,6 +479,7 @@ function parseModelsFetchInput(input: unknown): ProviderModelsFetchSpec | null {
     apiKey: (spec.apiKey as string | null | undefined) ?? null,
     headers: spec.headers as Record<string, string> | undefined,
     ...(typeof spec.savedProviderId === 'string' ? { savedProviderId: spec.savedProviderId } : {}),
+    ...(spec.deferResolve === true ? { deferResolve: true } : {}),
     ...(typeof spec.wireProtocol === 'string'
       ? { wireProtocol: spec.wireProtocol as ProviderModelsFetchSpec['wireProtocol'] }
       : {}),
@@ -944,6 +947,23 @@ export function registerProviderHandlers(
     deps.broadcastChanged();
   }
 
+  function resolveSavedProviderModelsInBackground(providerId: string): void {
+    if (!deps.resolveSavedProviderModels) return;
+    try {
+      void Promise.resolve(deps.resolveSavedProviderModels(providerId)).catch((err) => {
+        log.warn('saved provider model resolve failed', {
+          providerId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    } catch (err) {
+      log.warn('saved provider model resolve failed', {
+        providerId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   function assertTrustedProviderMutationSender(event: unknown): void {
     if (!deps.assertTrustedSender) {
       throwIpcError('PERMISSION_DENIED', 'sender trust guard unavailable');
@@ -1318,7 +1338,7 @@ export function registerProviderHandlers(
       await afterChange();
       assertProviderMutationOwner(ownerAtIngress);
       // 保存即 resolve:预设/手填模型也走一遍补全,不必依赖用户事后点刷新。
-      deps.resolveSavedProviderModels?.(config.id);
+      resolveSavedProviderModelsInBackground(config.id);
       return { ok: true };
     });
   });
@@ -1401,7 +1421,7 @@ export function registerProviderHandlers(
         await afterChange();
         assertProviderMutationOwner(ownerAtIngress);
         // 保存即 resolve(同 CREATE):编辑后模型也走补全,与刷新按钮语义一致。
-        deps.resolveSavedProviderModels?.(config.id);
+        resolveSavedProviderModelsInBackground(config.id);
         return { ok: true };
       } finally {
         if (generation !== null) finishOAuthMutation(config.id, generation);
@@ -1550,10 +1570,25 @@ export function registerProviderHandlers(
       }
     }
     const result = await deps.fetchModels(parsed);
-    if (result.ok && result.models && result.models.length > 0) {
+    if (result.ok && result.models && result.models.length > 0 && !parsed.deferResolve) {
       deps.resolveFetchedModels?.(parsed, result);
     }
     return result;
+  });
+
+  // 手动刷新先完成各 runtime 的上游 fetch，再通过这里把已保存配置中的全部 agent
+  // 一次交给 entries[] resolve。查询会更新本地 resolve cache / active-catalog overlay，
+  // 仍只允许 Cindy 自有顶层页面触发；provider id 做有界格式校验，缺接线 fail closed。
+  registry.handle(MAKER_INVOKE.PROVIDER_MODELS_RESOLVE_SAVED, async (event, providerId: unknown) => {
+    assertTrustedProviderMutationSender(event);
+    if (typeof providerId !== 'string' || !/^[a-z0-9_-]+$/.test(providerId)) {
+      throwIpcError('INVALID_PARAMS', 'invalid saved provider id');
+    }
+    if (!deps.resolveSavedProviderModels) {
+      throwIpcError('INTERNAL', 'saved provider model resolve is not wired');
+    }
+    await deps.resolveSavedProviderModels(providerId);
+    return { ok: true };
   });
 
   // 本机 CLI 扫描：查询型；任何失败降级空数组（检测建议是增强,不是功能依赖,

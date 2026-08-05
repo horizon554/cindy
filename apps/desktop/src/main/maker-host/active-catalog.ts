@@ -284,7 +284,15 @@ function markChanged(): void {
   changedListener?.(revision);
 }
 
-const MODEL_ID_SEPARATOR = '\u0000';
+/**
+ * Resolve overlay only needs to prove that it still targets the same membership snapshot.
+ * Ordering is owned by the live catalog and the overlay never changes it, so an additions-only
+ * merge that keeps pre-existing user models at the front must not invalidate otherwise identical
+ * metadata returned in upstream discovery order.
+ */
+function modelIdMembershipKey(modelIds: readonly string[]): string {
+  return JSON.stringify([...modelIds].sort());
+}
 
 function applyResolvedOverlay(
   p: Provider,
@@ -295,15 +303,14 @@ function applyResolvedOverlay(
   const existingIds = existing.map((model) => model.id);
   if (
     resolved.allModelIdsKey !== undefined
-    && existingIds.join(MODEL_ID_SEPARATOR) !== resolved.allModelIdsKey
+    && modelIdMembershipKey(existingIds) !== resolved.allModelIdsKey
   ) {
     return p;
   }
   const resolvedIds = new Set(resolved.models.map((model) => model.id));
   if (
-    existingIds
-      .filter((id) => resolvedIds.has(id))
-      .join(MODEL_ID_SEPARATOR) !== resolved.modelIdsKey
+    modelIdMembershipKey(existingIds.filter((id) => resolvedIds.has(id)))
+      !== resolved.modelIdsKey
   ) {
     return p;
   }
@@ -963,8 +970,8 @@ export function setResolvedProviderModels(
   const byAgent = resolvedByProvider.get(providerId) ?? {};
   byAgent[agent] = {
     models: [...models],
-    modelIdsKey: modelIds.join(MODEL_ID_SEPARATOR),
-    ...(allModelIds ? { allModelIdsKey: allModelIds.join(MODEL_ID_SEPARATOR) } : {}),
+    modelIdsKey: modelIdMembershipKey(modelIds),
+    ...(allModelIds ? { allModelIdsKey: modelIdMembershipKey(allModelIds) } : {}),
     knowledgeRevision,
   };
   resolvedByProvider.set(providerId, byAgent);

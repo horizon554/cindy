@@ -47,11 +47,9 @@ import { useProviderOAuthDeviceCode } from '@/hooks/useProviderOAuthDeviceCode';
 import { useAuth } from '@/contexts/AuthContext';
 import { toast } from '@/lib/toast';
 import {
-  appendDiscoveredCustomProviderModels,
   deleteCustomProvider,
   providerViewToCustomProviderConfig,
-  readCustomProviderKey,
-  updateCustomProvider,
+  refreshCustomProviderModels,
 } from '@/lib/customProviders';
 import { providerMonogram } from '@/lib/providerModels';
 import { PROVIDER_SECRET_IDS, type ProviderSecretId } from '../../../shared/providerSecrets';
@@ -2034,50 +2032,13 @@ export function ProvidersSection() {
     async (p: ProviderView) => {
       if (!beginProviderRefresh(p.id)) return;
       try {
-        const config = providerViewToCustomProviderConfig(p);
-        let added = 0;
-        // config 是否实际变化(新增模型 或 存量模型回填厂商能力字段:contextWindow /
-        // modalities / capabilities)。仅看 added 会漏掉「无新增、仅回填」的刷新,导致厂商
-        // 上报的字段不落盘、重启后未命中模型又退回保守默认。
-        let changed = false;
-        let anyOk = false;
-        for (const agent of p.agents) {
-          const rt = config.runtimes[agent];
-          if (!rt?.baseUrl) continue;
-          const authMethod =
-            p.auth.method === 'none' ? 'none' : p.auth.method === 'oauth' ? 'oauth' : 'apiKey';
-          const apiKey = authMethod === 'apiKey' ? await readCustomProviderKey(p.id, agent) : null;
-          // 鉴权请求头是 main-only 密文,renderer 不回读;交由 main 按 savedProviderId
-          // 注入已存请求头(否则仅靠请求头鉴权的端点刷新会因缺头 401,codex review)。
-          const r = await window.electronAPI.maker.fetchProviderModels({
-            agent,
-            baseUrl: rt.baseUrl,
-            authMethod,
-            ...(rt.wireProtocol ? { wireProtocol: rt.wireProtocol } : {}),
-            modelsUrl: rt.modelsUrl ?? null,
-            apiKey,
-            // 已保存 provider 的真实 id:既把请求目标钉回已存端点并注入 main-only 密文头,
-            // 也让 main 侧把完整补全 overlay 落目录(见 resolveFetchedModels)。
-            savedProviderId: p.id,
-          });
-          if (!r.ok || !r.models) continue;
-          anyOk = true;
-          const merged = appendDiscoveredCustomProviderModels(rt.models, r.models);
-          rt.models = merged.models;
-          added += merged.addedIds.length;
-          if (merged.changed) changed = true;
-        }
-        if (!anyOk) {
+        const result = await refreshCustomProviderModels(p);
+        if (!result.ok) {
           toast.error(t('settings.providers.models.refreshFailed'));
           return;
         }
-        // 新增或回填任一发生都要落盘(回填让存量模型持久化厂商上报的能力字段);
-        // toast 文案仍以「新增数」为准——回填是静默的元数据补全,不算新模型。
-        if (changed) {
-          await updateCustomProvider(config, {});
-        }
-        if (added > 0) {
-          toast.success(t('settings.providers.models.refreshAdded', { count: added }));
+        if (result.added > 0) {
+          toast.success(t('settings.providers.models.refreshAdded', { count: result.added }));
         } else {
           toast.success(t('settings.providers.models.refreshNoNew'));
         }

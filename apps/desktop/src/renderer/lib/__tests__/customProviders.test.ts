@@ -5,6 +5,7 @@ import {
   createCustomProvider,
   customProviderModelConfigFromCatalogModel,
   providerViewToCustomProviderConfig,
+  refreshCustomProviderModels,
   replaceCustomProviderModelId,
   setCustomProviderModelReasoning,
   setCustomProviderModelReasoningEffort,
@@ -16,6 +17,11 @@ import type {
   ProviderRuntimeModelConfig,
   ProviderView,
 } from '@cindy/model-providers';
+
+type FetchProviderModelsInput = Parameters<
+  typeof window.electronAPI.maker.fetchProviderModels
+>[0];
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -427,6 +433,116 @@ describe('appendDiscoveredCustomProviderModels', () => {
     ]);
     expect(result.addedIds).toEqual([]);
     expect(result.changed).toBe(true);
+  });
+});
+
+describe('refreshCustomProviderModels', () => {
+  function twoAgentProvider(): ProviderView {
+    const model = {
+      id: 'shared-model',
+      name: 'Shared Model',
+      contextWindow: 200_000,
+      efforts: [],
+      defaultEffort: null,
+    };
+    return {
+      id: 'openrouter',
+      name: 'OpenRouter',
+      source: 'user',
+      agents: ['claude-code', 'codex'],
+      auth: { method: 'apiKey' },
+      access: { kind: 'api' },
+      routing: {
+        'claude-code': {
+          upstream: 'https://openrouter.example/v1',
+          authStrategy: 'api-key-header',
+          wireProtocol: 'anthropic-messages',
+        },
+        codex: {
+          upstream: 'https://openrouter.example/v1',
+          authStrategy: 'api-key-header',
+          wireProtocol: 'openai-responses',
+        },
+      },
+      models: {
+        'claude-code': [{ ...model }],
+        codex: [{ ...model }],
+      },
+      connected: true,
+    };
+  }
+
+  it('defers per-agent resolve and executes one saved-provider batch when config is unchanged', async () => {
+    const fetchProviderModels = vi.fn(async (_input: FetchProviderModelsInput) => ({
+      ok: true,
+      models: [{ id: 'shared-model', name: 'Shared Model' }],
+    }));
+    const resolveSavedProviderModels = vi.fn(async () => ({ ok: true as const }));
+    const update = vi.fn(async () => ({ ok: true as const }));
+    vi.stubGlobal('window', {
+      electronAPI: {
+        safeStorageRead: vi.fn(async () => 'provider-key'),
+        maker: {
+          fetchProviderModels,
+          resolveSavedProviderModels,
+          updateCustomProvider: update,
+        },
+      },
+    });
+
+    await expect(refreshCustomProviderModels(twoAgentProvider())).resolves.toEqual({
+      ok: true,
+      added: 0,
+      changed: false,
+    });
+    expect(fetchProviderModels).toHaveBeenCalledTimes(2);
+    expect(fetchProviderModels.mock.calls.map(([input]) => input)).toEqual([
+      expect.objectContaining({
+        agent: 'claude-code',
+        savedProviderId: 'openrouter',
+        deferResolve: true,
+      }),
+      expect.objectContaining({
+        agent: 'codex',
+        savedProviderId: 'openrouter',
+        deferResolve: true,
+      }),
+    ]);
+    expect(resolveSavedProviderModels).toHaveBeenCalledOnce();
+    expect(resolveSavedProviderModels).toHaveBeenCalledWith('openrouter');
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('persists all agent discoveries once and lets update trigger the single save-resolve batch', async () => {
+    const fetchProviderModels = vi.fn(async ({ agent }: FetchProviderModelsInput) => ({
+      ok: true,
+      models: [
+        { id: 'shared-model', name: 'Shared Model' },
+        { id: `${agent}-new`, name: `${agent} New` },
+      ],
+    }));
+    const resolveSavedProviderModels = vi.fn(async () => ({ ok: true as const }));
+    const update = vi.fn(async () => ({ ok: true as const }));
+    vi.stubGlobal('window', {
+      electronAPI: {
+        safeStorageRead: vi.fn(async () => 'provider-key'),
+        maker: {
+          fetchProviderModels,
+          resolveSavedProviderModels,
+          updateCustomProvider: update,
+        },
+      },
+    });
+
+    await expect(refreshCustomProviderModels(twoAgentProvider())).resolves.toEqual({
+      ok: true,
+      added: 2,
+      changed: true,
+    });
+    expect(fetchProviderModels).toHaveBeenCalledTimes(2);
+    expect(fetchProviderModels.mock.calls.every(([input]) => input.deferResolve === true)).toBe(true);
+    expect(update).toHaveBeenCalledOnce();
+    expect(resolveSavedProviderModels).not.toHaveBeenCalled();
   });
 });
 
