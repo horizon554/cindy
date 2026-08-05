@@ -116,7 +116,7 @@ let failureChangedListener: (() => void) | null = null;
  * knowledgeRevision 抖成噪声。内置订阅供应商没有别的入口 —— 自定义供应商的 resolve
  * 挂在「保存 / 重新发现」那条 IPC 上,anthropic 订阅直连的清单只从这里出。
  */
-let modelsAppliedListener: ((models: readonly CatalogModel[]) => void) | null = null;
+let modelsAppliedListener: ((models: readonly CatalogModel[]) => void | Promise<void>) | null = null;
 /** 缓存写入 / 删除严格串行,保证授权边界后的删除一定排在旧世代写入之后。 */
 let cacheMutationQueue: Promise<void> = Promise.resolve();
 let cacheTempSequence = 0;
@@ -520,7 +520,7 @@ async function applyModels(
   for (const id of normalizedExplicitFastModeIds) explicitFastModeModelIds.add(id);
   if (modelsChanged) {
     setAnthropicDiscoveredModels(models);
-    modelsAppliedListener?.(models);
+    notifyModelsApplied(models);
   }
   if (persist) {
     const payload = JSON.stringify(
@@ -947,9 +947,19 @@ export function setAnthropicDiscoveryFailureListener(listener: (() => void) | nu
  * 同 failure 监听器:不得抛,resolve 失败不该反过来打断发现流程。
  */
 export function setAnthropicModelsAppliedListener(
-  listener: ((models: readonly CatalogModel[]) => void) | null,
+  listener: ((models: readonly CatalogModel[]) => void | Promise<void>) | null,
 ): void {
   modelsAppliedListener = listener;
+}
+
+function notifyModelsApplied(models: readonly CatalogModel[]): void {
+  try {
+    void Promise.resolve(modelsAppliedListener?.(models)).catch((err) => {
+      log.warn('anthropic models-applied listener failed', { error: String(err) });
+    });
+  } catch (err) {
+    log.warn('anthropic models-applied listener failed', { error: String(err) });
+  }
 }
 
 function notifyFailureChanged(): void {

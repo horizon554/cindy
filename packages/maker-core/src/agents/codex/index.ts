@@ -3057,8 +3057,17 @@ export class CodexAgent extends BaseAgent {
       try {
         await initialCatalogSync;
       } catch (error) {
-        releaseHostBindingLeaseIfNeeded();
-        throw error;
+        if (credentialMode === 'provider-oauth') {
+          // 自定义 / 第三方路由不依赖 OpenAI/XD 原生凭证。新安装尚无 native
+          // models_cache 时，model/list 可能失败；目录同步只是描述符增强，不能阻断
+          // 随后的 provider-owned thread/start。原生订阅与 Cindy AI 路由仍 fail closed。
+          log.warn('Codex model catalog sync failed on provider-owned route; continuing', {
+            error: String(error),
+          });
+        } else {
+          releaseHostBindingLeaseIfNeeded();
+          throw error;
+        }
       }
     }
     // reviewer 路由的凭证模式判定: 远程 daemon 用的是 auth sync 推过去的

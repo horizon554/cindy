@@ -964,6 +964,24 @@ export function registerProviderHandlers(
     }
   }
 
+  function resolveFetchedModelsInBackground(
+    spec: ProviderModelsFetchSpec,
+    result: ProviderModelsFetchResult,
+  ): void {
+    if (!deps.resolveFetchedModels) return;
+    try {
+      deps.resolveFetchedModels(spec, result);
+    } catch (err) {
+      // 模型发现是主结果，resolve 只是异步富化。装配错误或请求构造异常不得反向
+      // 把已经成功的模型清单变成 IPC 失败；后续仍可在保存/手动刷新时重试。
+      log.warn('fetched provider model resolve failed', {
+        providerId: spec.savedProviderId ?? 'unsaved',
+        agent: spec.agent,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   function assertTrustedProviderMutationSender(event: unknown): void {
     if (!deps.assertTrustedSender) {
       throwIpcError('PERMISSION_DENIED', 'sender trust guard unavailable');
@@ -1571,7 +1589,7 @@ export function registerProviderHandlers(
     }
     const result = await deps.fetchModels(parsed);
     if (result.ok && result.models && result.models.length > 0 && !parsed.deferResolve) {
-      deps.resolveFetchedModels?.(parsed, result);
+      resolveFetchedModelsInBackground(parsed, result);
     }
     return result;
   });

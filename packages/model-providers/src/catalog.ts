@@ -13,7 +13,7 @@ import { parseModelRegistry } from '@cindy/model-access-protocol';
 
 import { PI_REASONING_EFFORTS } from './types.js';
 import type { Catalog, Provider, CatalogModel, AgentKind, Effort, ProviderPreset } from './types.js';
-import { withVerifiedStaticWindows } from './builtin.js';
+import { BUNDLED_CATALOG as BUNDLED_CATALOG_INTERNAL, withVerifiedStaticWindows } from './builtin.js';
 import { findReservedOAuthExtraParam } from './provider-oauth.js';
 import { isProviderRequestPath } from './provider-url.js';
 
@@ -22,6 +22,7 @@ export { BUNDLED_CATALOG, BUILTIN_PROVIDERS } from './builtin.js';
 const AGENT_KINDS: readonly AgentKind[] = ['claude-code', 'codex', 'pi'];
 const EFFORTS: readonly Effort[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const WIRE_PROTOCOLS = ['anthropic-messages', 'openai-responses', 'openai-chat'] as const;
+const BUNDLED_PROVIDER_IDS = new Set(BUNDLED_CATALOG_INTERNAL.providers.map((provider) => provider.id));
 
 function isWireProtocol(value: unknown): value is (typeof WIRE_PROTOCOLS)[number] {
   return typeof value === 'string' && (WIRE_PROTOCOLS as readonly string[]).includes(value);
@@ -190,6 +191,7 @@ function validateProvider(p: Provider): void {
   // 必须限定 slug 字符集，防被投毒目录用 `../` 之类字符把凭证写出存储目录。
   assert(/^[a-zA-Z0-9_-]+$/.test(p.id), `provider.id has illegal characters: '${p.id}'`);
   assert(typeof p.name === 'string' && p.name.length > 0, `provider.name missing for '${p.id}'`);
+  assert(p.source === 'builtin' || p.source === 'user', `provider.source invalid for '${p.id}'`);
   assert(
     p.auth
       && (
@@ -570,6 +572,11 @@ function parseV3Catalog(input: Record<string, unknown>): Catalog {
     assert(!seenProviderIds.has(entry.id), `duplicate provider.id '${entry.id}'`);
     seenProviderIds.add(entry.id);
     validateV3Provider(entry);
+    // v3 只允许客户端内置身份卡按 id 接收 partial delta。服务端新增的 provider
+    // 没有 bundled 基底可补字段，必须在 wire 边界就是一张完整、可独立使用的身份卡。
+    if (!BUNDLED_PROVIDER_IDS.has(entry.id)) {
+      validateProvider(entry as unknown as Provider);
+    }
     providerEntries.push(entry as unknown as Provider);
   }
 

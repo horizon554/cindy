@@ -341,6 +341,53 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     })).toThrow(/catalog\.defaults\.codex\.sessionModel/);
   });
 
+  it('v3 accepts partial deltas only for bundled provider identity cards', () => {
+    expect(parseCatalog({
+      version: '3',
+      providers: [{
+        id: 'xai',
+        routing: { codex: { upstream: 'https://routing-override.example.test/v1' } },
+      }],
+    }).providers[0]).toMatchObject({
+      id: 'xai',
+      routing: { codex: { upstream: 'https://routing-override.example.test/v1' } },
+    });
+
+    expect(() => parseCatalog({
+      version: '3',
+      providers: [{
+        id: 'future-provider',
+        routing: { codex: { upstream: 'https://future.example.test/v1' } },
+      }],
+    })).toThrow(/provider\.name missing/);
+  });
+
+  it('v3 accepts a fully specified provider that is not bundled in the client', () => {
+    const parsed = parseCatalog({
+      version: '3',
+      providers: [{
+        id: 'future-provider',
+        name: 'Future Provider',
+        source: 'builtin',
+        agents: ['codex'],
+        auth: { method: 'none' },
+        routing: {
+          codex: {
+            upstream: 'https://future.example.test/v1',
+            authStrategy: 'none',
+            wireProtocol: 'openai-responses',
+          },
+        },
+        models: { codex: [model('future/model')] },
+      }],
+    });
+
+    expect(parsed.providers[0]).toMatchObject({
+      id: 'future-provider',
+      models: { codex: [{ id: 'future/model' }] },
+    });
+  });
+
   it('parseCatalog allows titleModel on a dynamic-list provider (all models empty)', () => {
     // bundled 的 anthropic/openai/xd 正是这种形态,上面的 parse 测试已覆盖;这里显式守语义。
     expect(() => parseCatalog(BUNDLED_CATALOG)).not.toThrow();

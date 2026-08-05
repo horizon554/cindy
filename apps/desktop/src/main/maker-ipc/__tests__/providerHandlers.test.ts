@@ -2301,6 +2301,22 @@ describe('provider:models-fetch handler', () => {
     expect(resolveFetchedModels).toHaveBeenCalledOnce();
   });
 
+  it('keeps a successful provider model fetch when resolve dispatch throws synchronously', async () => {
+    const harness = new IpcHarness();
+    const resolveFetchedModels = vi.fn(() => {
+      throw new Error('resolve dispatch boom');
+    });
+    registerProviderHandlers(harness, makeDeps({ resolveFetchedModels }));
+
+    await expect(harness.invoke(MAKER_INVOKE.PROVIDER_MODELS_FETCH, {
+      requestId: 'form_request_sync_throw',
+      agent: 'codex',
+      baseUrl: 'https://models.example/v1',
+      authMethod: 'apiKey',
+    })).resolves.toEqual({ ok: true, models: [{ id: 'm1', name: 'M1' }] });
+    expect(resolveFetchedModels).toHaveBeenCalledOnce();
+  });
+
   it('defers saved-provider resolve while a multi-agent manual refresh is still fetching', async () => {
     const harness = new IpcHarness();
     const resolveFetchedModels = vi.fn(() => undefined);
