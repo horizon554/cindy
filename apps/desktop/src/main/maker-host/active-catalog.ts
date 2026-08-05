@@ -277,6 +277,22 @@ let revision = 0;
 /** Electron 相关副作用由 desktop host 注入，本模块继续保持纯状态容器。 */
 let changedListener: ((nextRevision: number) => void) | null = null;
 
+export interface ModelResolveApplySlot {
+  providerId: string;
+  agent: AgentKind;
+}
+
+/** Resolve 请求世代由 model-access host 注入，避免本纯状态模块反向依赖 Electron 链。 */
+let modelResolveApplySlotsInvalidator:
+  | ((slots: readonly ModelResolveApplySlot[]) => void)
+  | null = null;
+
+export function setModelResolveApplySlotsInvalidator(
+  invalidator: ((slots: readonly ModelResolveApplySlot[]) => void) | null,
+): void {
+  modelResolveApplySlotsInvalidator = invalidator;
+}
+
 function markChanged(): void {
   merged = null;
   effectiveRegistryMetaIndex = null;
@@ -292,6 +308,53 @@ function markChanged(): void {
  */
 function modelIdMembershipKey(modelIds: readonly string[]): string {
   return JSON.stringify([...modelIds].sort());
+}
+
+function providerResolveInputKey(
+  provider: Provider | undefined,
+  agent: AgentKind,
+): string | null {
+  const route = provider?.routing[agent];
+  if (!route) return null;
+  return JSON.stringify({
+    auth: provider.auth,
+    route,
+    models: provider.models[agent] ?? [],
+  });
+}
+
+function invalidateChangedCustomProviderOverlays(nextProviders: readonly Provider[]): void {
+  const previousById = new Map(custom.map((provider) => [provider.id, provider]));
+  const nextById = new Map(nextProviders.map((provider) => [provider.id, provider]));
+  const providerIds = new Set([...previousById.keys(), ...nextById.keys()]);
+  const changedSlots: Array<{ providerId: string; agent: AgentKind }> = [];
+  for (const providerId of providerIds) {
+    const previous = previousById.get(providerId);
+    const next = nextById.get(providerId);
+    if (previous?.source !== 'user' && next?.source !== 'user') continue;
+    const agents = new Set<AgentKind>([
+      ...(previous?.agents ?? []),
+      ...(next?.agents ?? []),
+      ...Object.keys(resolvedByProvider.get(providerId) ?? {}) as AgentKind[],
+    ]);
+    for (const agent of agents) {
+      if (
+        providerResolveInputKey(previous, agent)
+        !== providerResolveInputKey(next, agent)
+      ) {
+        changedSlots.push({ providerId, agent });
+      }
+    }
+  }
+  if (changedSlots.length > 0) modelResolveApplySlotsInvalidator?.(changedSlots);
+  for (const { providerId, agent } of changedSlots) {
+    const byAgent = resolvedByProvider.get(providerId);
+    if (!byAgent) continue;
+    delete byAgent[agent];
+    if (Object.values(byAgent).every((resolved) => resolved === undefined)) {
+      resolvedByProvider.delete(providerId);
+    }
+  }
 }
 
 function applyResolvedOverlay(
@@ -927,6 +990,11 @@ export function getModelPlaneWarnings(): readonly ModelPlaneWarning[] {
  * 传入的是已 `buildUserProvider` 展开的标准 `Provider[]`(**不含 API key**)。
  */
 export function setCustomProviders(providers: Provider[]): void {
+  // Resolve metadata is scoped to the endpoint/runtime that supplied the model list. A save may
+  // keep the same provider id and model ids while changing that source; clear only the affected
+  // per-agent overlays before the best-effort re-resolve starts, so a failed refresh cannot leave
+  // the previous endpoint's capabilities active. Deletion also removes the old runtime snapshot.
+  invalidateChangedCustomProviderOverlays(providers);
   custom = [...providers];
   markChanged();
 }

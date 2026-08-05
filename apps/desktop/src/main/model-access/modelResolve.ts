@@ -227,6 +227,17 @@ export function isLatestModelResolveResult(result: ModelResolveResult): boolean 
   return latestApplyTokenBySlot.get(modelResolveSlot(result.entry)) === result.applyToken;
 }
 
+/** Make in-flight results for changed provider runtimes ineligible without invalidating other slots. */
+export function invalidateModelResolveApplySlots(
+  inputs: readonly Pick<ModelResolveInput, 'providerId' | 'agent'>[],
+): void {
+  for (const input of inputs) {
+    const slot = modelResolveSlot(input);
+    latestApplyTokenBySlot.delete(slot);
+    latestCacheKeyBySlot.delete(slot);
+  }
+}
+
 /** Make every old-identity result/cache ineligible for the newly active owner generation. */
 export function invalidateModelResolveApplyState(): void {
   identityGeneration += 1;

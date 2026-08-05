@@ -15,6 +15,7 @@ vi.mock('../../serverApiClient.js', () => ({
 import {
   createModelResolver,
   invalidateModelResolveApplyState,
+  invalidateModelResolveApplySlots,
   isLatestModelResolveResult,
   modelResolveCacheKey,
   modelResolveIdentityScope,
@@ -507,6 +508,25 @@ describe('model resolve client', () => {
       entries: Array<{ knowledgeRevision: string }>;
     };
     expect(persisted.entries).toEqual([expect.objectContaining({ knowledgeRevision: 'r2' })]);
+  });
+
+  it('rejects a late result after its provider runtime slot is invalidated', async () => {
+    let release!: (value: unknown) => void;
+    const h = harness({
+      fetch: () => new Promise((resolve) => {
+        release = resolve;
+      }),
+    });
+    const pending = h.resolve(INPUT);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledOnce());
+
+    invalidateModelResolveApplySlots([INPUT]);
+    release(response('r1'));
+
+    const stale = await pending;
+    expect(stale).not.toBeNull();
+    expect(stale && isLatestModelResolveResult(stale)).toBe(false);
+    expect(h.disk()).toBeNull();
   });
 
   it('does not reuse or persist an old-account in-flight result after invalidation', async () => {

@@ -13,11 +13,13 @@ import {
   setCustomProviders,
   setDiscoveredCodexModels,
   setDiscoveredProviderModels,
+  setModelResolveApplySlotsInvalidator,
   setResolvedProviderModels,
 } from '../active-catalog.js';
 
 describe('active catalog revision', () => {
   afterEach(() => {
+    setModelResolveApplySlotsInvalidator(null);
     setActiveCatalogChangedListener(null);
     setActiveCatalog(BUNDLED_CATALOG);
     setAnthropicDiscoveredModels([]);
@@ -191,6 +193,93 @@ describe('active catalog revision', () => {
     ]);
     expect(models.map((model) => model.category)).toEqual(['anthropic', 'gpt']);
     expect(models.every((model) => model.source === 'resolved')).toBe(true);
+  });
+
+  it.each([
+    ['baseUrl', { baseUrl: 'https://new-runtime.example/v1' }],
+    ['modelsUrl', { modelsUrl: 'https://new-runtime.example/v1/models' }],
+    ['requestPath', { requestPath: '/v2/responses' }],
+  ] as const)(
+    'invalidates a custom provider resolve overlay when its %s changes',
+    (_field, runtimeChange) => {
+      const providerId = 'runtime-change-user';
+      const invalidateApplySlots = vi.fn();
+      setModelResolveApplySlotsInvalidator(invalidateApplySlots);
+      const runtime = {
+        baseUrl: 'https://old-runtime.example/v1',
+        models: [{ id: 'vendor/model', name: 'Provider Model' }],
+      };
+      setCustomProviders([buildUserProvider({
+        id: providerId,
+        name: 'Runtime Change User',
+        runtimes: { codex: runtime },
+      })]);
+      const liveModel = getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+        .models.codex![0]!;
+      setResolvedProviderModels(
+        providerId,
+        'codex',
+        [liveModel.id],
+        [{ ...liveModel, contextWindow: 1_000_000, source: 'resolved' }],
+        'runtime-change-r1',
+        [liveModel.id],
+      );
+      expect(
+        getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+          .models.codex![0],
+      ).toMatchObject({ contextWindow: 1_000_000, source: 'resolved' });
+      invalidateApplySlots.mockClear();
+
+      setCustomProviders([buildUserProvider({
+        id: providerId,
+        name: 'Runtime Change User',
+        runtimes: { codex: { ...runtime, ...runtimeChange } },
+      })]);
+
+      expect(
+        getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+          .models.codex![0],
+      ).toMatchObject({ contextWindow: 200_000 });
+      expect(
+        getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+          .models.codex![0],
+      ).not.toHaveProperty('source');
+      expect(invalidateApplySlots).toHaveBeenCalledOnce();
+      expect(invalidateApplySlots).toHaveBeenCalledWith([{ providerId, agent: 'codex' }]);
+    },
+  );
+
+  it('does not reactivate a resolved overlay after a custom provider is deleted and recreated', () => {
+    const providerId = 'recreated-user';
+    const provider = buildUserProvider({
+      id: providerId,
+      name: 'Recreated User',
+      runtimes: {
+        codex: {
+          baseUrl: 'https://runtime.example/v1',
+          models: [{ id: 'vendor/model', name: 'Provider Model' }],
+        },
+      },
+    });
+    setCustomProviders([provider]);
+    const liveModel = getActiveCatalog().providers.find((entry) => entry.id === providerId)!
+      .models.codex![0]!;
+    setResolvedProviderModels(
+      providerId,
+      'codex',
+      [liveModel.id],
+      [{ ...liveModel, contextWindow: 1_000_000, source: 'resolved' }],
+      'recreated-r1',
+      [liveModel.id],
+    );
+
+    setCustomProviders([]);
+    setCustomProviders([provider]);
+
+    const recreated = getActiveCatalog().providers.find((entry) => entry.id === providerId)!
+      .models.codex![0]!;
+    expect(recreated.contextWindow).toBe(200_000);
+    expect(recreated).not.toHaveProperty('source');
   });
 
   it('clears resolved metadata without changing live discovery membership', () => {

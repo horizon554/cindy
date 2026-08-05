@@ -15,6 +15,7 @@ import {
 } from '../maker-host/index.js';
 import {
   clearResolvedProviderModels,
+  setModelResolveApplySlotsInvalidator,
   setXdGatewayModels,
 } from '../maker-host/active-catalog.js';
 import { replaceGatewayModelPricing, trackGatewayModelPricingSync } from '../usage/modelPricing.js';
@@ -40,7 +41,10 @@ import {
 } from './modelsSyncRefresh.js';
 import { getGhostSetupChangeBus } from '../cindy-brain/ghostSetupChangeBus.js';
 import { hasAuthSessionIdentityChanged } from './authSessionIdentity.js';
-import { invalidateModelResolveApplyState } from './modelResolve.js';
+import {
+  invalidateModelResolveApplySlots,
+  invalidateModelResolveApplyState,
+} from './modelResolve.js';
 export { isModelAccessReady } from './readiness.js';
 
 const log = createLogger('modelAccess');
@@ -360,6 +364,10 @@ function mapServerError(err: unknown): never {
  * 三条入口(authManager.notifyAuthListeners 的全部触发点),无需插桩 authManager。
  */
 export function initModelAccess(): void {
+  // Keep active-catalog a pure state holder: the composition root supplies the model-access
+  // generation invalidator used when a custom provider runtime changes underneath an in-flight
+  // resolve. This is installed before provider discovery starts during app ready.
+  setModelResolveApplySlotsInvalidator(invalidateModelResolveApplySlots);
   const sync = getSync();
 
   const noteAuthState = (
