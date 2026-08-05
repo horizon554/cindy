@@ -279,7 +279,7 @@ let changedListener: ((nextRevision: number) => void) | null = null;
 
 export interface ModelResolveApplySlot {
   providerId: string;
-  agent: AgentKind;
+  agent: Extract<AgentKind, 'claude-code' | 'codex'>;
 }
 
 /** Resolve 请求世代由 model-access host 注入，避免本纯状态模块反向依赖 Electron 链。 */
@@ -346,7 +346,12 @@ function invalidateChangedCustomProviderOverlays(nextProviders: readonly Provide
       }
     }
   }
-  if (changedSlots.length > 0) modelResolveApplySlotsInvalidator?.(changedSlots);
+  const changedResolveSlots = changedSlots.filter(
+    (slot): slot is ModelResolveApplySlot => slot.agent !== 'pi',
+  );
+  if (changedResolveSlots.length > 0) {
+    modelResolveApplySlotsInvalidator?.(changedResolveSlots);
+  }
   for (const { providerId, agent } of changedSlots) {
     const byAgent = resolvedByProvider.get(providerId);
     if (!byAgent) continue;

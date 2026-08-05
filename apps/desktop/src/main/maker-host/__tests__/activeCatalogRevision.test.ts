@@ -282,6 +282,44 @@ describe('active catalog revision', () => {
     expect(recreated).not.toHaveProperty('source');
   });
 
+  it('clears a changed Pi overlay without forwarding a nonexistent resolve slot', () => {
+    const providerId = 'pi-runtime-user';
+    const invalidateApplySlots = vi.fn();
+    setModelResolveApplySlotsInvalidator(invalidateApplySlots);
+    const runtime = {
+      baseUrl: 'https://old-pi-runtime.example/v1',
+      models: [{ id: 'vendor/pi-model', name: 'Pi Model' }],
+    };
+    setCustomProviders([buildUserProvider({
+      id: providerId,
+      name: 'Pi Runtime User',
+      runtimes: { pi: runtime },
+    })]);
+    const liveModel = getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+      .models.pi![0]!;
+    setResolvedProviderModels(
+      providerId,
+      'pi',
+      [liveModel.id],
+      [{ ...liveModel, contextWindow: 1_000_000, source: 'resolved' }],
+      'pi-runtime-r1',
+      [liveModel.id],
+    );
+    invalidateApplySlots.mockClear();
+
+    setCustomProviders([buildUserProvider({
+      id: providerId,
+      name: 'Pi Runtime User',
+      runtimes: { pi: { ...runtime, baseUrl: 'https://new-pi-runtime.example/v1' } },
+    })]);
+
+    const changed = getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+      .models.pi![0]!;
+    expect(changed.contextWindow).toBe(200_000);
+    expect(changed).not.toHaveProperty('source');
+    expect(invalidateApplySlots).not.toHaveBeenCalled();
+  });
+
   it('clears resolved metadata without changing live discovery membership', () => {
     const discovery = [{
       id: 'xai/account-bound',
