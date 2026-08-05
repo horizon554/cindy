@@ -105,4 +105,36 @@ describe('resolveSessionModelCatalogMetadata', () => {
       agentKind: 'codex',
     })).toBeUndefined();
   });
+
+  it('does not borrow metadata from a fallback source for a stale explicit provider', () => {
+    const fallback = provider('codex', [model('codex/opaque')]);
+    fallback.id = 'xd';
+    fallback.agents = ['codex'];
+    fallback.routing = {
+      codex: { upstream: 'https://example.test', authStrategy: 'gateway-key' },
+    };
+    fallback.access = { kind: 'managed' };
+    fallback.models.codex![0] = {
+      ...fallback.models.codex![0],
+      group: 'gpt-budget',
+      category: 'gpt-budget',
+    };
+
+    expect(resolveSessionModelCatalogMetadata({
+      providers: [fallback],
+      providerId: 'deleted-provider',
+      modelId: 'codex/opaque',
+      agentKind: 'codex',
+    })).toBeUndefined();
+    expect(resolveSessionModelCatalogMetadata({
+      providers: [fallback],
+      providerId: null,
+      modelId: 'codex/opaque',
+      agentKind: 'codex',
+    })).toEqual({
+      sourceAccess: { kind: 'managed' },
+      group: 'gpt-budget',
+      category: 'gpt-budget',
+    });
+  });
 });

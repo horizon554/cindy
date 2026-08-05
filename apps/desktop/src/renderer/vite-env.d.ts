@@ -4424,8 +4424,6 @@ interface ElectronAPI {
         category?: string;
         mode?: string;
         sortOrder?: number;
-        modalities?: { input: string[]; output: string[] };
-        capabilities?: import('@cindy/model-access-protocol').ResolvedModelCapabilities;
         efforts?: import('@cindy/model-providers').Effort[];
         defaultEffort?: import('@cindy/model-providers').Effort | null;
         supportsFastMode?: boolean;

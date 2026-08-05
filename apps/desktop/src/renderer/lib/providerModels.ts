@@ -83,7 +83,12 @@ export function resolveSessionModelCatalogMetadata(params: {
 }): SessionModelCatalogMetadata | undefined {
   const { providers, providerId, modelId, agentKind } = params;
   if (providers.length === 0) return undefined;
-  const sourceId = actualSourceIdForModel(providers, providerId, modelId, agentKind);
+  // Metadata must describe the persisted route, not a usable replacement route. An explicit
+  // provider that was deleted or no longer offers this model is therefore unresolved; only an
+  // implicit route may select the agent's native default source.
+  const sourceId = providerId
+    ? providerId
+    : actualSourceIdForModel(providers, null, modelId, agentKind);
   if (!sourceId) return undefined;
   const provider = providers.find((candidate) => candidate.id === sourceId);
   if (!provider) return undefined;
