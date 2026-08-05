@@ -16,12 +16,15 @@ import {
   type ResolveResponse,
 } from '@cindy/model-access-protocol';
 
-import { app } from 'electron';
+import { activeOwnerScopeKey, ownerScopedUserDataPath } from '../appSessionState.js';
 import { getClientEndpoint } from '../clientEndpointsService.js';
 import { serverApiFetch } from '../serverApiClient.js';
 
 const RESOLVE_PATH = '/api/model-catalog/resolve';
-const STORE_VERSION = 2;
+// v3 makes identity-boundary invalidation durable. Older stores were keyed only by endpoint realm
+// and could therefore belong to a different account after upgrading; reject them once rather than
+// letting the first post-upgrade resolve restore cross-account metadata.
+const STORE_VERSION = 3;
 
 export type ModelResolveSourceIdentity =
   | {
@@ -67,6 +70,7 @@ interface PersistedResolveEntry {
   key: string;
   slot: string;
   realm: string;
+  identityScope: string;
   knowledgeRevision: string;
   response: ResolveResponse;
 }
@@ -79,6 +83,8 @@ interface PersistedResolveStore {
 export interface ModelResolveDeps {
   fetch(request: unknown): Promise<unknown>;
   getBaseUrl(): string;
+  /** Captured across awaits to reject A→B→A owner-generation changes. */
+  getOwnerScopeKey(): string;
   getUserDataDir(): string;
   readFile(filePath: string): Promise<string>;
   mkdir(dirPath: string): Promise<void>;
@@ -94,7 +100,8 @@ const inFlight = new Map<string, Promise<CachedModelResolveResult | null>>();
 const latestApplyTokenBySlot = new Map<string, string>();
 const latestCacheKeyBySlot = new Map<string, string>();
 let applyTokenSequence = 0;
-let storeLoad: Promise<PersistedResolveStore> | null = null;
+let identityGeneration = 0;
+const storeLoadByFile = new Map<string, Promise<PersistedResolveStore>>();
 let storeWrite: Promise<void> = Promise.resolve();
 
 export function isModelCatalogResolveDisabled(): boolean {
@@ -220,13 +227,17 @@ export function isLatestModelResolveResult(result: ModelResolveResult): boolean 
   return latestApplyTokenBySlot.get(modelResolveSlot(result.entry)) === result.applyToken;
 }
 
-/** Make every already-issued resolve result ineligible for later active-catalog application. */
+/** Make every old-identity result/cache ineligible for the newly active owner generation. */
 export function invalidateModelResolveApplyState(): void {
+  identityGeneration += 1;
   latestApplyTokenBySlot.clear();
   latestCacheKeyBySlot.clear();
   // A new auth identity must not join a request started with the previous identity. The old
-  // promise may still settle, but identity checks below keep it from updating cache or disk.
+  // promise may still settle, but owner-scope checks below make its public result null and keep it
+  // from updating cache or disk.
   inFlight.clear();
+  memoryCache.clear();
+  memoryKeyBySlot.clear();
 }
 
 export function modelResolveCacheKey(input: ModelResolveInput): string {
@@ -251,6 +262,16 @@ export function modelResolveRealm(baseUrl: string): string | null {
   }
 }
 
+/** Opaque persisted discriminator for the active owner plus this process auth generation. */
+export function modelResolveIdentityScope(
+  ownerScope: string,
+  generation: number,
+): string {
+  return `sha256:${createHash('sha256')
+    .update(canonicalJson({ ownerScope, generation }))
+    .digest('hex')}`;
+}
+
 function resolveFile(userDataDir: string): string {
   return path.join(userDataDir, 'model-access', 'model-resolve.json');
 }
@@ -272,16 +293,18 @@ function parsePersistedStore(raw: string): PersistedResolveStore {
       if (
         typeof entry.key !== 'string' ||
         typeof entry.realm !== 'string' ||
+        typeof entry.identityScope !== 'string' ||
         typeof entry.knowledgeRevision !== 'string'
       ) continue;
       const slot = typeof entry.slot === 'string' ? entry.slot : slotFromCacheKey(entry.key);
       if (!slot) continue;
       const parsed = parseResolveResponse(entry.response);
       if (!parsed.ok || parsed.value.knowledgeRevision !== entry.knowledgeRevision) continue;
-      entriesBySlot.set(`${entry.realm}\u0000${slot}`, {
+      entriesBySlot.set(`${entry.identityScope}\u0000${entry.realm}\u0000${slot}`, {
         key: entry.key,
         slot,
         realm: entry.realm,
+        identityScope: entry.identityScope,
         knowledgeRevision: entry.knowledgeRevision,
         response: parsed.value,
       });
@@ -302,7 +325,10 @@ function defaultDeps(): ModelResolveDeps {
       redactErrorDetails: true,
     }),
     getBaseUrl: () => getClientEndpoint('modelAccessApiBaseUrl'),
-    getUserDataDir: () => app.getPath('userData'),
+    getOwnerScopeKey: activeOwnerScopeKey,
+    // Resolve metadata is private account state. Never fall back to shared userData: the helper
+    // provides an ephemeral process namespace until an owner is authenticated.
+    getUserDataDir: () => ownerScopedUserDataPath(),
     readFile: (filePath) => fs.readFile(filePath, 'utf8'),
     mkdir: async (dirPath) => {
       await fs.mkdir(dirPath, { recursive: true });
@@ -317,17 +343,25 @@ function defaultDeps(): ModelResolveDeps {
   };
 }
 
-async function loadStore(deps: ModelResolveDeps): Promise<PersistedResolveStore> {
-  if (!storeLoad) {
-    storeLoad = deps.readFile(resolveFile(deps.getUserDataDir()))
+async function loadStore(
+  deps: ModelResolveDeps,
+  filePath: string,
+): Promise<PersistedResolveStore> {
+  let load = storeLoadByFile.get(filePath);
+  if (!load) {
+    load = deps.readFile(filePath)
       .then(parsePersistedStore)
       .catch(() => emptyStore());
+    storeLoadByFile.set(filePath, load);
   }
-  return storeLoad;
+  return load;
 }
 
-async function writeStore(deps: ModelResolveDeps, store: PersistedResolveStore): Promise<void> {
-  const filePath = resolveFile(deps.getUserDataDir());
+async function writeStore(
+  deps: ModelResolveDeps,
+  filePath: string,
+  store: PersistedResolveStore,
+): Promise<void> {
   const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     await deps.mkdir(path.dirname(filePath));
@@ -356,11 +390,17 @@ function selectResult(
 
 function persistedResultFor(
   store: PersistedResolveStore,
+  identityScope: string,
   realm: string,
   key: string,
   input: ModelResolveInput,
 ): CachedModelResolveResult | null {
-  const persisted = store.entries.find((entry) => entry.key === key && entry.realm === realm);
+  const persisted = store.entries.find(
+    (entry) =>
+      entry.key === key &&
+      entry.realm === realm &&
+      entry.identityScope === identityScope,
+  );
   if (!persisted) return null;
   const result = selectResult(persisted.response, input);
   return result?.knowledgeRevision === persisted.knowledgeRevision ? result : null;
@@ -376,10 +416,15 @@ function compactResponse(result: CachedModelResolveResult): ResolveResponse {
 
 async function persistResults(
   deps: ModelResolveDeps,
+  ownerScope: string,
+  capturedIdentityGeneration: number,
+  identityScope: string,
+  storeFile: string,
   realm: string,
   updates: readonly {
     key: string;
     slot: string;
+    cacheKey: string;
     applyToken: string;
     result: CachedModelResolveResult;
   }[],
@@ -387,12 +432,25 @@ async function persistResults(
   if (updates.length === 0) return;
   storeWrite = storeWrite.then(async () => {
     const currentUpdates = updates.filter(
-      ({ key, slot, applyToken }) =>
-        latestCacheKeyBySlot.get(slot) === `${realm}\u0000${key}` &&
+      ({ cacheKey, slot, applyToken }) =>
+        latestCacheKeyBySlot.get(slot) === cacheKey &&
         latestApplyTokenBySlot.get(slot) === applyToken,
     );
-    if (currentUpdates.length === 0) return;
-    const store = await loadStore(deps);
+    if (
+      currentUpdates.length === 0 ||
+      !resolveIdentityIsCurrent(
+        deps,
+        ownerScope,
+        capturedIdentityGeneration,
+        storeFile,
+      )
+    ) {
+      return;
+    }
+    const store = await loadStore(deps, storeFile);
+    if (
+      !resolveIdentityIsCurrent(deps, ownerScope, capturedIdentityGeneration, storeFile)
+    ) return;
     const updatedSlots = new Set(currentUpdates.map(({ slot }) => slot));
     const nextStore: PersistedResolveStore = {
       version: STORE_VERSION,
@@ -404,23 +462,47 @@ async function persistResults(
           key,
           slot,
           realm,
+          identityScope,
           knowledgeRevision: result.knowledgeRevision,
           response: compactResponse(result),
         })),
       ],
     };
-    storeLoad = Promise.resolve(nextStore);
-    await writeStore(deps, nextStore);
+    storeLoadByFile.set(storeFile, Promise.resolve(nextStore));
+    await writeStore(deps, storeFile, nextStore);
   });
   await storeWrite;
 }
 
-function memorySlotKey(realm: string, slot: string): string {
-  return `${realm}\u0000${slot}`;
+function resolveIdentityIsCurrent(
+  deps: Pick<ModelResolveDeps, 'getOwnerScopeKey' | 'getUserDataDir'>,
+  ownerScope: string,
+  capturedIdentityGeneration: number,
+  storeFile: string,
+): boolean {
+  try {
+    return (
+      deps.getOwnerScopeKey() === ownerScope &&
+      identityGeneration === capturedIdentityGeneration &&
+      resolveFile(deps.getUserDataDir()) === storeFile
+    );
+  } catch {
+    return false;
+  }
 }
 
-function prepareMemorySlot(realm: string, slot: string, cacheKey: string): void {
-  const slotKey = memorySlotKey(realm, slot);
+function runtimeScope(identityScope: string, storeFile: string, realm: string): string {
+  return createHash('sha256')
+    .update(canonicalJson({ identityScope, storeFile, realm }))
+    .digest('hex');
+}
+
+function memorySlotKey(scope: string, slot: string): string {
+  return `${scope}\u0000${slot}`;
+}
+
+function prepareMemorySlot(scope: string, slot: string, cacheKey: string): void {
+  const slotKey = memorySlotKey(scope, slot);
   const previous = memoryKeyBySlot.get(slotKey);
   if (previous && previous !== cacheKey) {
     memoryCache.delete(previous);
@@ -429,14 +511,14 @@ function prepareMemorySlot(realm: string, slot: string, cacheKey: string): void 
 }
 
 function setMemoryResult(
-  realm: string,
+  scope: string,
   slot: string,
   cacheKey: string,
   result: CachedModelResolveResult,
 ): void {
-  prepareMemorySlot(realm, slot, cacheKey);
+  prepareMemorySlot(scope, slot, cacheKey);
   memoryCache.set(cacheKey, result);
-  memoryKeyBySlot.set(memorySlotKey(realm, slot), cacheKey);
+  memoryKeyBySlot.set(memorySlotKey(scope, slot), cacheKey);
 }
 
 interface PendingResolveEntry {
@@ -494,11 +576,25 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
       || !parseResolveRequest(request).ok
     ) return results;
 
+    let ownerScope: string;
+    let storeFile: string;
+    const capturedIdentityGeneration = identityGeneration;
+    try {
+      ownerScope = deps.getOwnerScopeKey();
+      storeFile = resolveFile(deps.getUserDataDir());
+    } catch {
+      return results;
+    }
     const realm = modelResolveRealm(deps.getBaseUrl());
     if (!realm) return results;
+    const identityScope = modelResolveIdentityScope(
+      ownerScope,
+      capturedIdentityGeneration,
+    );
+    const scope = runtimeScope(identityScope, storeFile, realm);
 
     for (const entry of uniqueByPair.values()) {
-      entry.cacheKey = `${realm}\u0000${entry.key}`;
+      entry.cacheKey = `${scope}\u0000${entry.key}`;
       entry.applyToken = beginApplyGeneration(entry.slot, entry.cacheKey);
     }
 
@@ -508,7 +604,7 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
     }> = [];
     const missing: PendingResolveEntry[] = [];
     for (const entry of uniqueByPair.values()) {
-      prepareMemorySlot(realm, entry.slot, entry.cacheKey);
+      prepareMemorySlot(scope, entry.slot, entry.cacheKey);
       const memory = memoryCache.get(entry.cacheKey);
       if (memory) {
         const applied = withApplyToken(memory, entry.applyToken);
@@ -527,15 +623,34 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
       };
       const batchFlight = (async (): Promise<Map<string, CachedModelResolveResult | null>> => {
         const resolvedByKey = new Map<string, CachedModelResolveResult | null>();
-        const store = await loadStore(deps);
+        const store = await loadStore(deps, storeFile);
+        if (
+          !resolveIdentityIsCurrent(
+            deps,
+            ownerScope,
+            capturedIdentityGeneration,
+            storeFile,
+          )
+        ) {
+          for (const entry of missing) resolvedByKey.set(entry.key, null);
+          return resolvedByKey;
+        }
         const persistedByKey = new Map(
           missing.map((entry) => [
             entry.key,
-            persistedResultFor(store, realm, entry.key, entry.input),
+            persistedResultFor(store, identityScope, realm, entry.key, entry.input),
           ]),
         );
         const realmBeforeFetch = modelResolveRealm(deps.getBaseUrl());
-        if (!realmBeforeFetch) {
+        if (
+          !realmBeforeFetch ||
+          !resolveIdentityIsCurrent(
+            deps,
+            ownerScope,
+            capturedIdentityGeneration,
+            storeFile,
+          )
+        ) {
           for (const entry of missing) resolvedByKey.set(entry.key, null);
           return resolvedByKey;
         }
@@ -543,7 +658,16 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
         try {
           const payload = await deps.fetch(missingRequest);
           const realmAfterFetch = modelResolveRealm(deps.getBaseUrl());
-          if (realmBeforeFetch !== realm || realmAfterFetch !== realm) {
+          if (
+            realmBeforeFetch !== realm ||
+            realmAfterFetch !== realm ||
+            !resolveIdentityIsCurrent(
+              deps,
+              ownerScope,
+              capturedIdentityGeneration,
+              storeFile,
+            )
+          ) {
             for (const entry of missing) resolvedByKey.set(entry.key, null);
             return resolvedByKey;
           }
@@ -558,6 +682,7 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
           const updates: Array<{
             key: string;
             slot: string;
+            cacheKey: string;
             applyToken: string;
             result: CachedModelResolveResult;
           }> = [];
@@ -569,10 +694,11 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
                 latestCacheKeyBySlot.get(entry.slot) === entry.cacheKey &&
                 latestApplyTokenBySlot.get(entry.slot) === entry.applyToken
               ) {
-                setMemoryResult(realm, entry.slot, entry.cacheKey, result);
+                setMemoryResult(scope, entry.slot, entry.cacheKey, result);
                 updates.push({
                   key: entry.key,
                   slot: entry.slot,
+                  cacheKey: entry.cacheKey,
                   applyToken: entry.applyToken,
                   result,
                 });
@@ -581,13 +707,27 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
               resolvedByKey.set(entry.key, persistedByKey.get(entry.key) ?? null);
             }
           }
-          await persistResults(deps, realm, updates);
+          await persistResults(
+            deps,
+            ownerScope,
+            capturedIdentityGeneration,
+            identityScope,
+            storeFile,
+            realm,
+            updates,
+          );
           return resolvedByKey;
         } catch {
           const realmAfterFetch = modelResolveRealm(deps.getBaseUrl());
+          const identityCurrent = resolveIdentityIsCurrent(
+            deps,
+            ownerScope,
+            capturedIdentityGeneration,
+            storeFile,
+          );
           for (const entry of missing) {
             const persisted =
-              realmBeforeFetch === realm && realmAfterFetch === realm
+              identityCurrent && realmBeforeFetch === realm && realmAfterFetch === realm
                 ? (persistedByKey.get(entry.key) ?? null)
                 : null;
             if (
@@ -595,7 +735,7 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
               latestCacheKeyBySlot.get(entry.slot) === entry.cacheKey &&
               latestApplyTokenBySlot.get(entry.slot) === entry.applyToken
             ) {
-              setMemoryResult(realm, entry.slot, entry.cacheKey, persisted);
+              setMemoryResult(scope, entry.slot, entry.cacheKey, persisted);
             }
             resolvedByKey.set(entry.key, persisted);
           }
@@ -618,6 +758,16 @@ export function createModelResolver(overrides: Partial<ModelResolveDeps> = {}): 
     const settled = await Promise.all(
       pending.map(async ({ entry, promise }) => ({ entry, result: await promise })),
     );
+    // Fail closed for every consumer, including the unsaved-form broadcast path that does not
+    // inspect applyToken itself. This also catches A→B→A because ownerScope includes generation.
+    if (
+      !resolveIdentityIsCurrent(
+        deps,
+        ownerScope,
+        capturedIdentityGeneration,
+        storeFile,
+      )
+    ) return results.fill(null);
     for (const { entry, result } of settled) {
       const applied = withApplyToken(result, entry.applyToken);
       for (const index of entry.indexes) results[index] = applied;
@@ -641,6 +791,7 @@ export function resetModelResolveStateForTests(): void {
   latestApplyTokenBySlot.clear();
   latestCacheKeyBySlot.clear();
   applyTokenSequence = 0;
-  storeLoad = null;
+  identityGeneration = 0;
+  storeLoadByFile.clear();
   storeWrite = Promise.resolve();
 }

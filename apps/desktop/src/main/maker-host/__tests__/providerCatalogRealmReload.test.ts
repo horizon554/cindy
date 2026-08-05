@@ -66,6 +66,7 @@ vi.mock('../../authManager.js', () => ({
   getAuthState: () => ({ mode: 'signed-out', user: null }),
 }));
 vi.mock('../../appSessionState.js', () => ({
+  activeOwnerScopeKey: () => `signed-out:${h.owner}:0`,
   getActiveAppSession: () => ({ mode: 'signed-out', dataOwnerId: h.owner }),
   ownerScopedUserDataPath: (...segments: string[]) =>
     path.join(os.tmpdir(), 'provider-catalog-realm-reload', h.owner, ...segments),

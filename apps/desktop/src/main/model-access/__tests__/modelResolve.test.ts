@@ -1,3 +1,5 @@
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
@@ -15,6 +17,7 @@ import {
   invalidateModelResolveApplyState,
   isLatestModelResolveResult,
   modelResolveCacheKey,
+  modelResolveIdentityScope,
   modelResolveRealm,
   resetModelResolveStateForTests,
   type ModelResolveInput,
@@ -45,6 +48,13 @@ const CLAUDE_INPUT: ModelResolveInput = {
 
 const DEFAULT_BASE_URL = 'https://models.example.test/api';
 const DEFAULT_REALM = modelResolveRealm(DEFAULT_BASE_URL)!;
+const DEFAULT_USER_DATA_DIR = path.join(os.tmpdir(), 'cindy-model-resolve-test', 'owner-a');
+const OTHER_USER_DATA_DIR = path.join(os.tmpdir(), 'cindy-model-resolve-test', 'owner-b');
+const DEFAULT_IDENTITY_SCOPE = modelResolveIdentityScope('cloud:owner-a:1', 0);
+
+function storePath(userDataDir: string): string {
+  return path.join(userDataDir, 'model-access', 'model-resolve.json');
+}
 
 function responseFor(
   inputs: readonly ModelResolveInput[],
@@ -77,29 +87,53 @@ function harness(
   options: {
     baseUrl?: string;
     getBaseUrl?: () => string;
+    ownerScopeKey?: string;
+    getOwnerScopeKey?: () => string;
+    userDataDir?: string;
+    getUserDataDir?: () => string;
     disk?: string | null;
     fetch?: (request: unknown) => Promise<unknown>;
     disabled?: boolean;
   } = {},
 ) {
-  let disk = options.disk ?? null;
+  const initialUserDataDir = options.userDataDir ?? DEFAULT_USER_DATA_DIR;
+  const ownerScopeResolver =
+    options.getOwnerScopeKey ?? (() => options.ownerScopeKey ?? 'cloud:owner-a:1');
+  const userDataDirResolver = options.getUserDataDir ?? (() => initialUserDataDir);
+  const files = new Map<string, string>();
+  if (options.disk !== undefined && options.disk !== null) {
+    files.set(storePath(initialUserDataDir), options.disk);
+  }
   const calls = {
     fetch: vi.fn(options.fetch ?? (async () => response())),
-    readFile: vi.fn(async () => {
-      if (disk === null) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
-      return disk;
+    readFile: vi.fn(async (filePath: string) => {
+      const contents = files.get(filePath);
+      if (contents === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return contents;
     }),
     mkdir: vi.fn(async () => undefined),
-    writeFile: vi.fn(async (_path: string, text: string) => {
-      disk = text;
+    writeFile: vi.fn(async (filePath: string, text: string) => {
+      files.set(filePath, text);
     }),
-    rename: vi.fn(async () => undefined),
-    remove: vi.fn(async () => undefined),
+    rename: vi.fn(async (from: string, to: string) => {
+      const contents = files.get(from);
+      if (contents === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      files.set(to, contents);
+      files.delete(from);
+    }),
+    remove: vi.fn(async (filePath: string) => {
+      files.delete(filePath);
+    }),
     getBaseUrl: vi.fn(options.getBaseUrl ?? (() => options.baseUrl ?? DEFAULT_BASE_URL)),
-    getUserDataDir: vi.fn(() => '/tmp/model-resolve-test'),
+    getOwnerScopeKey: vi.fn(ownerScopeResolver),
+    getUserDataDir: vi.fn(userDataDirResolver),
     disabled: vi.fn(() => options.disabled === true),
   };
-  return { resolve: createModelResolver(calls), calls, disk: () => disk };
+  return {
+    resolve: createModelResolver(calls),
+    calls,
+    disk: (userDataDir = userDataDirResolver()) => files.get(storePath(userDataDir)) ?? null,
+  };
 }
 
 afterEach(() => {
@@ -207,6 +241,8 @@ describe('model resolve client', () => {
       modelResolveRealm('https://models.example.test/path?token=b'),
     );
     expect(modelResolveRealm('not a URL')).toBeNull();
+    expect(DEFAULT_IDENTITY_SCOPE).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(DEFAULT_IDENTITY_SCOPE).not.toContain('owner-a');
   });
 
   it('invalidates the fingerprint for every provider-reported protocol field', () => {
@@ -260,8 +296,14 @@ describe('model resolve client', () => {
   it('uses matching last-known-good when a refresh response is structurally invalid', async () => {
     const key = modelResolveCacheKey(INPUT);
     const disk = JSON.stringify({
-      version: 2,
-      entries: [{ key, realm: DEFAULT_REALM, knowledgeRevision: 'r1', response: response() }],
+      version: 3,
+      entries: [{
+        key,
+        realm: DEFAULT_REALM,
+        identityScope: DEFAULT_IDENTITY_SCOPE,
+        knowledgeRevision: 'r1',
+        response: response(),
+      }],
     });
     const h = harness({ disk, fetch: async () => ({ ...response('broken'), schemaVersion: 1 }) });
     await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
@@ -294,8 +336,14 @@ describe('model resolve client', () => {
   it('uses matching-realm last-known-good only when refresh fails', async () => {
     const key = modelResolveCacheKey(INPUT);
     const disk = JSON.stringify({
-      version: 2,
-      entries: [{ key, realm: DEFAULT_REALM, knowledgeRevision: 'r1', response: response() }],
+      version: 3,
+      entries: [{
+        key,
+        realm: DEFAULT_REALM,
+        identityScope: DEFAULT_IDENTITY_SCOPE,
+        knowledgeRevision: 'r1',
+        response: response(),
+      }],
     });
     const matching = harness({
       disk,
@@ -319,8 +367,14 @@ describe('model resolve client', () => {
   it('keeps a network-failure last-known-good in memory for the current fingerprint', async () => {
     const key = modelResolveCacheKey(INPUT);
     const disk = JSON.stringify({
-      version: 2,
-      entries: [{ key, realm: DEFAULT_REALM, knowledgeRevision: 'r1', response: response() }],
+      version: 3,
+      entries: [{
+        key,
+        realm: DEFAULT_REALM,
+        identityScope: DEFAULT_IDENTITY_SCOPE,
+        knowledgeRevision: 'r1',
+        response: response(),
+      }],
     });
     const h = harness({
       disk,
@@ -346,26 +400,29 @@ describe('model resolve client', () => {
     expect(h.calls.writeFile).not.toHaveBeenCalled();
   });
 
-  it('does not reuse a v1 cache whose fingerprint omitted wire and provider facts', async () => {
-    const disk = JSON.stringify({
-      version: 1,
-      entries: [
-        {
-          key: modelResolveCacheKey(INPUT),
-          realm: DEFAULT_REALM,
-          knowledgeRevision: 'r1',
-          response: response(),
+  it.each([1, 2])(
+    'does not reuse a v%s cache from before the current fingerprint/identity contract',
+    async (version) => {
+      const disk = JSON.stringify({
+        version,
+        entries: [
+          {
+            key: modelResolveCacheKey(INPUT),
+            realm: DEFAULT_REALM,
+            knowledgeRevision: 'r1',
+            response: response(),
+          },
+        ],
+      });
+      const h = harness({
+        disk,
+        fetch: async () => {
+          throw new Error('offline');
         },
-      ],
-    });
-    const h = harness({
-      disk,
-      fetch: async () => {
-        throw new Error('offline');
-      },
-    });
-    await expect(h.resolve(INPUT)).resolves.toBeNull();
-  });
+      });
+      await expect(h.resolve(INPUT)).resolves.toBeNull();
+    },
+  );
 
   it('resolves multiple agent entries in one request and persists compact per-entry envelopes', async () => {
     const h = harness({
@@ -391,7 +448,7 @@ describe('model resolve client', () => {
       version: number;
       entries: Array<{ response: { entries: unknown[] } }>;
     };
-    expect(persisted.version).toBe(2);
+    expect(persisted.version).toBe(3);
     expect(persisted.entries).toHaveLength(2);
     expect(persisted.entries.every((entry) => entry.response.entries.length === 1)).toBe(true);
   });
@@ -453,8 +510,13 @@ describe('model resolve client', () => {
   });
 
   it('does not reuse or persist an old-account in-flight result after invalidation', async () => {
+    let ownerScope = 'cloud:owner-a:1';
+    let userDataDir = DEFAULT_USER_DATA_DIR;
     const releases: Array<(value: unknown) => void> = [];
     const h = harness({
+      userDataDir: DEFAULT_USER_DATA_DIR,
+      getOwnerScopeKey: () => ownerScope,
+      getUserDataDir: () => userDataDir,
       fetch: () =>
         new Promise((resolve) => {
           releases.push(resolve);
@@ -463,6 +525,8 @@ describe('model resolve client', () => {
     const previous = h.resolve(INPUT);
     await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(1));
 
+    ownerScope = 'cloud:owner-b:2';
+    userDataDir = OTHER_USER_DATA_DIR;
     invalidateModelResolveApplyState();
     const current = h.resolve(INPUT);
     await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(2));
@@ -470,12 +534,77 @@ describe('model resolve client', () => {
     releases[0]!(response('r1'));
 
     const [previousResult, currentResult] = await Promise.all([previous, current]);
-    expect(previousResult && isLatestModelResolveResult(previousResult)).toBe(false);
+    expect(previousResult).toBeNull();
     expect(currentResult && isLatestModelResolveResult(currentResult)).toBe(true);
-    const persisted = JSON.parse(h.disk()!) as {
+    expect(h.disk(DEFAULT_USER_DATA_DIR)).toBeNull();
+    const persisted = JSON.parse(h.disk(OTHER_USER_DATA_DIR)!) as {
       entries: Array<{ knowledgeRevision: string }>;
     };
     expect(persisted.entries).toEqual([expect.objectContaining({ knowledgeRevision: 'r2' })]);
+  });
+
+  it('isolates same-fingerprint memory and durable last-known-good by data owner', async () => {
+    let ownerScope = 'cloud:owner-a:1';
+    let userDataDir = DEFAULT_USER_DATA_DIR;
+    const h = harness({
+      userDataDir: DEFAULT_USER_DATA_DIR,
+      getOwnerScopeKey: () => ownerScope,
+      getUserDataDir: () => userDataDir,
+    });
+    await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
+    expect(h.disk(DEFAULT_USER_DATA_DIR)).toContain('"knowledgeRevision":"r1"');
+
+    ownerScope = 'cloud:owner-b:2';
+    userDataDir = OTHER_USER_DATA_DIR;
+    invalidateModelResolveApplyState();
+    h.calls.fetch.mockRejectedValue(new Error('new account offline'));
+
+    await expect(h.resolve(INPUT)).resolves.toBeNull();
+    expect(h.calls.fetch).toHaveBeenCalledTimes(2);
+    expect(h.disk(DEFAULT_USER_DATA_DIR)).toContain('"knowledgeRevision":"r1"');
+    expect(h.disk(OTHER_USER_DATA_DIR)).toBeNull();
+  });
+
+  it('invalidates durable last-known-good at a same-owner auth boundary', async () => {
+    const h = harness();
+    await expect(h.resolve(INPUT)).resolves.toMatchObject({ knowledgeRevision: 'r1' });
+    expect(h.disk()).toContain('"knowledgeRevision":"r1"');
+
+    invalidateModelResolveApplyState();
+    h.calls.fetch.mockRejectedValue(new Error('new auth generation offline'));
+
+    await expect(h.resolve(INPUT)).resolves.toBeNull();
+    expect(h.calls.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops an A response after A→B→A even when the physical owner path matches again', async () => {
+    let ownerScope = 'cloud:owner-a:1';
+    let userDataDir = DEFAULT_USER_DATA_DIR;
+    const releases: Array<(value: unknown) => void> = [];
+    const h = harness({
+      userDataDir: DEFAULT_USER_DATA_DIR,
+      getOwnerScopeKey: () => ownerScope,
+      getUserDataDir: () => userDataDir,
+      fetch: () => new Promise((resolve) => { releases.push(resolve); }),
+    });
+    const staleA = h.resolve(INPUT);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(1));
+
+    ownerScope = 'cloud:owner-b:2';
+    userDataDir = OTHER_USER_DATA_DIR;
+    invalidateModelResolveApplyState();
+    ownerScope = 'cloud:owner-a:3';
+    userDataDir = DEFAULT_USER_DATA_DIR;
+    invalidateModelResolveApplyState();
+
+    const currentA = h.resolve(INPUT);
+    await vi.waitFor(() => expect(h.calls.fetch).toHaveBeenCalledTimes(2));
+    releases[1]!(response('r3'));
+    releases[0]!(response('r1'));
+
+    await expect(staleA).resolves.toBeNull();
+    await expect(currentA).resolves.toMatchObject({ knowledgeRevision: 'r3' });
+    expect(h.disk(DEFAULT_USER_DATA_DIR)).toContain('"knowledgeRevision":"r3"');
   });
 
   it('sends only cache misses when a batch mixes a memory hit with a new entry', async () => {

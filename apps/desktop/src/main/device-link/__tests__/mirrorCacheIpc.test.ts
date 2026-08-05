@@ -26,6 +26,7 @@ vi.mock('../mirrorCachePurgeQueue', () => ({
   hasPendingPurgeRecords: async (): Promise<boolean> => pendingPurges > 0,
 }));
 vi.mock('../../appSessionState', () => ({
+  activeOwnerScopeKey: (): string => `local:${ownerKey}:1`,
   ownerScopedUserDataPath: (...parts: string[]): string =>
     ['/data/owners', ownerKey, ...parts].join('/'),
 }));

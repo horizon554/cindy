@@ -5140,7 +5140,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         models: resolveModels,
       })
         .then(async (resolved) => {
-          if (!resolved) return;
+          // Resolver 在 fulfill 前会检查 owner generation；消费回调排队期间仍可能切号，
+          // 因此广播未保存表单和落已保存 overlay 前都要在消费点再次检查 apply token。
+          if (!resolved || !isLatestModelResolveResult(resolved)) return;
           // 表单预填(仅当有 requestId)。
           if (spec.requestId) {
             const byId = new Map(resolved.entry.models.map((model) => [model.id, model]));
@@ -5154,7 +5156,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }
           // 已保存 provider:完整 hints 补全 overlay 落目录,未命中知识库的模型也保留
           // 厂商上报的 contextWindow/maxOutput/modalities/capabilities(字段映射同 OAuth 路径)。
-          if (spec.savedProviderId && isLatestModelResolveResult(resolved)) {
+          if (spec.savedProviderId) {
             const overlay = resolved.entry.models.map((m) => ({
               id: m.id,
               name: m.name,
@@ -5189,6 +5191,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             // (overlay 已保证本 session 生效)。
             try {
               const cfg = await getCustomProvider(spec.savedProviderId);
+              // 读取配置跨了 await；期间账号仍可能切换，禁止把旧身份 metadata 合并到
+              // 新身份下恰好同 id 的 provider 配置。
+              if (!isLatestModelResolveResult(resolved)) return;
               if (cfg) {
                 const nextCfg = mergeDiscoveredModelsIntoConfig(
                   cfg,
