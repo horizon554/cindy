@@ -18,7 +18,6 @@ import {
   isProviderDisabled,
   modelSupportsFastMode,
   nativeDefaultSourceId,
-  resolveDefaultModel,
   sourcesForModel,
   type AgentKind,
   type ModelDisableOverrides,
@@ -254,12 +253,11 @@ const FALLBACK_ONESHOT_MODEL: Record<AgentKind, string> = {
 };
 
 export function defaultOneShotModel(agent: AgentKind): string {
-  return resolveDefaultModel(
-    getActiveCatalog(),
-    agent,
-    'oneShot',
-    FALLBACK_ONESHOT_MODEL[agent],
-  );
+  // This guard is used only when callers omit opts.model. The actual Claude/Codex agents then use
+  // the same fixed defaults below; consulting catalog defaults here would let the guard inspect one
+  // model while the one-shot request sends another. Catalog-aware callers must resolve a model and
+  // pass it explicitly to both the guard and oneShot.
+  return FALLBACK_ONESHOT_MODEL[agent];
 }
 
 /**
