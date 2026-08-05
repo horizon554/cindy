@@ -294,8 +294,17 @@ export function buildOneShotOptions(
   // Pi 的可用模型来自动态 provider 目录(BYOM 也可能只有本地模型)，不硬编码
   // GPT id；让 Maker 按该 Pi agent 的当前能力选择默认模型。
   if (agentKind === 'pi') return { timeoutMs: 20_000 };
+  // Help's Codex fallback is the native GPT route. Provider-level defaults are not interchangeable
+  // here: Anthropic also exposes a Codex bridge and appears before OpenAI in the catalog, so the
+  // generic resolver would select claude-haiku when no catalog-wide default exists—even for a user
+  // authenticated only with native Codex. An explicit catalog default remains authoritative.
   return {
-    model: resolveDefaultModel(catalog, agentKind, 'oneShot', 'gpt-5.4-mini'),
+    model: resolveDefaultModel(
+      { providers: [], defaults: catalog.defaults },
+      agentKind,
+      'oneShot',
+      'gpt-5.4-mini',
+    ),
     timeoutMs: 20_000,
   };
 }
