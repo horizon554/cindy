@@ -46,6 +46,7 @@ import {
   waitForModelsSyncRefresh,
 } from './modelsSyncRefresh.js';
 import { getGhostSetupChangeBus } from '../cindy-brain/ghostSetupChangeBus.js';
+import { createAccountDiscoveryReloadTracker } from './accountDiscoveryReload.js';
 import { hasAuthSessionIdentityChanged } from './authSessionIdentity.js';
 import {
   invalidateModelResolveApplySlots,
@@ -160,6 +161,7 @@ let modelsSyncRerunQueued = false;
 let authGeneration = 0;
 let lastAuthUserId: string | null = null;
 let lastAuthRealm: ReturnType<typeof authManager.getActiveAuthRealm> | null = null;
+const accountDiscoveryReloadTracker = createAccountDiscoveryReloadTracker();
 
 function applyGatewayModels(models: ModelAccessGatewayModel[], authenticatedUserId?: string): void {
   // 同一次 /models 响应建立 XD 模型与价格投影。空成功响应会同时清空模型和价格；请求失败不会调用本函数，
@@ -377,6 +379,10 @@ export function initModelAccess(): void {
       { userId: lastAuthUserId, realm: lastAuthRealm },
       { userId, realm },
     );
+    const shouldReloadAccountDiscovery = accountDiscoveryReloadTracker.noteAuthState({
+      isAuthenticated,
+      identityChanged,
+    });
     // 认证世代:登出、换号或同账号跨区均自增,作废旧身份在途的目录请求。
     if (!isAuthenticated || identityChanged) {
       authGeneration++;
@@ -391,7 +397,7 @@ export function initModelAccess(): void {
     lastAuthUserId = isAuthenticated ? (userId ?? lastAuthUserId) : null;
     lastAuthRealm = isAuthenticated ? (realm ?? lastAuthRealm) : null;
     sync.handleAuthChange({ isAuthenticated, userId, realm });
-    if (isAuthenticated && identityChanged) {
+    if (shouldReloadAccountDiscovery) {
       const expectedGeneration = authGeneration;
       const expectedUserId = lastAuthUserId;
       const expectedRealm = lastAuthRealm;
@@ -452,5 +458,6 @@ export function resetModelAccessForTest(): void {
   authGeneration = 0;
   lastAuthUserId = null;
   lastAuthRealm = null;
+  accountDiscoveryReloadTracker.reset();
   applyGatewayModels([]);
 }
