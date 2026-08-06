@@ -11,7 +11,45 @@ import {
 
 const catalog: Catalog = {
   version: '3',
-  providers: [],
+  providers: [
+    {
+      id: 'scheduler-test',
+      name: 'Scheduler Test',
+      source: 'builtin',
+      agents: ['claude-code', 'codex'],
+      auth: { method: 'none' },
+      routing: {
+        'claude-code': {
+          upstream: 'https://scheduler-test.invalid/anthropic',
+          authStrategy: 'none',
+        },
+        codex: {
+          upstream: 'https://scheduler-test.invalid/openai',
+          authStrategy: 'none',
+        },
+      },
+      models: {
+        'claude-code': [
+          {
+            id: 'catalog-schedule-claude',
+            name: 'Catalog Claude',
+            contextWindow: 200_000,
+            efforts: [],
+            defaultEffort: null,
+          },
+        ],
+        codex: [
+          {
+            id: 'catalog-schedule-codex',
+            name: 'Catalog Codex',
+            contextWindow: 200_000,
+            efforts: [],
+            defaultEffort: null,
+          },
+        ],
+      },
+    },
+  ],
   defaults: {
     'claude-code': { sessionModel: 'catalog-schedule-claude' },
     codex: { sessionModel: 'catalog-schedule-codex' },
@@ -55,6 +93,55 @@ describe('scheduler defaultModelFor', () => {
     const empty: Catalog = { version: '3', providers: [] };
     expect(defaultModelFor('claude-code', empty)).toBe('claude-sonnet-4-6');
     expect(defaultModelFor('codex', empty)).toBe('gpt-5.5');
+  });
+
+  it('rejects missing, retired, and non-chat catalog defaults in favor of safe fallbacks', () => {
+    const claudeProvider = catalog.providers[0]!;
+    const invalidCases: Catalog[] = [
+      {
+        ...catalog,
+        defaults: { 'claude-code': { sessionModel: 'missing-model' } },
+      },
+      {
+        ...catalog,
+        providers: [{
+          ...claudeProvider,
+          models: {
+            ...claudeProvider.models,
+            'claude-code': [{
+              ...claudeProvider.models['claude-code']![0]!,
+              status: 'retired',
+            }],
+          },
+        }],
+      },
+      {
+        ...catalog,
+        providers: [{
+          ...claudeProvider,
+          models: {
+            ...claudeProvider.models,
+            'claude-code': [{
+              ...claudeProvider.models['claude-code']![0]!,
+              mode: 'image',
+            }],
+          },
+        }],
+      },
+    ];
+
+    for (const invalid of invalidCases) {
+      expect(defaultModelFor('claude-code', invalid)).toBe('claude-sonnet-4-6');
+      expect(
+        materializeScheduleDefaultForCreate(
+          createInput({ agentKind: 'claude-code' }),
+          invalid,
+        ),
+      ).toMatchObject({ model: 'claude-sonnet-4-6' });
+      expect(
+        materializeScheduleDefaultForUpdate(schedule(), { name: 'renamed' }, invalid),
+      ).toEqual({ name: 'renamed', model: 'claude-sonnet-4-6' });
+    }
   });
 
   it('materializes fresh create inputs from the active catalog default', () => {

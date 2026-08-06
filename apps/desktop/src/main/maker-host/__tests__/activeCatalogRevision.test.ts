@@ -494,7 +494,25 @@ describe('active catalog revision', () => {
     expect(ownerBModels[0]).not.toHaveProperty('source');
   });
 
-  it('clears generic discovery and resolve snapshots at an account boundary', () => {
+  it('clears every account-derived discovery and resolve snapshot at an account boundary', () => {
+    setDiscoveredCodexModels([
+      {
+        id: 'openai/account-a-only',
+        name: 'OpenAI Account A Only',
+        contextWindow: 200_000,
+        efforts: [],
+        defaultEffort: null,
+      },
+    ]);
+    setAnthropicDiscoveredModels([
+      {
+        id: 'anthropic/account-a-only',
+        name: 'Anthropic Account A Only',
+        contextWindow: 200_000,
+        efforts: [],
+        defaultEffort: null,
+      },
+    ]);
     setDiscoveredProviderModels('xai', 'codex', [
       {
         id: 'xai/account-a-only',
@@ -523,10 +541,13 @@ describe('active catalog revision', () => {
 
     clearAccountDerivedProviderModels();
 
-    expect(
-      getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
-        .models.codex!.some((model) => model.id === 'xai/account-a-only'),
-    ).toBe(false);
+    const catalog = getActiveCatalog();
+    expect(catalog.providers.find((provider) => provider.id === 'openai')!
+      .models.codex!.some((model) => model.id === 'openai/account-a-only')).toBe(false);
+    expect(catalog.providers.find((provider) => provider.id === 'anthropic')!
+      .models['claude-code']!.some((model) => model.id === 'anthropic/account-a-only')).toBe(false);
+    expect(catalog.providers.find((provider) => provider.id === 'xai')!
+      .models.codex!.some((model) => model.id === 'xai/account-a-only')).toBe(false);
   });
 
   it('clears a changed Pi overlay without forwarding a nonexistent resolve slot', () => {

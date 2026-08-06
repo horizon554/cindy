@@ -50,10 +50,14 @@ async function createHome(): Promise<string> {
   return root;
 }
 
-async function writeVendorCache(codexHome: string, models: unknown[]): Promise<void> {
+async function writeVendorCache(
+  codexHome: string,
+  models: unknown[],
+  etag = 'native',
+): Promise<void> {
   await fsp.writeFile(path.join(codexHome, 'models_cache.json'), JSON.stringify({
     fetched_at: '2026-08-04T00:00:00.000Z',
-    etag: 'native',
+    etag,
     client_version: '0.145.0',
     models,
   }));
@@ -215,6 +219,71 @@ describe('Codex model catalog cache', () => {
 
     const state = JSON.parse(await fsp.readFile(codexModelCatalogStatePath(codexHome), 'utf8'));
     expect(state.injectedSlugs).toEqual(['deepseek-v4-pro']);
+    expect(readNativeCodexModelsFromCache(codexHome)?.map((model) => model.slug))
+      .toEqual(['gpt-template']);
+  });
+
+  it('fails closed when a Cindy cache loses its provenance sidecar', async () => {
+    const codexHome = await createHome();
+    const cachePath = path.join(codexHome, 'models_cache.json');
+    const synthetic = {
+      ...nativeModel(),
+      slug: 'deepseek-v4-pro',
+      display_name: 'DeepSeek V4 Pro',
+    };
+    await writeVendorCache(
+      codexHome,
+      [nativeModel(), synthetic],
+      '"cindy-catalog-7"',
+    );
+    const before = await fsp.readFile(cachePath, 'utf8');
+
+    expect(readNativeCodexModelsFromCache(codexHome)).toBeNull();
+    await expect(writeCodexModelCatalogCache({
+      codexHome,
+      catalog: { version: 'test', providers: [] } as Catalog,
+      revision: 8,
+    })).rejects.toBeInstanceOf(CodexModelCatalogNeedsNativeModelsError);
+    expect(await fsp.readFile(cachePath, 'utf8')).toBe(before);
+    await expect(fsp.stat(codexModelCatalogStatePath(codexHome))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('uses a fresh native snapshot to recover a Cindy cache whose sidecar is missing', async () => {
+    const codexHome = await createHome();
+    const synthetic = {
+      ...nativeModel(),
+      slug: 'deepseek-v4-pro',
+      display_name: 'DeepSeek V4 Pro',
+    };
+    await writeVendorCache(
+      codexHome,
+      [nativeModel(), synthetic],
+      '"cindy-catalog-7"',
+    );
+
+    await writeCodexModelCatalogCache({
+      codexHome,
+      catalog: { version: 'test', providers: [] } as Catalog,
+      revision: 8,
+      nativeModels: [nativeModel()],
+    });
+
+    const vendor = JSON.parse(
+      await fsp.readFile(path.join(codexHome, 'models_cache.json'), 'utf8'),
+    );
+    expect(vendor.models.map((model: { slug: string }) => model.slug)).toEqual([
+      'gpt-template',
+    ]);
+    expect(JSON.parse(await fsp.readFile(codexModelCatalogStatePath(codexHome), 'utf8')))
+      .toEqual({ revision: 8, injectedSlugs: [] });
+  });
+
+  it('still trusts a vendor cache without a Cindy etag when no sidecar exists', async () => {
+    const codexHome = await createHome();
+    await writeVendorCache(codexHome, [nativeModel()]);
+
     expect(readNativeCodexModelsFromCache(codexHome)?.map((model) => model.slug))
       .toEqual(['gpt-template']);
   });

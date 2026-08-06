@@ -107,6 +107,10 @@ function effectiveCatalogState(
   };
 }
 
+function isCindyCatalogEtag(etag: string): boolean {
+  return /^"cindy-catalog-\d+"$/.test(etag);
+}
+
 async function writeJsonAtomically(filePath: string, value: unknown): Promise<void> {
   const tempPath = `${filePath}.tmp-${process.pid}-${Date.now().toString(36)}`;
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
@@ -146,6 +150,18 @@ export async function writeCodexModelCatalogCache(
     state = null;
   }
   state = effectiveCatalogState(parsed, state);
+  // A Cindy etag proves the vendor-shaped file has already contained projected models. Without
+  // provenance (or a fresh model/list snapshot) those entries cannot safely be reclassified as
+  // native: doing so would make a removed injection survive every later catalog refresh.
+  if (
+    !state
+    && isCindyCatalogEtag(parsed.etag)
+    && (!input.nativeModels || input.nativeModels.length === 0)
+  ) {
+    throw new CodexModelCatalogNeedsNativeModelsError(
+      'Cindy Codex catalog provenance is unavailable; native model warm-up is required',
+    );
+  }
   if (state) parsed.cindy_injected_slugs = state.injectedSlugs;
   const nativeModels = !state && input.nativeModels && input.nativeModels.length > 0
     ? input.nativeModels.map((model) => ({ ...model }))
@@ -216,7 +232,7 @@ export function readNativeCodexModelsFromCache(codexHome: string): CodexModelInf
         return false;
       }
     })();
-    if (hasSidecar && !state) return null;
+    if (!state && (hasSidecar || isCindyCatalogEtag(cache.etag))) return null;
     return nativeCodexModelsFromCache(cache, state);
   } catch {
     return null;

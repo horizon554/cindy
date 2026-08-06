@@ -1127,9 +1127,16 @@ export function clearResolvedProviderModels(): void {
   markChanged();
 }
 
-/** Drop every account/credential-derived generic discovery and resolve snapshot atomically. */
+/** Drop every account/credential-derived discovery and resolve snapshot atomically. */
 export function clearAccountDerivedProviderModels(): void {
-  if (discoveredByProvider.size === 0 && resolvedByProvider.size === 0) return;
+  if (
+    discoveredCodex.length === 0
+    && anthropicModels.length === 0
+    && discoveredByProvider.size === 0
+    && resolvedByProvider.size === 0
+  ) return;
+  discoveredCodex = [];
+  anthropicModels = [];
   discoveredByProvider.clear();
   resolvedByProvider.clear();
   markChanged();

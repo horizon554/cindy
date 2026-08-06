@@ -4,7 +4,11 @@ import type {
   Schedule,
   UpdateScheduleInput,
 } from '@cindy/maker-scheduler';
-import { resolveDefaultModel, type Catalog } from '@cindy/model-providers';
+import {
+  isModelSelectableForNewRoute,
+  resolveDefaultModel,
+  type Catalog,
+} from '@cindy/model-providers';
 
 import { getActiveCatalog } from '../maker-host/active-catalog.js';
 
@@ -13,6 +17,22 @@ const FALLBACK_SCHEDULE_MODELS: Record<AgentKind, string> = {
   codex: 'gpt-5.5',
   pi: '',
 };
+
+function isRoutableScheduleDefault(
+  catalog: Pick<Catalog, 'providers' | 'defaults'>,
+  agentKind: Exclude<AgentKind, 'pi'>,
+  modelId: string,
+): boolean {
+  return catalog.providers.some((provider) => {
+    const route = provider.routing[agentKind];
+    if (!provider.agents.includes(agentKind) || !route || route.disabled === true) return false;
+    return (provider.models[agentKind] ?? []).some(
+      (model) =>
+        model.id === modelId
+        && isModelSelectableForNewRoute(model, { userProvider: provider.source === 'user' }),
+    );
+  });
+}
 
 /** Scheduler defaults follow the active catalog and retain historical fallbacks offline. */
 export function defaultModelFor(
@@ -23,12 +43,15 @@ export function defaultModelFor(
   // {model,providerId}。空字符串可阻止其它调用方制造“看似可用”的 Claude 假路由,
   // 因此 pi 不进 resolver —— 目录里若真给了 pi 默认,也不能在这里落成静态 id。
   if (agentKind === 'pi') return '';
-  return resolveDefaultModel(
+  const catalogDefault = resolveDefaultModel(
     catalog,
     agentKind,
     'session',
-    FALLBACK_SCHEDULE_MODELS[agentKind],
+    '',
   );
+  return catalogDefault && isRoutableScheduleDefault(catalog, agentKind, catalogDefault)
+    ? catalogDefault
+    : FALLBACK_SCHEDULE_MODELS[agentKind];
 }
 
 function hasText(value: unknown): boolean {
