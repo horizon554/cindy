@@ -347,6 +347,7 @@ export default function AutomationsScreen() {
     setFormError(null);
     setFormDraft((prev) => {
       const base = prev ?? createMobileScheduleDraft(null, {
+        modelDefaults: MOBILE_SCHEDULE_MODEL_DEFAULTS,
         fallbackWorkingDir: selectedSchedule?.workingDir ?? null,
       });
       try {

@@ -175,6 +175,20 @@ function validateModel(m: CatalogModel, providerId: string): void {
   if (m.icon !== undefined) {
     assert(typeof m.icon === 'string' && m.icon.trim().length > 0, `model.icon must be a non-empty string for '${m.id}'`);
   }
+  if (m.newSessionDefault !== undefined) {
+    assert(
+      Array.isArray(m.newSessionDefault) && m.newSessionDefault.length > 0,
+      `model.newSessionDefault must be a non-empty array for '${m.id}'`,
+    );
+    assert(
+      m.newSessionDefault.every(isAgentKind),
+      `model.newSessionDefault has invalid agent for '${m.id}'`,
+    );
+    assert(
+      new Set(m.newSessionDefault).size === m.newSessionDefault.length,
+      `model.newSessionDefault has duplicate agent for '${m.id}'`,
+    );
+  }
 }
 
 /** 校验 oauth 描述符（提供了就必须完整——它驱动登录与路由，坏数据必须在 parse 期暴露）。 */
@@ -480,6 +494,7 @@ function modelSignature(m: CatalogModel): string {
     name: m.name,
     description: m.description ?? null,
     contextWindow: m.contextWindow,
+    maxOutput: m.maxOutput ?? null,
     efforts: m.efforts,
     effortDisplayNames: m.effortDisplayNames ?? null,
     defaultEffort: m.defaultEffort,

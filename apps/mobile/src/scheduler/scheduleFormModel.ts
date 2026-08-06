@@ -1,15 +1,9 @@
-import { BUNDLED_CATALOG, resolveDefaultModel } from '@cindy/model-providers';
 import type { MobileScheduleModelDefaults } from '@cindy/maker-shared/schedule-form';
 
 export * from '@cindy/maker-shared/schedule-form';
 
-/** Mobile injects bundled catalog values into maker-shared without reversing package dependencies. */
+/** Mobile is only a controller: blank defaults let the controlled Desktop resolve its active catalog. */
 export const MOBILE_SCHEDULE_MODEL_DEFAULTS: MobileScheduleModelDefaults = {
-  'claude-code': resolveDefaultModel(
-    BUNDLED_CATALOG,
-    'claude-code',
-    'session',
-    'claude-sonnet-4-6',
-  ),
-  codex: resolveDefaultModel(BUNDLED_CATALOG, 'codex', 'session', 'gpt-5.5'),
+  'claude-code': '',
+  codex: '',
 };

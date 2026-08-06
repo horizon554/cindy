@@ -420,6 +420,31 @@ describe('mergeWithBundled', () => {
     })).toThrow(/inconsistent metadata across providers/);
   });
 
+  it('v3 rejects maxOutput divergence after materializing duplicate model routes', () => {
+    const bundledXai = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'xai')!;
+    const xaiModel = bundledXai.models.codex?.[0];
+    if (!xaiModel) throw new Error('missing bundled xAI Codex model');
+
+    expect(() => mergeWithBundled({
+      version: '3',
+      providers: [
+        {
+          id: 'xai',
+          models: {
+            codex: [{ ...xaiModel, maxOutput: 8_192 }],
+          },
+        },
+        {
+          id: 'openai',
+          titleModel: xaiModel.id,
+          models: {
+            codex: [{ ...xaiModel, maxOutput: 16_384 }],
+          },
+        },
+      ] as Catalog['providers'],
+    })).toThrow(/inconsistent metadata across providers/);
+  });
+
   it('v3 validates each provider after materializing bundled deltas', () => {
     const bundledOpenai = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'openai')!;
     const replacementModels = Object.fromEntries(

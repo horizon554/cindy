@@ -362,6 +362,29 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     })).toThrow(/provider\.name missing/);
   });
 
+  it('v3 validates newSessionDefault as a non-empty unique agent list', () => {
+    const withMarker = (newSessionDefault: unknown) => ({
+      version: '3',
+      providers: [{
+        id: 'xai',
+        models: {
+          codex: [{
+            ...model('xai/default-marker'),
+            newSessionDefault,
+          }],
+        },
+      }],
+    });
+
+    expect(
+      parseCatalog(withMarker(['claude-code', 'codex'])).providers[0]?.models?.codex?.[0]
+        ?.newSessionDefault,
+    ).toEqual(['claude-code', 'codex']);
+    for (const invalid of [{ codex: true }, [], ['codex', 'codex'], ['other']]) {
+      expect(() => parseCatalog(withMarker(invalid))).toThrow(/newSessionDefault/);
+    }
+  });
+
   it('v3 bundled deltas cannot change an embedded provider into a user provider', () => {
     expect(parseCatalog({
       version: '3',
