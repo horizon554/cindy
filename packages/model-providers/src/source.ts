@@ -16,8 +16,8 @@
 import {
   BUNDLED_CATALOG,
   parseCatalog,
-  validateProvider,
   validateModelConsistency,
+  validatePublishedProvider,
 } from "./catalog.js";
 import { withVerifiedStaticWindows } from "./builtin.js";
 import {
@@ -419,7 +419,8 @@ export function mergeWithBundled(primary: Catalog): Catalog {
   // Without this final pass, a syntactically valid delta can leave the merged agents/routing/models
   // inconsistent or make first-wins projection pair a route with another provider's metadata.
   if (primary.version === "3") {
-    for (const provider of catalog.providers) validateProvider(provider);
+    for (const provider of catalog.providers)
+      validatePublishedProvider(provider);
     validateModelConsistency(catalog);
   }
   return catalog;

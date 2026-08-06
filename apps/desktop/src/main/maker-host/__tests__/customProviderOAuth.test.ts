@@ -384,7 +384,7 @@ describe('provider-service 连接态', () => {
     const svc = createProviderService({
       getCatalog: () => catalog,
       connection: { xd: () => false, anthropic: () => false, openai: () => false, xai: () => false },
-      genericOAuthConnected: (id) => id === 'acme-sub',
+      genericOAuthConnected: (provider) => provider.id === 'acme-sub',
     });
     const views = await svc.listProviders();
     expect(views.find((v) => v.id === 'acme-sub')?.connected).toBe(true);

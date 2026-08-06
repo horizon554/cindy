@@ -25,6 +25,16 @@ describe('provider model resolve wiring', () => {
     expect(saved).toContain('...(m.maxOutput !== undefined ? { maxOutput: m.maxOutput } : {})');
     expect(saved).toContain('const resolveModels = toModelResolveRequestModels(');
     expect(saved).toContain('models: resolveModels,');
+    const ownerCapture = saved.indexOf('const ownerAtStart = getActiveAppSession();');
+    const configRead = saved.indexOf('const cfg = await getCustomProvider(providerId);');
+    const postReadOwnerCheck = saved.indexOf(
+      'ownerAfterRead.dataOwnerId !== ownerAtStart.dataOwnerId',
+    );
+    const resolveCall = saved.indexOf('resolveProviderModelEntries(');
+    expect(ownerCapture).toBeGreaterThan(-1);
+    expect(configRead).toBeGreaterThan(ownerCapture);
+    expect(postReadOwnerCheck).toBeGreaterThan(configRead);
+    expect(resolveCall).toBeGreaterThan(postReadOwnerCheck);
   });
 
   it('preserves provider-verified context windows in discovered catalog additions', () => {

@@ -39,6 +39,7 @@ import { createLogger } from '../logger.js';
 import { getBaseUrl, isDev } from '../manifestService.js';
 import { getBuildClientEndpoint, getClientEndpoint } from '../clientEndpointsService.js';
 import {
+  clearAccountDerivedProviderModels,
   commitModelPlaneFromCatalog,
   getActiveCatalog,
   getModelPlaneWarnings,
@@ -473,11 +474,10 @@ export function ensureActiveCatalogLoaded(): Promise<Catalog> {
   addProviderSecretsClearedListener(() => {
     resetGenericOAuthMemoryCache();
     resetGrokOAuthMemoryCache();
+    clearAccountDerivedProviderModels();
   });
-  const readOAuthToken = (providerId: string): string | null => {
-    const provider = getActiveCatalog().providers.find((p) => p.id === providerId);
-    return readCachedGenericOAuthAccessToken(providerId, provider?.auth.oauth);
-  };
+  const readOAuthToken = (provider: Catalog['providers'][number]): string | null =>
+    readCachedGenericOAuthAccessToken(provider);
   setOAuthTokenReader(readOAuthToken);
   setDiagnosticsOAuthTokenReader(readOAuthToken);
   // 在启动期固定 service 实例，避免请求路由热路径重复进入 getter 里的 legacy
@@ -870,7 +870,7 @@ export function getDesktopProviderService(): ProviderService {
       },
     },
     // 通用 OAuth 供应商（目录 auth.oauth 描述符驱动）：连接态 = 本机凭证 blob 是否存在。
-    genericOAuthConnected: (providerId) => hasGenericOAuthLogin(providerId),
+    genericOAuthConnected: (provider) => hasGenericOAuthLogin(provider),
     // 内置 API-key 供应商(如 gemini 图像来源):连接态 = key 已存(providerSecretStore)。
     builtinApiKeyConnected: (providerId) =>
       providerId === 'gemini' ? Boolean(getProviderSecretStore().get('gemini')?.trim()) : false,

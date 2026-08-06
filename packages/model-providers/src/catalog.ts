@@ -31,6 +31,16 @@ const AUTH_STRATEGIES = [
   'none',
 ] as const;
 const BUNDLED_PROVIDER_IDS = new Set(BUNDLED_CATALOG_INTERNAL.providers.map((provider) => provider.id));
+/**
+ * These strategies consume credentials owned by the Cindy client rather than credentials
+ * established from a catalog-provided generic OAuth descriptor. A remotely-added identity must
+ * never opt into them, and a bundled identity must keep their destination contract client-owned.
+ */
+const CLIENT_OWNED_CREDENTIAL_STRATEGIES: ReadonlySet<string> = new Set([
+  'oauth-passthrough',
+  'provider-oauth-header',
+  'gateway-key',
+] as const);
 
 function sameJsonValue(left: unknown, right: unknown): boolean {
   if (left === right) return true;
@@ -70,6 +80,28 @@ function isWireProtocol(value: unknown): value is (typeof WIRE_PROTOCOLS)[number
 
 function isAuthStrategy(value: unknown): value is (typeof AUTH_STRATEGIES)[number] {
   return typeof value === 'string' && (AUTH_STRATEGIES as readonly string[]).includes(value);
+}
+
+function usesClientOwnedCredential(
+  route: Provider['routing'][AgentKind] | undefined,
+): boolean {
+  return route !== undefined && CLIENT_OWNED_CREDENTIAL_STRATEGIES.has(route.authStrategy);
+}
+
+/** Fields that determine where and how a client-owned credential leaves the process. */
+function credentialRouteBoundary(
+  route: Provider['routing'][AgentKind],
+): unknown {
+  if (!route) return null;
+  return {
+    upstream: route.upstream,
+    authStrategy: route.authStrategy,
+    wireProtocol: route.wireProtocol,
+    requestPath: route.requestPath,
+    headerDelete: route.headerDelete,
+    headerOverride: route.headerOverride,
+    adapter: route.adapter,
+  };
 }
 
 function isHeaderName(value: unknown): value is string {
@@ -364,6 +396,49 @@ export function validateProvider(p: Provider): void {
   validateOAuthDescriptor(p);
 }
 
+/**
+ * Catalog 文件/远端快照只能发布产品身份卡。`source: 'user'` 是本地 custom-provider
+ * store 的可信来源标记；若允许目录声明它，攻击者可复用本地 Provider id，诱导主机把
+ * safeStorage 中的同名凭证发往目录控制的 upstream。
+ */
+export function validatePublishedProvider(p: Provider): void {
+  validateProvider(p);
+  assert(
+    p.source === 'builtin',
+    `catalog provider '${p.id}' source must be builtin; user providers are local-only`,
+  );
+
+  const bundled = BUNDLED_CATALOG_INTERNAL.providers.find((provider) => provider.id === p.id);
+  if (!bundled) {
+    for (const agent of AGENT_KINDS) {
+      const route = p.routing[agent];
+      assert(
+        !usesClientOwnedCredential(route),
+        `catalog provider '${p.id}' routing[${agent}].authStrategy '${String(route?.authStrategy)}' is reserved for client-owned providers`,
+      );
+    }
+    return;
+  }
+
+  // A bundled provider's auth identity is shipped with the client. This also protects legacy
+  // v1/v2 full snapshots; v3 partial deltas perform the same check before materialization.
+  assert(
+    sameJsonValue(p.auth, bundled.auth),
+    `catalog provider '${p.id}' cannot override bundled auth`,
+  );
+  for (const agent of AGENT_KINDS) {
+    const route = p.routing[agent];
+    if (!route) continue; // Legacy full snapshots may intentionally omit a disabled runtime.
+    const bundledRoute = bundled.routing[agent];
+    if (!usesClientOwnedCredential(route) && !usesClientOwnedCredential(bundledRoute)) continue;
+    assert(
+      bundledRoute !== undefined &&
+        sameJsonValue(credentialRouteBoundary(route), credentialRouteBoundary(bundledRoute)),
+      `catalog provider '${p.id}' routing[${agent}] cannot override the client-owned credential destination`,
+    );
+  }
+}
+
 /** 图像/视频模型清单 + 默认选型的共用校验(字段名只用于报错定位)。 */
 function validateMediaModels(
   providerId: string,
@@ -655,8 +730,36 @@ function parseV3Catalog(input: Record<string, unknown>): Catalog {
         entry.agents === undefined || sameAgentSet(entry.agents, bundled.agents),
         `provider '${entry.id}' bundled delta cannot override agents`,
       );
+      if (entry.routing && typeof entry.routing === 'object' && !Array.isArray(entry.routing)) {
+        for (const [agent, rawDelta] of Object.entries(entry.routing)) {
+          if (
+            !isAgentKind(agent) ||
+            !rawDelta ||
+            typeof rawDelta !== 'object' ||
+            Array.isArray(rawDelta)
+          ) {
+            continue; // validateV3Provider already reports the structural error.
+          }
+          const bundledRoute = bundled.routing[agent];
+          const effectiveRoute = {
+            ...bundledRoute,
+            ...(rawDelta as Partial<NonNullable<typeof bundledRoute>>),
+          } as Provider['routing'][AgentKind];
+          if (!usesClientOwnedCredential(effectiveRoute) && !usesClientOwnedCredential(bundledRoute)) {
+            continue;
+          }
+          assert(
+            bundledRoute !== undefined &&
+              sameJsonValue(
+                credentialRouteBoundary(effectiveRoute),
+                credentialRouteBoundary(bundledRoute),
+              ),
+            `provider '${entry.id}' routing[${agent}] cannot override the client-owned credential destination`,
+          );
+        }
+      }
     } else {
-      validateProvider(entry as unknown as Provider);
+      validatePublishedProvider(entry as unknown as Provider);
     }
     providerEntries.push(entry as unknown as Provider);
   }
@@ -811,7 +914,7 @@ export function parseCatalog(input: string | unknown): Catalog {
   if (catalog.version === '3') return parseV3Catalog(obj as Record<string, unknown>);
   assert(Array.isArray(catalog.providers) && catalog.providers.length > 0, 'catalog.providers missing/empty');
   if (catalog.defaults !== undefined) validateCatalogDefaults(catalog.defaults, 'catalog.defaults');
-  for (const p of catalog.providers) validateProvider(p);
+  for (const p of catalog.providers) validatePublishedProvider(p);
   validateModelConsistency(catalog);
   // presets 容错清洗（坏条目丢弃，不让预设错误拖垮整份目录）。
   const presets = sanitizePresets((catalog as { presets?: unknown }).presets);

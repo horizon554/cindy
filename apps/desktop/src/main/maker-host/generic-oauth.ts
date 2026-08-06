@@ -20,7 +20,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 
 import { BRAND_NAME } from '@cindy/maker-shared/branding';
-import type { AgentKind, OAuthProviderDescriptor } from '@cindy/model-providers';
+import type { AgentKind, OAuthProviderDescriptor, Provider } from '@cindy/model-providers';
 
 import {
   buildOAuthReturnAction,
@@ -55,6 +55,8 @@ export interface GenericOAuthStorage {
   readStrict(providerId: string): string | null;
   write(providerId: string, value: string): boolean;
   remove(providerId: string): boolean;
+  /** Bind subsequent reads/writes to the owner active at capture time. */
+  capture?(): GenericOAuthStorage;
 }
 
 interface GenericOAuthIo {
@@ -112,13 +114,70 @@ const genChallenge = (v: string): string =>
 const genState = (): string => base64URLEncode(randomBytes(16));
 
 // ── 凭证 blob ───────────────────────────────────────────────────────────────────
+type GenericOAuthCredentialProvider = Pick<Provider, 'id' | 'source' | 'auth' | 'routing'>;
+type GenericOAuthLoginProvider = Pick<Provider, 'id' | 'name' | 'source' | 'auth' | 'routing'>;
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalJsonValue(child)]),
+  );
+}
+
+/**
+ * Bind a generic OAuth token to the complete credential realm that the user authorized.
+ * Model lists and display metadata are intentionally excluded, while every field that can alter
+ * an OAuth request's origin or credential-bearing route is included. A catalog identity with the
+ * same id therefore cannot inherit a local provider's token after changing source or destination.
+ */
+export function genericOAuthCredentialRealm(provider: GenericOAuthCredentialProvider): string {
+  const routing = Object.fromEntries(
+    Object.entries(provider.routing).map(([agent, route]) => [
+      agent,
+      route
+        ? {
+            upstream: route.upstream,
+            authStrategy: route.authStrategy,
+            wireProtocol: route.wireProtocol,
+            requestPath: route.requestPath,
+            headerDelete: route.headerDelete,
+            headerOverride: route.headerOverride,
+            adapter: route.adapter,
+            modelsUrl: route.modelsUrl,
+          }
+        : null,
+    ]),
+  );
+  const contract = canonicalJsonValue({
+    version: 1,
+    providerId: provider.id,
+    source: provider.source,
+    authMethod: provider.auth.method,
+    oauth: provider.auth.oauth
+      ? {
+          ...provider.auth.oauth,
+          flow: provider.auth.oauth.flow ?? 'authorization-code',
+        }
+      : undefined,
+    routing,
+  });
+  return `generic-oauth:v1:${createHash('sha256').update(JSON.stringify(contract)).digest('hex')}`;
+}
+
 interface OAuthTokenBlob {
+  version?: number;
   access_token: string;
   refresh_token?: string;
   /** epoch ms。 */
   expires_at?: number;
   obtained_at?: number;
   scope?: string;
+  /** Hash of provider source + OAuth descriptor + credential-bearing routing contract. */
+  credential_realm?: string;
 }
 
 interface TokenResponse {
@@ -128,14 +187,20 @@ interface TokenResponse {
   scope?: string;
 }
 
-function blobFromTokenResponse(t: TokenResponse, prev?: OAuthTokenBlob | null): OAuthTokenBlob {
+function blobFromTokenResponse(
+  t: TokenResponse,
+  credentialRealm: string,
+  prev?: OAuthTokenBlob | null,
+): OAuthTokenBlob {
   const now = io.now();
   return {
+    version: 2,
     access_token: t.access_token,
     refresh_token: t.refresh_token ?? prev?.refresh_token,
     expires_at: now + (t.expires_in ? t.expires_in * 1000 : DEFAULT_TOKEN_TTL_MS),
     obtained_at: now,
     scope: t.scope ?? prev?.scope,
+    credential_realm: credentialRealm,
   };
 }
 
@@ -162,21 +227,35 @@ function readBlob(providerId: string): OAuthTokenBlob | null {
   return blob;
 }
 
+function readBlobForProvider(provider: GenericOAuthCredentialProvider): OAuthTokenBlob | null {
+  const blob = readBlob(provider.id);
+  if (!blob) return null;
+  // Pre-realm blobs deliberately fail closed. Automatically adopting them would recreate the
+  // exact same-id catalog collision this binding is meant to prevent; the user must log in again.
+  return blob.version === 2 && blob.credential_realm === genericOAuthCredentialRealm(provider)
+    ? blob
+    : null;
+}
+
 /**
  * 落盘凭证 blob 并同步内存缓存,返回落盘是否成功。
  * 落盘失败时**内存缓存仍更新**:刷新场景丢弃新 blob 更危险——IdP 可能已轮换
  * refresh_token,丢弃后缓存里的旧 refresh_token 立即失效,当场断链;由调用方
  * 按场景决策(登录硬失败并回滚内存态、刷新保留内存态只记 warn)。
  */
-function writeBlob(providerId: string, b: OAuthTokenBlob): boolean {
-  const persisted = io.storage.write(providerId, JSON.stringify(b));
+function writeBlob(
+  providerId: string,
+  b: OAuthTokenBlob,
+  storage: GenericOAuthStorage = io.storage,
+): boolean {
+  const persisted = storage.write(providerId, JSON.stringify(b));
   blobCache.set(providerId, b);
   return persisted;
 }
 
-/** 该供应商本机是否已登录（有 access_token）。连接态判定用。 */
-export function hasGenericOAuthLogin(providerId: string): boolean {
-  return readBlob(providerId) !== null;
+/** 该供应商当前 credential realm 是否已登录（有 access_token）。连接态判定用。 */
+export function hasGenericOAuthLogin(provider: GenericOAuthCredentialProvider): boolean {
+  return readBlobForProvider(provider) !== null;
 }
 
 /** 登出：持久凭证删除成功后才清缓存，失败时保持登录态并通知调用方。 */
@@ -184,7 +263,9 @@ export function logoutGenericOAuth(providerId: string): boolean {
   if (!io.storage.remove(providerId)) return false;
   blobCache.set(providerId, null);
   // 链上若有 in-flight 刷新也安全:doRefresh 落盘前会复核 blob 已清则不回写。
-  refreshChains.delete(providerId);
+  for (const key of refreshChains.keys()) {
+    if (key.startsWith(`${providerId}\n`)) refreshChains.delete(key);
+  }
   return true;
 }
 
@@ -237,8 +318,11 @@ function isExpiringSoon(b: OAuthTokenBlob): boolean {
 // ── 刷新（per-provider 单飞链，同 grok 的 _refreshChain 语义）──────────────────────
 const refreshChains = new Map<string, Promise<void>>();
 
-async function doRefresh(providerId: string, oauth: OAuthProviderDescriptor): Promise<void> {
-  const fresh = readBlob(providerId);
+async function doRefresh(provider: GenericOAuthCredentialProvider): Promise<void> {
+  const oauth = provider.auth.oauth;
+  if (!oauth) return;
+  const credentialRealm = genericOAuthCredentialRealm(provider);
+  const fresh = readBlobForProvider(provider);
   if (fresh === null || !isExpiringSoon(fresh) || !fresh.refresh_token) return;
   const refreshToken = fresh.refresh_token;
   let res: Response;
@@ -255,13 +339,13 @@ async function doRefresh(providerId: string, oauth: OAuthProviderDescriptor): Pr
     });
   } catch (err) {
     log.warn('generic oauth token 刷新请求失败', {
-      providerId,
+      providerId: provider.id,
       err: err instanceof Error ? err.message : String(err),
     });
     return;
   }
   if (!res.ok) {
-    log.warn('generic oauth token 刷新失败', { providerId, status: res.status });
+    log.warn('generic oauth token 刷新失败', { providerId: provider.id, status: res.status });
     return;
   }
   let tok: TokenResponse;
@@ -272,26 +356,30 @@ async function doRefresh(providerId: string, oauth: OAuthProviderDescriptor): Pr
   }
   if (!tok.access_token) return;
   // 落盘前复核（同 grok）：刷新期间用户可能已登出（blob 被清）或已重登（refresh_token 变了）。
-  const beforeWrite = readBlob(providerId);
-  if (beforeWrite === null || beforeWrite.refresh_token !== refreshToken) return;
-  if (!writeBlob(providerId, blobFromTokenResponse(tok, beforeWrite))) {
+  const beforeWrite = readBlobForProvider(provider);
+  if (
+    beforeWrite === null
+    || beforeWrite.refresh_token !== refreshToken
+    || beforeWrite.credential_realm !== credentialRealm
+  ) return;
+  if (!writeBlob(provider.id, blobFromTokenResponse(tok, credentialRealm, beforeWrite))) {
     // 内存态已更新(本次会话可继续用新 token),只是重启后需重新登录。
-    log.warn('generic oauth 刷新凭证落盘失败,仅内存态生效', { providerId });
+    log.warn('generic oauth 刷新凭证落盘失败,仅内存态生效', { providerId: provider.id });
   }
 }
 
 /** 单飞刷新：同 provider 的并发刷新排队串行，链头异常不断链。 */
 export function refreshGenericOAuthIfNeeded(
-  providerId: string,
-  oauth: OAuthProviderDescriptor,
+  provider: GenericOAuthCredentialProvider,
 ): Promise<void> {
-  const prev = refreshChains.get(providerId) ?? Promise.resolve();
-  const run = prev.then(() => doRefresh(providerId, oauth));
+  const chainKey = `${provider.id}\n${genericOAuthCredentialRealm(provider)}`;
+  const prev = refreshChains.get(chainKey) ?? Promise.resolve();
+  const run = prev.then(() => doRefresh(provider));
   refreshChains.set(
-    providerId,
+    chainKey,
     run.catch((err) => {
       log.warn('generic oauth 刷新异常', {
-        providerId,
+        providerId: provider.id,
         err: err instanceof Error ? err.message : String(err),
       });
     }),
@@ -302,16 +390,17 @@ export function refreshGenericOAuthIfNeeded(
 /**
  * 路由热路径的**同步** token 读取（provider-route 的 oauthTokenReader 接线到这里）。
  * 读内存缓存；发现临期时**后台**触发单飞刷新（不阻塞本次路由——首个请求可能仍用旧
- * token，401 后下一请求即拿到新 token）。descriptor 由调用方现查目录传入。
+ * token，401 后下一请求即拿到新 token）。调用方必须传入与路由决策相同的 Provider
+ * 快照，避免目录 reload 时把新 realm token 注入旧 upstream。
  */
 export function readCachedGenericOAuthAccessToken(
-  providerId: string,
-  oauth: OAuthProviderDescriptor | undefined,
+  provider: GenericOAuthCredentialProvider,
 ): string | null {
-  const blob = readBlob(providerId);
+  const blob = readBlobForProvider(provider);
   if (!blob) return null;
+  const oauth = provider.auth.oauth;
   if (oauth && isExpiringSoon(blob) && blob.refresh_token) {
-    void refreshGenericOAuthIfNeeded(providerId, oauth);
+    void refreshGenericOAuthIfNeeded(provider);
   }
   return blob.access_token;
 }
@@ -502,6 +591,12 @@ export interface GenericOAuthDeviceCodeProgress {
 export interface GenericOAuthLoginOptions {
   onProgress?: (progress: GenericOAuthDeviceCodeProgress) => void;
   /**
+   * Owner/provider generation guard captured by the IPC ingress. It is checked immediately before
+   * credential persistence (with no await before safeStorage write), so an A→B→A account switch or
+   * catalog realm replacement cannot redirect this login's token into a later owner/route.
+   */
+  isCurrent?: () => boolean;
+  /**
    * 凭证成功落盘后交出一次竞态安全的回滚闭包。只有当前凭证仍是本次登录写入的 blob
    * 时才删除；若后续登录/刷新已换新则 no-op，避免迟到取消误删新凭证。
    */
@@ -510,6 +605,14 @@ export interface GenericOAuthLoginOptions {
 
 // 同一时刻每个 provider 只允许一个登录流。
 const activeLogins = new Map<string, { abort: AbortController; close: () => void }>();
+
+function genericOAuthLoginIsCurrent(options: GenericOAuthLoginOptions | undefined): boolean {
+  try {
+    return options?.isCurrent?.() !== false;
+  } catch {
+    return false;
+  }
+}
 
 /** 取消某供应商进行中的登录。 */
 export function cancelGenericOAuthLogin(providerId: string): void {
@@ -583,6 +686,11 @@ async function runDeviceCodeGrant(
   if (!Number.isFinite(expiresInMs)) {
     throw new Error('invalid_device_authorization_response');
   }
+  // The authorization request can outlive its account/provider generation. Do not expose a
+  // previous owner's one-time code to windows belonging to the new generation.
+  if (abort.signal.aborted || !genericOAuthLoginIsCurrent(options)) {
+    throw new Error('login_cancelled');
+  }
   // Device Authorization Grant 的有效期由 IdP 的 expires_in 决定；不能用授权码登录的
   // 五分钟回调超时截断，否则合法的 10–15 分钟设备码会在服务端仍有效时被本地提前判过期。
   const expiresAt = io.now() + expiresInMs;
@@ -606,7 +714,9 @@ async function runDeviceCodeGrant(
   );
   while (io.now() < expiresAt) {
     await io.sleep(Math.min(intervalMs, Math.max(0, expiresAt - io.now())), abort.signal);
-    if (abort.signal.aborted) throw new Error('login_cancelled');
+    if (abort.signal.aborted || !genericOAuthLoginIsCurrent(options)) {
+      throw new Error('login_cancelled');
+    }
 
     const response = await io.fetchImpl(oauth.tokenUrl, {
       method: 'POST',
@@ -647,10 +757,13 @@ async function runDeviceCodeGrant(
  * 成功后凭证 blob 写 safeStorage（provider_oauth_<id>）。
  */
 export async function runGenericOAuthLogin(
-  provider: { id: string; name: string },
-  oauth: OAuthProviderDescriptor,
+  provider: GenericOAuthLoginProvider,
   options?: GenericOAuthLoginOptions,
 ): Promise<GenericOAuthLoginResult> {
+  const oauth = provider.auth.oauth;
+  if (!oauth) return { ok: false, reason: 'oauth_descriptor_missing' };
+  const credentialRealm = genericOAuthCredentialRealm(provider);
+  const loginStorage = io.storage.capture?.() ?? io.storage;
   cancelGenericOAuthLogin(provider.id);
 
   const listener = oauth.flow === 'device-code' ? null : new CallbackListener(provider.name);
@@ -670,7 +783,11 @@ export async function runGenericOAuthLogin(
       const challenge = genChallenge(verifier);
       const state = genState();
       await listener!.start(oauth.redirectPort);
-      if (abort.signal.aborted) throw new Error('login_cancelled');
+      // Binding the loopback listener is asynchronous. Re-check the captured owner/provider realm
+      // before opening a browser so a stale generation cannot launch its authorization page.
+      if (abort.signal.aborted || !genericOAuthLoginIsCurrent(options)) {
+        throw new Error('login_cancelled');
+      }
       const redirectUri = `http://127.0.0.1:${listener!.port}/callback`;
 
       const authUrl = new URL(oauth.authorizeUrl);
@@ -707,6 +824,7 @@ export async function runGenericOAuthLogin(
       });
       await io.openExternal(authUrl.toString());
       const code = await codePromise;
+      if (!genericOAuthLoginIsCurrent(options)) throw new Error('login_cancelled');
 
       const response = await io.fetchImpl(oauth.tokenUrl, {
         method: 'POST',
@@ -729,9 +847,11 @@ export async function runGenericOAuthLogin(
     }
 
     // 落盘前最后检查：已取消的登录绝不写凭证（同 grok）。
-    if (abort.signal.aborted) throw new Error('login_cancelled');
-    const persistedBlob = blobFromTokenResponse(tok);
-    if (!writeBlob(provider.id, persistedBlob)) {
+    if (abort.signal.aborted || !genericOAuthLoginIsCurrent(options)) {
+      throw new Error('login_cancelled');
+    }
+    const persistedBlob = blobFromTokenResponse(tok, credentialRealm);
+    if (!writeBlob(provider.id, persistedBlob, loginStorage)) {
       // 落盘失败必须硬失败并回滚内存态:否则 UI 显示已连接、路由能用,重启/刷新后
       // 授权静默消失(safeStorage 不可用或 .enc 写不进磁盘的机器上尤其致命)。
       blobCache.set(provider.id, null);
@@ -741,7 +861,7 @@ export async function runGenericOAuthLogin(
     options?.onCredentialPersisted?.(() => {
       let currentRaw: string | null;
       try {
-        currentRaw = io.storage.readStrict(provider.id);
+        currentRaw = loginStorage.readStrict(provider.id);
       } catch (err) {
         log.warn('generic oauth 取消回滚无法严格核对持久凭证', {
           providerId: provider.id,
@@ -750,7 +870,13 @@ export async function runGenericOAuthLogin(
         return false;
       }
       if (currentRaw !== persistedRaw) return true;
-      return logoutGenericOAuth(provider.id);
+      if (!loginStorage.remove(provider.id)) return false;
+      const cached = blobCache.get(provider.id);
+      if (cached && JSON.stringify(cached) === persistedRaw) {
+        blobCache.set(provider.id, null);
+        refreshChains.delete(`${provider.id}\n${credentialRealm}`);
+      }
+      return true;
     });
     listener?.succeed(provider.name);
     log.info('generic oauth login success', { providerId: provider.id, scope: tok.scope });
@@ -787,20 +913,25 @@ export function deriveModelsDiscoveryUrl(baseUrl: string): string {
 /**
  * 拉取 models 发现端点（带 Bearer），解析 OpenAI / Anthropic `GET /models` 形状
  * （`{data:[{id}]}` 或 `{models:[{id}]}` / 字符串数组）。失败返回 null（调用方保持纯静态兜底）。
- * 端点取 `discoveryUrl`（调用方按 runtime baseUrl 推导）?? 描述符显式声明的 modelsDiscoveryUrl。
+ * 端点只取同一 Provider 契约中的 `modelsDiscoveryUrl`，或按当前 agent runtime upstream 推导；
+ * 不接受调用方传入任意 URL，避免把 realm-bound Bearer 发往未绑定目标。
  * `agent` 决定 wire 专属请求头：Anthropic wire（claude-code runtime）的**所有**端点
  * （含 GET /v1/models）都强制要求 `anthropic-version`，缺失直接 400 → 发现静默失败；
  * 与 provider-diagnostics.buildProbeRequest 的 cc 分支同口径。
  */
 export async function discoverGenericOAuthModelsDetailed(
-  providerId: string,
-  oauth: OAuthProviderDescriptor,
-  discoveryUrl?: string,
+  provider: GenericOAuthCredentialProvider,
   agent?: AgentKind,
 ): Promise<DetailedModelListEntry[] | null> {
-  const url = discoveryUrl ?? oauth.modelsDiscoveryUrl;
+  const oauth = provider.auth.oauth;
+  if (!oauth) return null;
+  // The token-bearing destination must come from the same provider contract that produced the
+  // credential realm. Never accept an arbitrary caller-supplied URL here.
+  const route = agent ? provider.routing[agent] : undefined;
+  const url =
+    oauth.modelsDiscoveryUrl ?? (route?.upstream ? deriveModelsDiscoveryUrl(route.upstream) : null);
   if (!url) return null;
-  const token = readCachedGenericOAuthAccessToken(providerId, oauth);
+  const token = readCachedGenericOAuthAccessToken(provider);
   if (!token) return null;
   const headers: Record<string, string> = { authorization: `Bearer ${token}` };
   if (agent === 'claude-code') headers['anthropic-version'] = '2023-06-01';
@@ -824,12 +955,10 @@ export async function discoverGenericOAuthModelsDetailed(
 }
 
 export async function discoverGenericOAuthModels(
-  providerId: string,
-  oauth: OAuthProviderDescriptor,
-  discoveryUrl?: string,
+  provider: GenericOAuthCredentialProvider,
   agent?: AgentKind,
 ): Promise<{ id: string; name: string }[] | null> {
-  const detailed = await discoverGenericOAuthModelsDetailed(providerId, oauth, discoveryUrl, agent);
+  const detailed = await discoverGenericOAuthModelsDetailed(provider, agent);
   return detailed?.map(({ id, name }) => ({ id, name })) ?? null;
 }
 

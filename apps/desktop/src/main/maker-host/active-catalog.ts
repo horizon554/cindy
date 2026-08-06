@@ -323,43 +323,96 @@ function providerResolveInputKey(
   });
 }
 
-function invalidateChangedCustomProviderOverlays(nextProviders: readonly Provider[]): void {
-  const previousById = new Map(custom.map((provider) => [provider.id, provider]));
+function providerCredentialRealmKey(provider: Provider | undefined): string | null {
+  if (!provider) return null;
+  return JSON.stringify({
+    source: provider.source,
+    auth: provider.auth,
+    routing: provider.routing,
+  });
+}
+
+function deleteProviderAgentSnapshot<T>(
+  snapshots: Map<string, Partial<Record<AgentKind, T>>>,
+  providerId: string,
+  agent: AgentKind,
+): void {
+  const byAgent = snapshots.get(providerId);
+  if (!byAgent) return;
+  delete byAgent[agent];
+  if (Object.values(byAgent).every((value) => value === undefined)) {
+    snapshots.delete(providerId);
+  }
+}
+
+/**
+ * Discovery membership and resolve metadata are derived from a provider credential realm.
+ * Invalidate them before swapping a provider descriptor so a reused id cannot inherit models or
+ * capabilities from a previous endpoint/account. Resolve also depends on configured membership,
+ * while discovery survives harmless display/model metadata changes within the same realm.
+ */
+function invalidateChangedProviderOverlays(
+  previousProviders: readonly Provider[],
+  nextProviders: readonly Provider[],
+  shouldInspect: (previous: Provider | undefined, next: Provider | undefined) => boolean,
+): void {
+  const previousById = new Map(previousProviders.map((provider) => [provider.id, provider]));
   const nextById = new Map(nextProviders.map((provider) => [provider.id, provider]));
   const providerIds = new Set([...previousById.keys(), ...nextById.keys()]);
-  const changedSlots: Array<{ providerId: string; agent: AgentKind }> = [];
+  const changedResolveSlots: Array<{ providerId: string; agent: AgentKind }> = [];
   for (const providerId of providerIds) {
     const previous = previousById.get(providerId);
     const next = nextById.get(providerId);
-    if (previous?.source !== 'user' && next?.source !== 'user') continue;
+    if (!shouldInspect(previous, next)) continue;
+    const realmChanged =
+      providerCredentialRealmKey(previous) !== providerCredentialRealmKey(next);
     const agents = new Set<AgentKind>([
       ...(previous?.agents ?? []),
       ...(next?.agents ?? []),
+      ...Object.keys(discoveredByProvider.get(providerId) ?? {}) as AgentKind[],
       ...Object.keys(resolvedByProvider.get(providerId) ?? {}) as AgentKind[],
     ]);
     for (const agent of agents) {
+      if (realmChanged) {
+        deleteProviderAgentSnapshot(discoveredByProvider, providerId, agent);
+      }
       if (
         providerResolveInputKey(previous, agent)
         !== providerResolveInputKey(next, agent)
       ) {
-        changedSlots.push({ providerId, agent });
+        changedResolveSlots.push({ providerId, agent });
+        deleteProviderAgentSnapshot(resolvedByProvider, providerId, agent);
       }
     }
   }
-  const changedResolveSlots = changedSlots.filter(
+  const applicableResolveSlots = changedResolveSlots.filter(
     (slot): slot is ModelResolveApplySlot => slot.agent !== 'pi',
   );
-  if (changedResolveSlots.length > 0) {
-    modelResolveApplySlotsInvalidator?.(changedResolveSlots);
+  if (applicableResolveSlots.length > 0) {
+    modelResolveApplySlotsInvalidator?.(applicableResolveSlots);
   }
-  for (const { providerId, agent } of changedSlots) {
-    const byAgent = resolvedByProvider.get(providerId);
-    if (!byAgent) continue;
-    delete byAgent[agent];
-    if (Object.values(byAgent).every((resolved) => resolved === undefined)) {
-      resolvedByProvider.delete(providerId);
-    }
-  }
+}
+
+function invalidateChangedCustomProviderOverlays(nextProviders: readonly Provider[]): void {
+  invalidateChangedProviderOverlays(
+    custom,
+    nextProviders,
+    (previous, next) => previous?.source === 'user' || next?.source === 'user',
+  );
+}
+
+function invalidateChangedBaseProviderOverlays(nextProviders: readonly Provider[]): void {
+  const bundledIds = new Set(BUNDLED_CATALOG.providers.map((provider) => provider.id));
+  const locallyShadowedIds = new Set(
+    custom
+      .filter((provider) => provider.source === 'user' && !bundledIds.has(provider.id))
+      .map((provider) => provider.id),
+  );
+  invalidateChangedProviderOverlays(
+    (base ?? BUNDLED_CATALOG).providers,
+    nextProviders,
+    (previous, next) => !locallyShadowedIds.has(previous?.id ?? next?.id ?? ''),
+  );
 }
 
 function applyResolvedOverlay(
@@ -692,8 +745,18 @@ function computeMerged(): Catalog {
   }
 
   // 自定义供应商先追加、再做通用发现 augment——顺序反了的话,自定义 OAuth 供应商
-  // 的发现模型永远合不进目录(map 只扫过内置列表)。
-  if (custom.length > 0) providers = [...providers, ...custom];
+  // 的发现模型永远合不进目录(map 只扫过内置列表)。远端后续新增的完整 Provider 若与
+  // 已存在的本地 custom id 冲突，本地身份卡是唯一可信的凭证归属，必须替换远端条目；
+  // 随客户端发布的 builtin id 仍为保留名，不能被历史/损坏的本地配置覆盖。
+  if (custom.length > 0) {
+    const bundledIds = new Set(BUNDLED_CATALOG.providers.map((provider) => provider.id));
+    const effectiveCustom = custom.filter((provider) => !bundledIds.has(provider.id));
+    const customIds = new Set(effectiveCustom.map((provider) => provider.id));
+    providers = [
+      ...providers.filter((provider) => !customIds.has(provider.id)),
+      ...effectiveCustom,
+    ];
+  }
 
   // 通用 OAuth 供应商的发现模型(additions-only,per provider × agent;内置与自定义同待遇)。
   if (discoveredByProvider.size > 0) {
@@ -950,6 +1013,7 @@ export function getCatalogModelContextWindow(
 
 /** 由 host 的目录加载器(ensureActiveCatalogLoaded)在拉取成功后写入基础目录。 */
 export function setActiveCatalog(catalog: Catalog): void {
+  invalidateChangedBaseProviderOverlays(catalog.providers);
   base = catalog;
   markChanged();
 }
@@ -971,11 +1035,13 @@ export function commitModelPlaneFromCatalog(catalog: Catalog): void {
           provider.id === 'xai' ? { ...provider, models: incomingXai.models } : provider,
         )
       : current.providers;
-  base = {
+  const nextBase = {
     ...current,
     providers,
     ...(catalog.modelRegistry ? { modelRegistry: catalog.modelRegistry } : {}),
   };
+  invalidateChangedBaseProviderOverlays(nextBase.providers);
+  base = nextBase;
   markChanged();
 }
 
@@ -1057,6 +1123,14 @@ export function setResolvedProviderModels(
 /** Drop every account-derived resolve overlay without touching live discovery membership. */
 export function clearResolvedProviderModels(): void {
   if (resolvedByProvider.size === 0) return;
+  resolvedByProvider.clear();
+  markChanged();
+}
+
+/** Drop every account/credential-derived generic discovery and resolve snapshot atomically. */
+export function clearAccountDerivedProviderModels(): void {
+  if (discoveredByProvider.size === 0 && resolvedByProvider.size === 0) return;
+  discoveredByProvider.clear();
   resolvedByProvider.clear();
   markChanged();
 }

@@ -12,7 +12,7 @@
  *   - setDiscoveredProviderModels 的 additions-only merge。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 import type { OAuthProviderDescriptor } from '@cindy/model-providers';
 
@@ -20,6 +20,7 @@ import {
   cancelGenericOAuthLogin,
   configureGenericOAuth,
   deriveModelsDiscoveryUrl,
+  genericOAuthCredentialRealm,
   hasGenericOAuthLogin,
   logoutGenericOAuth,
   removeGenericOAuthCredentialsReversibly,
@@ -61,6 +62,24 @@ const DEVICE_OAUTH: OAuthProviderDescriptor = {
   modelsDiscoveryUrl: 'https://api.acme.example/v1/models',
 };
 
+function oauthProvider(oauth: OAuthProviderDescriptor = OAUTH, id = 'acme', name = 'Acme') {
+  return {
+    id,
+    name,
+    source: 'user' as const,
+    auth: { method: 'oauth' as const, oauth },
+    routing: {
+      codex: {
+        upstream: 'https://api.acme.example/v1',
+        authStrategy: 'oauth-token' as const,
+      },
+    },
+  };
+}
+
+const ACME_PROVIDER = oauthProvider();
+const DEVICE_PROVIDER = oauthProvider(DEVICE_OAUTH, 'device', 'Device Provider');
+
 function memStorage(): GenericOAuthStorage & { map: Map<string, string> } {
   const map = new Map<string, string>();
   return {
@@ -81,7 +100,8 @@ function memStorage(): GenericOAuthStorage & { map: Map<string, string> } {
 let storage = memStorage();
 let nowMs = 1_000_000;
 let fetchCalls: { url: string; body?: string; headers?: Record<string, string> }[] = [];
-let fetchResponder: (url: string) => Response = () => new Response('{}', { status: 500 });
+let fetchResponder: (url: string) => Response | Promise<Response> = () =>
+  new Response('{}', { status: 500 });
 let openedUrls: string[] = [];
 
 beforeEach(() => {
@@ -115,30 +135,66 @@ afterEach(() => {
   setOAuthTokenReader(() => null);
 });
 
-function seedBlob(providerId: string, blob: Record<string, unknown>): void {
-  storage.map.set(providerId, JSON.stringify(blob));
+function seedBlob(provider: ReturnType<typeof oauthProvider>, blob: Record<string, unknown>): void {
+  storage.map.set(
+    provider.id,
+    JSON.stringify({
+      version: 2,
+      ...blob,
+      credential_realm: genericOAuthCredentialRealm(provider),
+    }),
+  );
   resetGenericOAuthMemoryCache(); // 让下次读走注入 storage
 }
 
 describe('blob 读写 / has / logout', () => {
+  it('credential realm 规范化默认 flow，并区分来源、描述符与凭证目标', () => {
+    const explicitFlow = oauthProvider({ ...OAUTH, flow: 'authorization-code' });
+    expect(genericOAuthCredentialRealm(explicitFlow)).toBe(
+      genericOAuthCredentialRealm(ACME_PROVIDER),
+    );
+    expect(genericOAuthCredentialRealm({ ...ACME_PROVIDER, source: 'builtin' })).not.toBe(
+      genericOAuthCredentialRealm(ACME_PROVIDER),
+    );
+    expect(
+      genericOAuthCredentialRealm(
+        oauthProvider({
+          ...OAUTH,
+          tokenUrl: 'https://auth2.acme.example/oauth2/token',
+        }),
+      ),
+    ).not.toBe(genericOAuthCredentialRealm(ACME_PROVIDER));
+    expect(
+      genericOAuthCredentialRealm({
+        ...ACME_PROVIDER,
+        routing: {
+          codex: {
+            ...ACME_PROVIDER.routing.codex,
+            upstream: 'https://api2.acme.example/v1',
+          },
+        },
+      }),
+    ).not.toBe(genericOAuthCredentialRealm(ACME_PROVIDER));
+  });
+
   it('无凭证 → has=false、token=null；写入后可读；logout 清空', () => {
-    expect(hasGenericOAuthLogin('acme')).toBe(false);
-    seedBlob('acme', { access_token: 'at-1' });
-    expect(hasGenericOAuthLogin('acme')).toBe(true);
-    expect(readCachedGenericOAuthAccessToken('acme', OAUTH)).toBe('at-1');
+    expect(hasGenericOAuthLogin(ACME_PROVIDER)).toBe(false);
+    seedBlob(ACME_PROVIDER, { access_token: 'at-1' });
+    expect(hasGenericOAuthLogin(ACME_PROVIDER)).toBe(true);
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBe('at-1');
     logoutGenericOAuth('acme');
-    expect(hasGenericOAuthLogin('acme')).toBe(false);
+    expect(hasGenericOAuthLogin(ACME_PROVIDER)).toBe(false);
     expect(storage.map.has('acme')).toBe(false);
   });
 
   it('坏 JSON blob 安全兜底为未登录', () => {
     storage.map.set('acme', 'not-json');
     resetGenericOAuthMemoryCache();
-    expect(hasGenericOAuthLogin('acme')).toBe(false);
+    expect(hasGenericOAuthLogin(ACME_PROVIDER)).toBe(false);
   });
 
   it('可回滚删除会在配置写失败后恢复原 OAuth blob', () => {
-    seedBlob('acme', { access_token: 'at-1', refresh_token: 'rt-1' });
+    seedBlob(ACME_PROVIDER, { access_token: 'at-1', refresh_token: 'rt-1' });
 
     const restore = removeGenericOAuthCredentialsReversibly('acme');
     expect(restore).not.toBeNull();
@@ -146,7 +202,7 @@ describe('blob 读写 / has / logout', () => {
     expect(restore?.()).toBe(true);
 
     resetGenericOAuthMemoryCache();
-    expect(readCachedGenericOAuthAccessToken('acme', OAUTH)).toBe('at-1');
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBe('at-1');
   });
 
   it('冷缓存严格快照不可读时在删除前中止，不把现有凭证误判成缺失', () => {
@@ -167,49 +223,86 @@ describe('blob 读写 / has / logout', () => {
   });
 
   it('回滚按原始字符串恢复持久 blob，同时恢复删除前的热缓存', () => {
-    const raw = '{ "access_token": "durable", "refresh_token": "rt" }';
+    const raw = JSON.stringify({
+      version: 2,
+      access_token: 'durable',
+      refresh_token: 'rt',
+      credential_realm: genericOAuthCredentialRealm(ACME_PROVIDER),
+    });
     storage.map.set('acme', raw);
     resetGenericOAuthMemoryCache();
-    expect(readCachedGenericOAuthAccessToken('acme', OAUTH)).toBe('durable');
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBe('durable');
 
     const restore = removeGenericOAuthCredentialsReversibly('acme');
     expect(restore?.()).toBe(true);
     expect(storage.map.get('acme')).toBe(raw);
-    expect(readCachedGenericOAuthAccessToken('acme', OAUTH)).toBe('durable');
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBe('durable');
   });
 
   it('凭证删除失败时保留当前登录态并返回失败', () => {
-    seedBlob('acme', { access_token: 'at-1' });
+    seedBlob(ACME_PROVIDER, { access_token: 'at-1' });
     storage.remove = () => false;
 
     expect(logoutGenericOAuth('acme')).toBe(false);
-    expect(hasGenericOAuthLogin('acme')).toBe(true);
+    expect(hasGenericOAuthLogin(ACME_PROVIDER)).toBe(true);
+  });
+
+  it('旧 blob 或同 id 不同来源/路由都不能复用已有 token', () => {
+    storage.map.set('acme', JSON.stringify({ access_token: 'legacy-unbound' }));
+    resetGenericOAuthMemoryCache();
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBeNull();
+
+    seedBlob(ACME_PROVIDER, { access_token: 'local-token' });
+    const publishedCollision = {
+      ...ACME_PROVIDER,
+      source: 'builtin' as const,
+      routing: {
+        codex: {
+          ...ACME_PROVIDER.routing.codex,
+          upstream: 'https://catalog.example/v1',
+        },
+      },
+    };
+    expect(hasGenericOAuthLogin(publishedCollision)).toBe(false);
+    expect(readCachedGenericOAuthAccessToken(publishedCollision)).toBeNull();
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBe('local-token');
   });
 });
 
 describe('临期刷新（单飞）', () => {
   it('临期 + refresh_token → 交换新 token 并落盘', async () => {
-    seedBlob('acme', { access_token: 'old', refresh_token: 'rt-1', expires_at: nowMs + 1_000 });
+    seedBlob(ACME_PROVIDER, {
+      access_token: 'old',
+      refresh_token: 'rt-1',
+      expires_at: nowMs + 1_000,
+    });
     fetchResponder = () =>
       new Response(
         JSON.stringify({ access_token: 'new', refresh_token: 'rt-2', expires_in: 3600 }),
         { status: 200 },
       );
-    await refreshGenericOAuthIfNeeded('acme', OAUTH);
-    expect(readCachedGenericOAuthAccessToken('acme', OAUTH)).toBe('new');
+    await refreshGenericOAuthIfNeeded(ACME_PROVIDER);
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBe('new');
     expect(fetchCalls[0]?.url).toBe(OAUTH.tokenUrl);
     expect(fetchCalls[0]?.body).toContain('grant_type=refresh_token');
     expect(fetchCalls[0]?.body).toContain('refresh_token=rt-1');
   });
 
   it('未临期 / 无 refresh_token → 不发请求', async () => {
-    seedBlob('acme', { access_token: 'ok', expires_at: nowMs + 10 * 60_000 });
-    await refreshGenericOAuthIfNeeded('acme', OAUTH);
+    seedBlob(ACME_PROVIDER, {
+      access_token: 'ok',
+      expires_at: nowMs + 10 * 60_000,
+    });
+    await refreshGenericOAuthIfNeeded(ACME_PROVIDER);
     expect(fetchCalls).toHaveLength(0);
   });
 
   it('刷新期间登出 → 不回写（撤销登出是禁止的）', async () => {
-    seedBlob('acme', { access_token: 'old', refresh_token: 'rt-1', expires_at: nowMs + 1_000 });
+    seedBlob(ACME_PROVIDER, {
+      access_token: 'old',
+      refresh_token: 'rt-1',
+      expires_at: nowMs + 1_000,
+    });
     fetchResponder = () => {
       // 刷新响应到达前用户登出。
       logoutGenericOAuth('acme');
@@ -217,17 +310,63 @@ describe('临期刷新（单飞）', () => {
         status: 200,
       });
     };
-    await refreshGenericOAuthIfNeeded('acme', OAUTH);
-    expect(hasGenericOAuthLogin('acme')).toBe(false);
+    await refreshGenericOAuthIfNeeded(ACME_PROVIDER);
+    expect(hasGenericOAuthLogin(ACME_PROVIDER)).toBe(false);
   });
 
   it('readCachedGenericOAuthAccessToken：临期时同步返回旧 token 并后台触发刷新', async () => {
-    seedBlob('acme', { access_token: 'old', refresh_token: 'rt-1', expires_at: nowMs + 1_000 });
+    seedBlob(ACME_PROVIDER, {
+      access_token: 'old',
+      refresh_token: 'rt-1',
+      expires_at: nowMs + 1_000,
+    });
     fetchResponder = () =>
       new Response(JSON.stringify({ access_token: 'new', expires_in: 3600 }), { status: 200 });
-    expect(readCachedGenericOAuthAccessToken('acme', OAUTH)).toBe('old'); // 不阻塞
-    await refreshGenericOAuthIfNeeded('acme', OAUTH); // 排队等后台那次完成（单飞去重）
-    expect(readCachedGenericOAuthAccessToken('acme', OAUTH)).toBe('new');
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBe('old'); // 不阻塞
+    await refreshGenericOAuthIfNeeded(ACME_PROVIDER); // 排队等后台那次完成（单飞去重）
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBe('new');
+  });
+
+  it('旧 realm 的在途刷新不能覆盖同 id 新 realm 凭证', async () => {
+    seedBlob(ACME_PROVIDER, {
+      access_token: 'old-a',
+      refresh_token: 'refresh-a',
+      expires_at: nowMs + 1_000,
+    });
+    let finishRefresh!: (response: Response) => void;
+    const refreshResponse = new Promise<Response>((resolve) => {
+      finishRefresh = resolve;
+    });
+    let markRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    fetchResponder = () => {
+      markRefreshStarted();
+      return refreshResponse;
+    };
+
+    const inflight = refreshGenericOAuthIfNeeded(ACME_PROVIDER);
+    await refreshStarted;
+    const providerB = {
+      ...ACME_PROVIDER,
+      routing: {
+        codex: {
+          ...ACME_PROVIDER.routing.codex,
+          upstream: 'https://api-b.acme.example/v1',
+        },
+      },
+    };
+    seedBlob(providerB, { access_token: 'token-b', refresh_token: 'refresh-b' });
+    finishRefresh(
+      new Response(JSON.stringify({ access_token: 'late-a', expires_in: 3600 }), {
+        status: 200,
+      }),
+    );
+    await inflight;
+
+    expect(readCachedGenericOAuthAccessToken(providerB)).toBe('token-b');
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBeNull();
   });
 });
 
@@ -252,10 +391,50 @@ describe('登录流与凭证落盘失败', () => {
         JSON.stringify({ access_token: 'at-new', refresh_token: 'rt', expires_in: 3600 }),
         { status: 200 },
       );
-    const res = await runGenericOAuthLogin({ id: 'acme', name: 'Acme' }, OAUTH);
+    const res = await runGenericOAuthLogin(ACME_PROVIDER);
     expect(res.ok).toBe(true);
-    expect(hasGenericOAuthLogin('acme')).toBe(true);
+    expect(hasGenericOAuthLogin(ACME_PROVIDER)).toBe(true);
     expect(JSON.parse(storage.map.get('acme')!).access_token).toBe('at-new');
+    expect(JSON.parse(storage.map.get('acme')!).credential_realm).toBe(
+      genericOAuthCredentialRealm(ACME_PROVIDER),
+    );
+    expect(JSON.parse(storage.map.get('acme')!).version).toBe(2);
+  });
+
+  it('owner/provider guard 在 token 交换期间失效时拒绝落盘', async () => {
+    autoAuthorize();
+    let current = true;
+    fetchResponder = () => {
+      current = false;
+      return new Response(JSON.stringify({ access_token: 'wrong-owner-token' }), { status: 200 });
+    };
+
+    const result = await runGenericOAuthLogin(ACME_PROVIDER, {
+      isCurrent: () => current,
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'login_cancelled' });
+    expect(storage.map.has('acme')).toBe(false);
+    expect(hasGenericOAuthLogin(ACME_PROVIDER)).toBe(false);
+  });
+
+  it('owner/provider guard 在回环监听启动期间失效时不会打开旧授权页', async () => {
+    let current = true;
+    configureGenericOAuth({
+      openExternal: async () => {
+        openedUrls.push('unexpected');
+        cancelGenericOAuthLogin('acme');
+      },
+    });
+
+    const login = runGenericOAuthLogin(ACME_PROVIDER, {
+      isCurrent: () => current,
+    });
+    current = false;
+
+    await expect(login).resolves.toEqual({ ok: false, reason: 'login_cancelled' });
+    expect(openedUrls).toEqual([]);
+    expect(storage.map.has('acme')).toBe(false);
   });
 
   it('迟到取消只回滚本次登录写入的凭证，不误删更新的 blob', async () => {
@@ -264,7 +443,7 @@ describe('登录流与凭证落盘失败', () => {
       new Response(JSON.stringify({ access_token: 'at-new', expires_in: 3600 }), { status: 200 });
     let rollback: (() => boolean) | undefined;
 
-    const res = await runGenericOAuthLogin({ id: 'acme', name: 'Acme' }, OAUTH, {
+    const res = await runGenericOAuthLogin(ACME_PROVIDER, {
       onCredentialPersisted: (fn) => {
         rollback = fn;
       },
@@ -283,7 +462,7 @@ describe('登录流与凭证落盘失败', () => {
       new Response(JSON.stringify({ access_token: 'at-new', expires_in: 3600 }), { status: 200 });
     let rollback: (() => boolean) | undefined;
 
-    await runGenericOAuthLogin({ id: 'acme', name: 'Acme' }, OAUTH, {
+    await runGenericOAuthLogin(ACME_PROVIDER, {
       onCredentialPersisted: (fn) => {
         rollback = fn;
       },
@@ -294,13 +473,66 @@ describe('登录流与凭证落盘失败', () => {
     expect(storage.map.has('acme')).toBe(false);
   });
 
+  it('取消回滚固定到登录开始时的 owner，不会在切号后误删新 owner 凭证', async () => {
+    autoAuthorize();
+    fetchResponder = () =>
+      new Response(JSON.stringify({ access_token: 'token-owner-a', expires_in: 3600 }), {
+        status: 200,
+      });
+    let currentOwner = 'owner-a';
+    const ownerMaps = new Map<string, Map<string, string>>();
+    const viewFor = (owner: string): GenericOAuthStorage => {
+      const map = ownerMaps.get(owner) ?? new Map<string, string>();
+      ownerMaps.set(owner, map);
+      return {
+        read: (id) => map.get(id) ?? null,
+        readStrict: (id) => map.get(id) ?? null,
+        write: (id, value) => {
+          map.set(id, value);
+          return true;
+        },
+        remove: (id) => {
+          map.delete(id);
+          return true;
+        },
+      };
+    };
+    const ownerScopedStorage: GenericOAuthStorage = {
+      read: (id) => viewFor(currentOwner).read(id),
+      readStrict: (id) => viewFor(currentOwner).readStrict(id),
+      write: (id, value) => viewFor(currentOwner).write(id, value),
+      remove: (id) => viewFor(currentOwner).remove(id),
+      capture: () => viewFor(currentOwner),
+    };
+    configureGenericOAuth({ storage: ownerScopedStorage });
+    let rollback: (() => boolean) | undefined;
+
+    const result = await runGenericOAuthLogin(ACME_PROVIDER, {
+      onCredentialPersisted: (fn) => {
+        rollback = fn;
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(JSON.parse(ownerMaps.get('owner-a')!.get('acme')!).access_token).toBe(
+      'token-owner-a',
+    );
+
+    currentOwner = 'owner-b';
+    ownerScopedStorage.write('acme', JSON.stringify({ access_token: 'token-owner-b' }));
+    expect(rollback?.()).toBe(true);
+    expect(ownerMaps.get('owner-a')!.has('acme')).toBe(false);
+    expect(JSON.parse(ownerMaps.get('owner-b')!.get('acme')!).access_token).toBe(
+      'token-owner-b',
+    );
+  });
+
   it('取消回滚无法严格核对持久 token 时报告失败并保留凭证', async () => {
     autoAuthorize();
     fetchResponder = () =>
       new Response(JSON.stringify({ access_token: 'at-new', expires_in: 3600 }), { status: 200 });
     let rollback: (() => boolean) | undefined;
 
-    await runGenericOAuthLogin({ id: 'acme', name: 'Acme' }, OAUTH, {
+    await runGenericOAuthLogin(ACME_PROVIDER, {
       onCredentialPersisted: (fn) => {
         rollback = fn;
       },
@@ -318,20 +550,24 @@ describe('登录流与凭证落盘失败', () => {
     storage.write = () => false;
     fetchResponder = () =>
       new Response(JSON.stringify({ access_token: 'at-new', expires_in: 3600 }), { status: 200 });
-    const res = await runGenericOAuthLogin({ id: 'acme', name: 'Acme' }, OAUTH);
+    const res = await runGenericOAuthLogin(ACME_PROVIDER);
     expect(res.ok).toBe(false);
     expect(res.reason).toContain('安全存储');
-    expect(hasGenericOAuthLogin('acme')).toBe(false);
+    expect(hasGenericOAuthLogin(ACME_PROVIDER)).toBe(false);
     expect(storage.map.has('acme')).toBe(false);
   });
 
   it('刷新时 storage.write 失败 → 内存态仍更新（会话不断链），盘上保持旧值', async () => {
-    seedBlob('acme', { access_token: 'old', refresh_token: 'rt-1', expires_at: nowMs + 1_000 });
+    seedBlob(ACME_PROVIDER, {
+      access_token: 'old',
+      refresh_token: 'rt-1',
+      expires_at: nowMs + 1_000,
+    });
     storage.write = () => false;
     fetchResponder = () =>
       new Response(JSON.stringify({ access_token: 'new', expires_in: 3600 }), { status: 200 });
-    await refreshGenericOAuthIfNeeded('acme', OAUTH);
-    expect(readCachedGenericOAuthAccessToken('acme', OAUTH)).toBe('new'); // 内存态已是新 token
+    await refreshGenericOAuthIfNeeded(ACME_PROVIDER);
+    expect(readCachedGenericOAuthAccessToken(ACME_PROVIDER)).toBe('new'); // 内存态已是新 token
     expect(JSON.parse(storage.map.get('acme')!).access_token).toBe('old'); // 盘上还是旧值
   });
 
@@ -371,11 +607,9 @@ describe('登录流与凭证落盘失败', () => {
     };
     const progress: unknown[] = [];
 
-    const result = await runGenericOAuthLogin(
-      { id: 'device', name: 'Device Provider' },
-      DEVICE_OAUTH,
-      { onProgress: (event) => progress.push(event) },
-    );
+    const result = await runGenericOAuthLogin(DEVICE_PROVIDER, {
+      onProgress: (event) => progress.push(event),
+    });
 
     expect(result).toEqual({ ok: true });
     expect(progress).toEqual([
@@ -417,11 +651,9 @@ describe('登录流与凭证落盘失败', () => {
       return new Response(JSON.stringify({ error: 'authorization_pending' }), { status: 400 });
     };
 
-    const result = await runGenericOAuthLogin(
-      { id: 'device', name: 'Device Provider' },
-      DEVICE_OAUTH,
-      { onProgress: () => undefined },
-    );
+    const result = await runGenericOAuthLogin(DEVICE_PROVIDER, {
+      onProgress: () => undefined,
+    });
 
     expect(result).toEqual({ ok: false, reason: 'device_code_expired' });
     expect(tokenPolls).toBe(2);
@@ -429,18 +661,54 @@ describe('登录流与凭证落盘失败', () => {
     expect(storage.map.has('device')).toBe(false);
   });
 
+  it('Device Grant：授权响应返回前 owner/provider guard 失效时不广播旧一次性代码', async () => {
+    let finishAuthorization!: (response: Response) => void;
+    fetchResponder = () =>
+      new Promise<Response>((resolve) => {
+        finishAuthorization = resolve;
+      });
+    let current = true;
+    const progress: unknown[] = [];
+
+    const login = runGenericOAuthLogin(DEVICE_PROVIDER, {
+      isCurrent: () => current,
+      onProgress: (event) => progress.push(event),
+    });
+    await vi.waitFor(() => expect(fetchCalls).toHaveLength(1));
+    current = false;
+    finishAuthorization(
+      new Response(
+        JSON.stringify({
+          device_code: 'secret-device-code',
+          user_code: 'ABCD-EFGH',
+          verification_uri: 'https://auth.acme.example/device',
+          expires_in: 600,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(login).resolves.toEqual({ ok: false, reason: 'login_cancelled' });
+    expect(progress).toEqual([]);
+    expect(fetchCalls).toHaveLength(1);
+    expect(storage.map.has('device')).toBe(false);
+  });
+
   it('Device Grant：标准 client_id/scope 不会被扩展参数覆盖', async () => {
     fetchResponder = () => new Response('{}', { status: 200 });
     const result = await runGenericOAuthLogin(
-      { id: 'device', name: 'Device Provider' },
-      {
-        ...DEVICE_OAUTH,
-        extraDeviceParams: {
-          client_id: 'wrong-client',
-          scope: 'wrong-scope',
-          audience: 'models',
+      oauthProvider(
+        {
+          ...DEVICE_OAUTH,
+          extraDeviceParams: {
+            client_id: 'wrong-client',
+            scope: 'wrong-scope',
+            audience: 'models',
+          },
         },
-      },
+        'device',
+        'Device Provider',
+      ),
     );
 
     expect(result).toEqual({
@@ -461,8 +729,7 @@ describe('登录流与凭证落盘失败', () => {
       },
     });
     const result = await runGenericOAuthLogin(
-      { id: 'acme', name: 'Acme' },
-      {
+      oauthProvider({
         ...OAUTH,
         authorizeUrl: `${OAUTH.authorizeUrl}?client_id=endpoint-client`,
         extraAuthParams: {
@@ -470,7 +737,7 @@ describe('登录流与凭证落盘失败', () => {
           scope: 'wrong-scope',
           audience: 'models',
         },
-      },
+      }),
     );
 
     expect(result).toEqual({ ok: false, reason: 'login_cancelled' });
@@ -492,11 +759,9 @@ describe('登录流与凭证落盘失败', () => {
         { status: 200 },
       );
 
-    const result = await runGenericOAuthLogin(
-      { id: 'device', name: 'Device Provider' },
-      DEVICE_OAUTH,
-      { onProgress: () => cancelGenericOAuthLogin('device') },
-    );
+    const result = await runGenericOAuthLogin(DEVICE_PROVIDER, {
+      onProgress: () => cancelGenericOAuthLogin('device'),
+    });
 
     expect(result).toEqual({ ok: false, reason: 'login_cancelled' });
     expect(fetchCalls).toHaveLength(1);
@@ -515,10 +780,7 @@ describe('登录流与凭证落盘失败', () => {
         { status: 200 },
       );
 
-    const result = await runGenericOAuthLogin(
-      { id: 'device', name: 'Device Provider' },
-      DEVICE_OAUTH,
-    );
+    const result = await runGenericOAuthLogin(DEVICE_PROVIDER);
     expect(result).toEqual({
       ok: false,
       reason: 'invalid_device_authorization_response',
@@ -528,12 +790,12 @@ describe('登录流与凭证落盘失败', () => {
 
 describe('discoverGenericOAuthModels', () => {
   it('解析 {data:[{id}]} 形状并去重', async () => {
-    seedBlob('acme', { access_token: 'at' });
+    seedBlob(ACME_PROVIDER, { access_token: 'at' });
     fetchResponder = () =>
       new Response(JSON.stringify({ data: [{ id: 'm-1' }, { id: 'm-2' }, { id: 'm-1' }] }), {
         status: 200,
       });
-    const models = await discoverGenericOAuthModels('acme', OAUTH);
+    const models = await discoverGenericOAuthModels(ACME_PROVIDER);
     expect(models).toEqual([
       { id: 'm-1', name: 'm-1' },
       { id: 'm-2', name: 'm-2' },
@@ -541,35 +803,37 @@ describe('discoverGenericOAuthModels', () => {
   });
 
   it('未登录 / 非 2xx / 坏形状 → null', async () => {
-    expect(await discoverGenericOAuthModels('acme', OAUTH)).toBeNull(); // 未登录
-    seedBlob('acme', { access_token: 'at' });
+    expect(await discoverGenericOAuthModels(ACME_PROVIDER)).toBeNull(); // 未登录
+    seedBlob(ACME_PROVIDER, { access_token: 'at' });
     fetchResponder = () => new Response('{}', { status: 401 });
-    expect(await discoverGenericOAuthModels('acme', OAUTH)).toBeNull();
+    expect(await discoverGenericOAuthModels(ACME_PROVIDER)).toBeNull();
     fetchResponder = () => new Response('{"weird":true}', { status: 200 });
-    expect(await discoverGenericOAuthModels('acme', OAUTH)).toBeNull();
+    expect(await discoverGenericOAuthModels(ACME_PROVIDER)).toBeNull();
   });
 
   it('cc-wire 发现请求带 anthropic-version(缺失会被 Anthropic 兼容端点 400 拒);codex/缺省不带', async () => {
-    seedBlob('acme', { access_token: 'at' });
+    seedBlob(ACME_PROVIDER, { access_token: 'at' });
     fetchResponder = () => new Response(JSON.stringify({ data: [{ id: 'm' }] }), { status: 200 });
-    await discoverGenericOAuthModels('acme', OAUTH, undefined, 'claude-code');
+    await discoverGenericOAuthModels(ACME_PROVIDER, 'claude-code');
     expect(fetchCalls[0]?.headers).toEqual({
       authorization: 'Bearer at',
       'anthropic-version': '2023-06-01',
     });
-    await discoverGenericOAuthModels('acme', OAUTH, undefined, 'codex');
+    await discoverGenericOAuthModels(ACME_PROVIDER, 'codex');
     expect(fetchCalls[1]?.headers).toEqual({ authorization: 'Bearer at' });
-    await discoverGenericOAuthModels('acme', OAUTH);
+    await discoverGenericOAuthModels(ACME_PROVIDER);
     expect(fetchCalls[2]?.headers).toEqual({ authorization: 'Bearer at' });
   });
 
-  it('显式 discoveryUrl 优先于描述符声明；两者皆缺 → null 不发请求', async () => {
-    seedBlob('acme', { access_token: 'at' });
-    fetchResponder = () => new Response(JSON.stringify({ data: [{ id: 'm' }] }), { status: 200 });
-    await discoverGenericOAuthModels('acme', OAUTH, 'https://derived.example/v1/models');
-    expect(fetchCalls[0]?.url).toBe('https://derived.example/v1/models');
+  it('发现目标只能来自描述符或当前 agent 路由；两者皆缺 → null 不发请求', async () => {
     const noDiscovery = { ...OAUTH, modelsDiscoveryUrl: undefined };
-    expect(await discoverGenericOAuthModels('acme', noDiscovery)).toBeNull();
+    const derivedProvider = oauthProvider(noDiscovery);
+    derivedProvider.routing.codex.upstream = 'https://derived.example/v1';
+    seedBlob(derivedProvider, { access_token: 'at' });
+    fetchResponder = () => new Response(JSON.stringify({ data: [{ id: 'm' }] }), { status: 200 });
+    await discoverGenericOAuthModels(derivedProvider, 'codex');
+    expect(fetchCalls[0]?.url).toBe('https://derived.example/v1/models');
+    expect(await discoverGenericOAuthModels(oauthProvider(noDiscovery))).toBeNull();
     expect(fetchCalls).toHaveLength(1); // 第二次没发请求
   });
 });
@@ -763,11 +1027,18 @@ describe('oauth-token 路由分支', () => {
       ],
     });
     setSessionProvider('sess-1', 'acme');
-    setOAuthTokenReader((id) => (id === 'acme' ? 'at-x' : null));
+    const tokenReader = vi.fn((provider) => (provider.id === 'acme' ? 'at-x' : null));
+    setOAuthTokenReader(tokenReader);
     // oauth-token 分支同步返回；await 兼容联合返回类型（provider-oauth-header 分支才是 Promise）。
     const d = await resolveSessionRouteDecision('sess-1', 'claude-code', null);
     expect(d?.headerOverride?.authorization).toBe('Bearer at-x');
     expect(d?.upstreamOverride).toBe('https://api.acme.example');
+    expect(tokenReader).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'acme',
+        routing: { 'claude-code': routing },
+      }),
+    );
   });
 });
 
@@ -875,7 +1146,7 @@ describe('close() 回执路径(裸 done 消除)', () => {
         })) as typeof fetch,
     });
 
-    const login = runGenericOAuthLogin({ id: 'acme', name: 'Acme' }, OAUTH);
+    const login = runGenericOAuthLogin(ACME_PROVIDER);
     await started;
     cancelGenericOAuthLogin('acme');
     const res = await login;

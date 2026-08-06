@@ -16,7 +16,7 @@ import {
   cancelCodexAuthModeChange,
 } from '../maker-host/index.js';
 import {
-  clearResolvedProviderModels,
+  clearAccountDerivedProviderModels,
   setModelResolveApplySlotsInvalidator,
   setXdGatewayModels,
 } from '../maker-host/active-catalog.js';
@@ -382,7 +382,7 @@ export function initModelAccess(): void {
       // 先同步作废旧身份已发出的结果并清内存，再清 overlay。持久化 LKG 物理落在
       // ownerScopedUserDataPath 下，新身份无法读取；旧回包也有 owner generation 闸。
       invalidateModelResolveApplyState();
-      clearResolvedProviderModels();
+      clearAccountDerivedProviderModels();
       applyGatewayModels([]);
     }
     lastAuthUserId = isAuthenticated ? (userId ?? lastAuthUserId) : null;

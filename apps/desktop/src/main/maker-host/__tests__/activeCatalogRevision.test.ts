@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BUNDLED_CATALOG, buildUserProvider } from '@cindy/model-providers';
 
 import {
+  clearAccountDerivedProviderModels,
   clearResolvedProviderModels,
   commitModelPlaneFromCatalog,
   getActiveCatalog,
@@ -77,6 +78,60 @@ describe('active catalog revision', () => {
     expect(listener).toHaveBeenCalledOnce();
     expect(listener.mock.results[0]?.value).toMatchObject({ revision: start + 1 });
     expect(listener.mock.results[0]?.value.ids).toContain('claude-opus-next');
+  });
+
+  it('keeps one local identity when a remote-added provider later collides with its id', () => {
+    setActiveCatalog({
+      version: '3',
+      providers: [
+        {
+          id: 'custom-collision',
+          name: 'Remote Catalog Provider',
+          source: 'builtin',
+          agents: ['codex'],
+          auth: { method: 'apiKey' },
+          routing: {
+            codex: {
+              upstream: 'https://attacker.example/v1',
+              authStrategy: 'api-key-header',
+            },
+          },
+          models: {
+            codex: [
+              {
+                id: 'collision-model',
+                name: 'Remote Model',
+                contextWindow: 100_000,
+                efforts: [],
+                defaultEffort: null,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    setCustomProviders([
+      buildUserProvider({
+        id: 'custom-collision',
+        name: 'Local Custom Provider',
+        runtimes: {
+          codex: {
+            baseUrl: 'https://local.example/v1',
+            models: [{ id: 'collision-model', name: 'Local Model' }],
+          },
+        },
+      }),
+    ]);
+
+    const matches = getActiveCatalog().providers.filter(
+      (provider) => provider.id === 'custom-collision',
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({
+      name: 'Local Custom Provider',
+      source: 'user',
+      routing: { codex: { upstream: 'https://local.example/v1' } },
+    });
   });
 
   it('resolved overlay changes fields without adding, deleting, or reordering discovery membership', () => {
@@ -322,6 +377,156 @@ describe('active catalog revision', () => {
       .models.codex![0]!;
     expect(recreated.contextWindow).toBe(200_000);
     expect(recreated).not.toHaveProperty('source');
+  });
+
+  it('drops discovery and resolve snapshots when a custom provider reuses its id for a new realm', () => {
+    const providerId = 'realm-reused-user';
+    const buildProvider = (baseUrl: string) => buildUserProvider({
+      id: providerId,
+      name: 'Realm Reused User',
+      runtimes: {
+        codex: {
+          baseUrl,
+          models: [{ id: 'vendor/static', name: 'Static Model' }],
+        },
+      },
+    });
+    setCustomProviders([buildProvider('https://owner-a.example/v1')]);
+    setDiscoveredProviderModels(providerId, 'codex', [
+      {
+        id: 'vendor/private-a',
+        name: 'Private A',
+        contextWindow: 200_000,
+        efforts: [],
+        defaultEffort: null,
+      },
+    ]);
+    const ownerAIds = getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+      .models.codex!.map((model) => model.id);
+    setResolvedProviderModels(
+      providerId,
+      'codex',
+      ['vendor/static'],
+      [{
+        id: 'vendor/static',
+        name: 'Resolved A',
+        contextWindow: 1_000_000,
+        efforts: [],
+        defaultEffort: null,
+      }],
+      'owner-a-revision',
+      ownerAIds,
+    );
+    expect(ownerAIds).toContain('vendor/private-a');
+
+    setCustomProviders([buildProvider('https://owner-b.example/v1')]);
+
+    const ownerBModels = getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+      .models.codex!;
+    expect(ownerBModels.map((model) => model.id)).toEqual(['vendor/static']);
+    expect(ownerBModels[0]).toMatchObject({ name: 'Static Model', contextWindow: 200_000 });
+    expect(ownerBModels[0]).not.toHaveProperty('source');
+  });
+
+  it('drops base-provider discovery and resolve snapshots when its credential realm changes', () => {
+    const providerId = 'remote-realm-provider';
+    const catalogFor = (upstream: string) => ({
+      version: '3',
+      providers: [{
+        id: providerId,
+        name: 'Remote Realm Provider',
+        source: 'builtin' as const,
+        agents: ['codex' as const],
+        auth: {
+          method: 'oauth' as const,
+          oauth: {
+            authorizeUrl: 'https://auth.example/authorize',
+            tokenUrl: 'https://auth.example/token',
+            clientId: 'remote-client',
+            scopes: 'models.read',
+          },
+        },
+        routing: { codex: { upstream, authStrategy: 'oauth-token' as const } },
+        models: {
+          codex: [{
+            id: 'vendor/static',
+            name: 'Static Model',
+            contextWindow: 200_000,
+            efforts: [],
+            defaultEffort: null,
+          }],
+        },
+      }],
+    });
+    setActiveCatalog(catalogFor('https://owner-a.example/v1'));
+    setDiscoveredProviderModels(providerId, 'codex', [
+      {
+        id: 'vendor/private-a',
+        name: 'Private A',
+        contextWindow: 200_000,
+        efforts: [],
+        defaultEffort: null,
+      },
+    ]);
+    const ownerAIds = getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+      .models.codex!.map((model) => model.id);
+    setResolvedProviderModels(
+      providerId,
+      'codex',
+      ['vendor/static'],
+      [{
+        id: 'vendor/static',
+        name: 'Resolved A',
+        contextWindow: 1_000_000,
+        efforts: [],
+        defaultEffort: null,
+      }],
+      'owner-a-revision',
+      ownerAIds,
+    );
+
+    setActiveCatalog(catalogFor('https://owner-b.example/v1'));
+
+    const ownerBModels = getActiveCatalog().providers.find((provider) => provider.id === providerId)!
+      .models.codex!;
+    expect(ownerBModels.map((model) => model.id)).toEqual(['vendor/static']);
+    expect(ownerBModels[0]).toMatchObject({ name: 'Static Model', contextWindow: 200_000 });
+    expect(ownerBModels[0]).not.toHaveProperty('source');
+  });
+
+  it('clears generic discovery and resolve snapshots at an account boundary', () => {
+    setDiscoveredProviderModels('xai', 'codex', [
+      {
+        id: 'xai/account-a-only',
+        name: 'Account A Only',
+        contextWindow: 200_000,
+        efforts: [],
+        defaultEffort: null,
+      },
+    ]);
+    const accountAIds = getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
+      .models.codex!.map((model) => model.id);
+    setResolvedProviderModels(
+      'xai',
+      'codex',
+      ['xai/account-a-only'],
+      [{
+        id: 'xai/account-a-only',
+        name: 'Resolved Account A',
+        contextWindow: 1_000_000,
+        efforts: [],
+        defaultEffort: null,
+      }],
+      'account-a-revision',
+      accountAIds,
+    );
+
+    clearAccountDerivedProviderModels();
+
+    expect(
+      getActiveCatalog().providers.find((provider) => provider.id === 'xai')!
+        .models.codex!.some((model) => model.id === 'xai/account-a-only'),
+    ).toBe(false);
   });
 
   it('clears a changed Pi overlay without forwarding a nonexistent resolve slot', () => {

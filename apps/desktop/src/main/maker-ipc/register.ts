@@ -607,6 +607,7 @@ import {
   cancelGenericOAuthLogin,
   deriveModelsDiscoveryUrl,
   discoverGenericOAuthModelsDetailed,
+  genericOAuthCredentialRealm,
   logoutGenericOAuth,
   removeGenericOAuthCredentialsReversibly,
   runGenericOAuthLogin,
@@ -5031,7 +5032,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // fire-and-forget、flag 门控、失败静默降级;overlay 字段映射与 OAuth 发现路径一致。
   async function resolveSavedCustomProviderModels(providerId: string): Promise<void> {
     if (process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1') return;
+    const ownerAtStart = getActiveAppSession();
     const cfg = await getCustomProvider(providerId);
+    const ownerAfterRead = getActiveAppSession();
+    if (
+      ownerAfterRead.dataOwnerId !== ownerAtStart.dataOwnerId
+      || ownerAfterRead.generation !== ownerAtStart.generation
+    ) return;
     if (!cfg) return;
     // 同一 provider 的支持 runtime 合并成一次 entries[] resolve；结果仍按 agent 顺序应用，
     // 并累积把 modalities/capabilities gap-fill 回 config，末尾只写一次，避免并发写同一配置。
@@ -5357,8 +5364,22 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       const provider = getActiveCatalog().providers.find((p) => p.id === providerId);
       const oauth = provider?.auth.oauth;
       if (!provider || !oauth) throw new Error(`provider '${providerId}' has no oauth descriptor`);
+      const loginRealm = genericOAuthCredentialRealm(provider);
+      const isOAuthRealmCurrent = (): boolean => {
+        if (!isCurrent()) return false;
+        const current = getActiveCatalog().providers.find(
+          (candidate) => candidate.id === providerId,
+        );
+        return current !== undefined && genericOAuthCredentialRealm(current) === loginRealm;
+      };
       let rollbackCredentials: (() => boolean) | undefined;
-      const result = await runGenericOAuthLogin({ id: provider.id, name: provider.name }, oauth, {
+      const rollbackCancelledCredentials = (): void => {
+        if (!rollbackCredentials || !rollbackCredentials()) {
+          throwIpcError('INTERNAL', 'failed to remove credentials from cancelled OAuth login');
+        }
+      };
+      const result = await runGenericOAuthLogin(provider, {
+        isCurrent: isOAuthRealmCurrent,
         onProgress: (progress) =>
           broadcastToAllWindows(MAKER_PUSH.PROVIDER_OAUTH_PROGRESS, {
             providerId,
@@ -5368,7 +5389,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           rollbackCredentials = rollback;
         },
       });
-      if (result.ok && isCurrent()) {
+      if (result.ok && !isOAuthRealmCurrent()) {
+        rollbackCancelledCredentials();
+        return { ok: false, reason: 'login_cancelled' };
+      }
+      if (result.ok && isOAuthRealmCurrent()) {
         // 授权成功后按 agent 自动发现模型（与内置订阅体验统一,用户不必手填模型）:
         // 发现端点 = 描述符显式声明 ?? 由该 runtime 的 baseUrl 推导（…/v1/models）。
         // 自定义供应商的发现结果 additions-only 持久化进配置（重启后仍在）;内置供应商走
@@ -5385,7 +5410,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           }> = [];
           let customChanged = false;
           for (const agent of provider.agents) {
-            if (!isCurrent()) break;
+            if (!isOAuthRealmCurrent()) break;
             const route = provider.routing[agent];
             const upstream = route?.upstream;
             const url =
@@ -5396,9 +5421,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             if (!fetched.has(key))
               fetched.set(
                 key,
-                await discoverGenericOAuthModelsDetailed(providerId, oauth, url, agent),
+                await discoverGenericOAuthModelsDetailed(provider, agent),
               );
-            if (!isCurrent()) break;
+            if (!isOAuthRealmCurrent()) break;
             const models = fetched.get(key);
             if (!models || models.length === 0) continue;
             if (
@@ -5462,10 +5487,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 defaultEnabled: false,
               };
             });
-            if (!isCurrent()) break;
+            if (!isOAuthRealmCurrent()) break;
             if (provider.source === 'user') {
               const cfg = await getCustomProvider(providerId);
-              if (!isCurrent()) break;
+              if (!isOAuthRealmCurrent()) break;
               if (cfg) {
                 // 只把厂商真实上报的 contextWindow 持久化进配置,不写 effectiveModels 的
                 // 200K 兜底(那是缺省显示值,不是真实窗口)。
@@ -5495,12 +5520,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 );
                 if (nextCfg) {
                   const applied = await updateCustomProviderIfUnchanged(providerId, cfg, nextCfg);
-                  if (!isCurrent()) break;
+                  if (!isOAuthRealmCurrent()) break;
                   if (applied) customChanged = true;
                 }
               }
             } else {
-              if (!isCurrent()) break;
+              if (!isOAuthRealmCurrent()) break;
               const additions = effectiveModels.map((m) => ({
                 id: m.id,
                 name: m.name,
@@ -5531,7 +5556,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             );
             for (const [index, { agent, discoveredModelIds }] of pendingResolves.entries()) {
               const metadata = resolvedEntries[index];
-              if (!metadata || !isCurrent() || !isLatestModelResolveResult(metadata)) continue;
+              if (!metadata || !isOAuthRealmCurrent() || !isLatestModelResolveResult(metadata)) continue;
               const overlay = metadata.entry.models.map((m) => ({
                 id: m.id,
                 name: m.name,
@@ -5562,11 +5587,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               );
             }
           }
-          if (customChanged && isCurrent()) await refreshCustomProvidersIntoCatalog();
+          if (customChanged && isOAuthRealmCurrent()) await refreshCustomProvidersIntoCatalog();
         } catch {
           /* 发现失败保持纯静态目录，不影响登录结果 */
         }
-        if (isCurrent()) broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {});
+        if (!isOAuthRealmCurrent()) {
+          rollbackCancelledCredentials();
+          return { ok: false, reason: 'login_cancelled' };
+        }
+        broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {});
       }
       return {
         ...result,

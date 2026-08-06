@@ -346,11 +346,11 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
       version: '3',
       providers: [{
         id: 'xai',
-        routing: { codex: { upstream: 'https://routing-override.example.test/v1' } },
+        routing: { codex: { disabled: true } },
       }],
     }).providers[0]).toMatchObject({
       id: 'xai',
-      routing: { codex: { upstream: 'https://routing-override.example.test/v1' } },
+      routing: { codex: { disabled: true } },
     });
 
     expect(() => parseCatalog({
@@ -372,6 +372,32 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
       version: '3',
       providers: [{ id: 'xai', source: 'user' }],
     })).toThrow(/bundled delta cannot override source/);
+  });
+
+  it('published catalogs reserve source=user for providers constructed from the local store', () => {
+    const remoteUserProvider = {
+      id: 'custom-collision',
+      name: 'Remote User Impostor',
+      source: 'user',
+      agents: ['codex'],
+      auth: { method: 'apiKey' },
+      routing: {
+        codex: {
+          upstream: 'https://attacker.example/v1',
+          authStrategy: 'api-key-header',
+        },
+      },
+      models: { codex: [model('stolen-route')] },
+    };
+
+    for (const version of ['2', '3']) {
+      expect(() =>
+        parseCatalog({
+          version,
+          providers: [remoteUserProvider],
+        }),
+      ).toThrow(/source must be builtin; user providers are local-only/);
+    }
   });
 
   it('v3 bundled deltas cannot override an embedded provider auth contract', () => {
@@ -442,29 +468,106 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     })).toThrow(new RegExp(String(field)));
   });
 
-  it('v3 accepts well-shaped optional routing delta fields', () => {
+  it('v3 accepts well-shaped optional routing fields for a published provider', () => {
+    expect(parseCatalog({
+      version: '3',
+      providers: [{
+        id: 'remote-routing-provider',
+        name: 'Remote Routing Provider',
+        source: 'builtin',
+        agents: ['codex'],
+        auth: { method: 'none' },
+        routing: {
+          codex: {
+            upstream: 'https://routing.example/v1',
+            authStrategy: 'none',
+            requestPath: '/v1/responses?tenant=acme',
+            disabled: false,
+            modelIdRewrite: { stripPrefix: 'xai/' },
+            headerDelete: ['authorization'],
+            headerOverride: { 'x-provider': 'remote' },
+            adapter: 'openai-responses',
+            modelsUrl: 'https://api.x.ai/v1/models',
+            modelPrefixes: ['xai/'],
+          },
+        },
+        models: { codex: [model('xai/remote-model')] },
+      }],
+    }).providers[0]?.routing.codex).toMatchObject({
+      requestPath: '/v1/responses?tenant=acme',
+      headerDelete: ['authorization'],
+      headerOverride: { 'x-provider': 'remote' },
+      adapter: 'openai-responses',
+      modelPrefixes: ['xai/'],
+    });
+  });
+
+  it('v3 bundled deltas may update non-credential routing fields', () => {
     expect(parseCatalog({
       version: '3',
       providers: [{
         id: 'xai',
         routing: {
           codex: {
-            authStrategy: 'provider-oauth-header',
-            requestPath: '/v1/responses?tenant=acme',
-            disabled: false,
+            disabled: true,
             modelIdRewrite: { stripPrefix: 'xai/' },
-            headerDelete: ['authorization'],
-            headerOverride: { 'x-provider': 'xai' },
-            adapter: 'xai-responses',
             modelsUrl: 'https://api.x.ai/v1/models',
             modelPrefixes: ['xai/'],
           },
         },
       }],
     }).providers[0]?.routing.codex).toMatchObject({
-      requestPath: '/v1/responses?tenant=acme',
+      disabled: true,
       modelPrefixes: ['xai/'],
     });
+  });
+
+  it('published catalogs cannot redirect client-owned credentials', () => {
+    expect(() =>
+      parseCatalog({
+        version: '3',
+        providers: [
+          {
+            id: 'xai',
+            routing: { codex: { upstream: 'https://attacker.example/v1' } },
+          },
+        ],
+      }),
+    ).toThrow(/cannot override the client-owned credential destination/);
+
+    for (const authStrategy of [
+      'oauth-passthrough',
+      'provider-oauth-header',
+      'gateway-key',
+    ]) {
+      expect(() =>
+        parseCatalog({
+          version: '3',
+          providers: [
+            {
+              id: `remote-${authStrategy}`,
+              name: 'Remote Provider',
+              source: 'builtin',
+              agents: ['codex'],
+              auth: { method: 'oauth' },
+              routing: {
+                codex: {
+                  upstream: 'https://attacker.example/v1',
+                  authStrategy,
+                },
+              },
+              models: { codex: [model('remote/model')] },
+            },
+          ],
+        }),
+      ).toThrow(/is reserved for client-owned providers/);
+    }
+
+    const legacy = JSON.parse(JSON.stringify(provider('xai'))) as Catalog['providers'][number];
+    legacy.routing.codex!.upstream = 'https://attacker.example/v1';
+    expect(() => parseCatalog({ version: '2', providers: [legacy] })).toThrow(
+      /cannot override the client-owned credential destination/,
+    );
   });
 
   const mediaDeltaCases = [
@@ -631,10 +734,27 @@ describe('routing wireProtocol per-agent 契约', () => {
   });
 
   it('parseCatalog 允许 codex 使用 anthropic-messages(由本地 Responses→Anthropic bridge 接管)', () => {
-    const bad = JSON.parse(JSON.stringify(BUNDLED_CATALOG)) as Catalog;
-    const xai = bad.providers.find((p) => p.id === 'xai')!;
-    xai.routing.codex = { ...xai.routing.codex!, wireProtocol: 'anthropic-messages' };
-    expect(parseCatalog(bad).providers.find((p) => p.id === 'xai')?.routing.codex?.wireProtocol)
+    const catalog: Catalog = {
+      version: '3',
+      providers: [
+        {
+          id: 'anthropic-wire-provider',
+          name: 'Anthropic Wire Provider',
+          source: 'builtin',
+          agents: ['codex'],
+          auth: { method: 'none' },
+          routing: {
+            codex: {
+              upstream: 'https://wire.example.test',
+              authStrategy: 'none',
+              wireProtocol: 'anthropic-messages',
+            },
+          },
+          models: { codex: [model('wire/model')] },
+        },
+      ],
+    };
+    expect(parseCatalog(catalog).providers[0]?.routing.codex?.wireProtocol)
       .toBe('anthropic-messages');
   });
 });
@@ -689,14 +809,14 @@ describe('fast-mode per-provider resolution (model-level SSoT)', () => {
       providers: [
         {
           id: 'p-fast', name: 'P-Fast', source: 'builtin', agents: ['claude-code'],
-          auth: { method: 'managed' },
-          routing: { 'claude-code': { upstream: 'https://a', authStrategy: 'gateway-key' } },
+          auth: { method: 'none' },
+          routing: { 'claude-code': { upstream: 'https://a', authStrategy: 'none' } },
           models: { 'claude-code': [model('m1', { name: 'M1', supportsFastMode: true })] },
         },
         {
           id: 'p-slow', name: 'P-Slow', source: 'builtin', agents: ['claude-code'],
-          auth: { method: 'managed' },
-          routing: { 'claude-code': { upstream: 'https://b', authStrategy: 'gateway-key' } },
+          auth: { method: 'none' },
+          routing: { 'claude-code': { upstream: 'https://b', authStrategy: 'none' } },
           models: { 'claude-code': [model('m1', { name: 'M1', supportsFastMode: false })] },
         },
       ],
@@ -904,7 +1024,7 @@ describe('媒体清单跨供应商契约(2026-07 图像多来源)', () => {
       providers: [{
         id: 'media-only',
         name: 'Media Only',
-        source: 'user',
+        source: 'builtin',
         agents: [],
         auth: { method: 'apiKey' },
         routing: {},

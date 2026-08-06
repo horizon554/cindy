@@ -1557,6 +1557,7 @@ export function registerProviderHandlers(
     // 与重新发现一样，必须先确认调用方是 Cindy 自有顶层页面，避免 WebView / 子 frame
     // 把 Main 变成可向任意 http(s) 地址发凭证请求的代理。
     assertTrustedProviderMutationSender(event);
+    const ownerAtIngress = captureProviderOwnerSession();
     const parsed = parseModelsFetchInput(input);
     if (!parsed) throwIpcError('INVALID_PARAMS', 'invalid models-fetch input');
     // 已保存供应商:main 侧按 (id, agent) 并入 main-only 鉴权请求头,无需 renderer 回读
@@ -1588,6 +1589,7 @@ export function registerProviderHandlers(
       }
     }
     const result = await deps.fetchModels(parsed);
+    assertProviderMutationOwner(ownerAtIngress);
     if (result.ok && result.models && result.models.length > 0 && !parsed.deferResolve) {
       resolveFetchedModelsInBackground(parsed, result);
     }
@@ -1599,13 +1601,16 @@ export function registerProviderHandlers(
   // 仍只允许 Cindy 自有顶层页面触发；provider id 做有界格式校验，缺接线 fail closed。
   registry.handle(MAKER_INVOKE.PROVIDER_MODELS_RESOLVE_SAVED, async (event, providerId: unknown) => {
     assertTrustedProviderMutationSender(event);
+    const ownerAtIngress = captureProviderOwnerSession();
     if (typeof providerId !== 'string' || !/^[a-z0-9_-]+$/.test(providerId)) {
       throwIpcError('INVALID_PARAMS', 'invalid saved provider id');
     }
     if (!deps.resolveSavedProviderModels) {
       throwIpcError('INTERNAL', 'saved provider model resolve is not wired');
     }
+    assertProviderMutationOwner(ownerAtIngress);
     await deps.resolveSavedProviderModels(providerId);
+    assertProviderMutationOwner(ownerAtIngress);
     return { ok: true };
   });
 
@@ -1687,14 +1692,18 @@ export function registerProviderHandlers(
     if (providerConfigMutationCounts.has(id)) {
       return { ok: false, reason: 'provider_update_in_progress' };
     }
+    const ownerAtIngress = captureProviderOwnerSession();
     const generation = beginOAuthMutation(id);
+    const isCurrent = (): boolean =>
+      isOAuthMutationCurrent(id, generation)
+      && providerMutationOwnerMatches(ownerAtIngress);
     let owner: ProviderOAuthOwner | null = null;
     try {
       if (ownerId && sender) {
         owner = registerProviderOAuthOwner(id, generation, sender, ownerId);
       }
-      const result = await deps.oauthLogin(id, () => isOAuthMutationCurrent(id, generation));
-      if (isOAuthMutationCurrent(id, generation)) {
+      const result = await deps.oauthLogin(id, isCurrent);
+      if (isCurrent()) {
         return { ok: result.ok, ...(result.reason ? { reason: result.reason } : {}) };
       }
       if (result.ok && result.rollbackCredentials && !result.rollbackCredentials()) {
@@ -1711,6 +1720,7 @@ export function registerProviderHandlers(
   });
   registry.handle(MAKER_INVOKE.PROVIDER_OAUTH_LOGOUT, async (_event, providerId: unknown) => {
     const id = requireProviderId(providerId);
+    const ownerAtIngress = captureProviderOwnerSession();
     const generation = beginOAuthMutation(id);
     // Invalidate and stop an active flow immediately, then serialize credential deletion with
     // config CRUD so a failed earlier update cannot restore a token after this explicit logout.
@@ -1718,8 +1728,11 @@ export function registerProviderHandlers(
     try {
       return await withProviderConfigMutation(id, async () => {
         try {
+          assertProviderMutationOwner(ownerAtIngress);
           await deps.oauthLogout(id);
+          assertProviderMutationOwner(ownerAtIngress);
           await afterChange();
+          assertProviderMutationOwner(ownerAtIngress);
           return { ok: true };
         } catch (err) {
           throwIpcError('INTERNAL', err instanceof Error ? err.message : String(err));

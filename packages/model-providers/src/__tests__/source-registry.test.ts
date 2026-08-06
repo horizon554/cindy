@@ -359,21 +359,21 @@ describe('mergeWithBundled', () => {
       });
   });
 
-  it('v3 per-agent routing deltas preserve bundled route siblings', () => {
+  it('v3 non-credential routing deltas preserve bundled route siblings', () => {
     const bundledXai = BUNDLED_CATALOG.providers.find((provider) => provider.id === 'xai')!;
     const merged = mergeWithBundled({
       version: '3',
       providers: [{
         id: 'xai',
         routing: {
-          codex: { upstream: 'https://routing-override.example/v1' },
+          codex: { disabled: true },
         },
       } as Catalog['providers'][number]],
     });
 
     expect(merged.providers.find((provider) => provider.id === 'xai')?.routing.codex).toEqual({
       ...bundledXai.routing.codex,
-      upstream: 'https://routing-override.example/v1',
+      disabled: true,
     });
   });
 

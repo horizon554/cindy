@@ -89,9 +89,9 @@ export function selectWorkerModels({
 /**
  * Pick the best display seed from the already-routable Worker model list.
  *
- * `sessionDefaultModel` comes from Main's active-catalog default resolver. If an older peer does
- * not expose it (or the model is no longer routable), fall back to the catalog marker and then
- * catalog order.
+ * An explicit visible `newSessionDefault` marker is authoritative. Without one, use Main's
+ * active-catalog `sessionDefaultModel` when it is still routable, then fall back to catalog order.
+ * Older peers that do not expose `sessionDefaultModel` naturally follow the marker/order path.
  */
 export function selectWorkerDefaultModel(
   models: readonly ModelDescriptor[],
