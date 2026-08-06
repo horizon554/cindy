@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
   }>,
   customProviderRead: vi.fn(),
   clearAnthropicDiscovery: vi.fn(async () => undefined),
+  refreshAnthropicDiscovery: vi.fn(async () => true),
+  readCodexAfterAuthBoundary: vi.fn(async () => [] as CatalogModel[]),
   warn: vi.fn(),
 }));
 
@@ -120,13 +122,13 @@ vi.mock('../provider-diagnostics.js', () => ({
 }));
 vi.mock('../codex-model-discovery.js', () => ({
   readCodexDiscoveredModels: async () => null,
-  readCodexDiscoveredModelsForAuthRefresh: async () => [],
+  readCodexDiscoveredModelsForAuthRefresh: h.readCodexAfterAuthBoundary,
 }));
 vi.mock('../model-discovery/anthropic.js', () => ({
   clearAnthropicDiscoveredModels: h.clearAnthropicDiscovery,
   getAnthropicModelDiscoveryFailure: () => null,
   loadAnthropicModelsFromDiskCache: async () => undefined,
-  refreshAnthropicModelsFromHttp: async () => undefined,
+  refreshAnthropicModelsFromHttp: h.refreshAnthropicDiscovery,
 }));
 vi.mock('../custom-provider-header-secrets.js', () => ({
   listCustomProvidersWithSecureHeaders: () => h.customProviderRead(),
@@ -149,6 +151,7 @@ import {
   __testing,
   ensureActiveCatalogLoaded,
   invalidateAccountDerivedProviderModelDiscovery,
+  reloadAccountDerivedProviderModelDiscovery,
   refreshActiveCatalogFromSource,
   refreshCustomProvidersIntoCatalog,
   reloadActiveCatalogForEndpointChange,
@@ -173,6 +176,28 @@ function activeMarker(): string | undefined {
 }
 
 describe('provider catalog realm reload', () => {
+  it('refills native discovery after an authenticated account or realm boundary', async () => {
+    h.clearAnthropicDiscovery.mockClear();
+    h.refreshAnthropicDiscovery.mockClear();
+    h.readCodexAfterAuthBoundary.mockReset().mockResolvedValue([{
+      id: 'account-b-codex',
+      name: 'Account B Codex',
+      contextWindow: 200_000,
+      efforts: [],
+      defaultEffort: null,
+    }]);
+
+    invalidateAccountDerivedProviderModelDiscovery();
+    await reloadAccountDerivedProviderModelDiscovery();
+
+    expect(h.clearAnthropicDiscovery).toHaveBeenCalledOnce();
+    expect(h.readCodexAfterAuthBoundary).toHaveBeenCalledOnce();
+    expect(h.refreshAnthropicDiscovery).toHaveBeenCalledOnce();
+    expect(
+      getActiveCatalog().providers.find((provider) => provider.id === 'openai')?.models.codex,
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'account-b-codex' })]));
+  });
+
   it('drops a late Codex cache result after an account discovery boundary', async () => {
     h.clearAnthropicDiscovery.mockClear();
     let resolveModels!: (models: CatalogModel[]) => void;

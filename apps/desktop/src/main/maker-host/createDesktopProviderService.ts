@@ -111,6 +111,7 @@ import { broadcastReferenceModelPricing } from '../usage/referenceModelPricing.j
 
 const log = createLogger('provider-service');
 let accountModelDiscoveryGeneration = 0;
+let accountModelDiscoveryCleanup: Promise<void> = Promise.resolve();
 
 type DiscoveredCodexModels = NonNullable<Awaited<ReturnType<typeof readCodexDiscoveredModels>>>;
 
@@ -135,11 +136,27 @@ export function invalidateAccountDerivedProviderModelDiscovery(): void {
   accountModelDiscoveryGeneration += 1;
   // clearAnthropicDiscoveredModels bumps its own generation before the first await, so old HTTP /
   // SDK work is synchronously retired; cache deletion then finishes in its existing serialized queue.
-  void clearAnthropicDiscoveredModels().catch((err) => {
+  accountModelDiscoveryCleanup = clearAnthropicDiscoveredModels().catch((err) => {
     log.warn('anthropic model discovery account-boundary cleanup failed', {
       error: err instanceof Error ? err.message : String(err),
     });
   });
+}
+
+/** Refill native discovery after an authenticated Cindy account / realm boundary settles. */
+export async function reloadAccountDerivedProviderModelDiscovery(
+  shouldApply: () => boolean = () => true,
+): Promise<void> {
+  const generation = accountModelDiscoveryGeneration;
+  // The Anthropic cache is process-global and intentionally removed at the auth boundary. Finish
+  // that serialized deletion before an official HTTP refresh can persist the new identity's list.
+  await accountModelDiscoveryCleanup;
+  if (generation !== accountModelDiscoveryGeneration || !shouldApply()) return;
+
+  await Promise.all([
+    refreshDiscoveredCodexModels(true, shouldApply),
+    refreshAnthropicModelsFromHttp(),
+  ]);
 }
 
 function resolveDiscoveredCodexModels(models: Catalog['providers'][number]['models']['codex']): void {

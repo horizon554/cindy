@@ -15,7 +15,10 @@ import {
   finalizeCodexAfterAuthModeChange,
   cancelCodexAuthModeChange,
 } from '../maker-host/index.js';
-import { invalidateAccountDerivedProviderModelDiscovery } from '../maker-host/createDesktopProviderService.js';
+import {
+  invalidateAccountDerivedProviderModelDiscovery,
+  reloadAccountDerivedProviderModelDiscovery,
+} from '../maker-host/createDesktopProviderService.js';
 import {
   clearAccountDerivedProviderModels,
   setModelResolveApplySlotsInvalidator,
@@ -370,14 +373,12 @@ export function initModelAccess(): void {
     userId: string | null,
     realm: ReturnType<typeof authManager.getActiveAuthRealm> | null,
   ) => {
+    const identityChanged = hasAuthSessionIdentityChanged(
+      { userId: lastAuthUserId, realm: lastAuthRealm },
+      { userId, realm },
+    );
     // 认证世代:登出、换号或同账号跨区均自增,作废旧身份在途的目录请求。
-    if (
-      !isAuthenticated ||
-      hasAuthSessionIdentityChanged(
-        { userId: lastAuthUserId, realm: lastAuthRealm },
-        { userId, realm },
-      )
-    ) {
+    if (!isAuthenticated || identityChanged) {
       authGeneration++;
       // 旧身份模型清单与 resolve metadata 都不能跨账号/区域继续显示。
       // 先同步作废旧身份已发出的结果并清内存，再清 overlay。持久化 LKG 物理落在
@@ -390,6 +391,21 @@ export function initModelAccess(): void {
     lastAuthUserId = isAuthenticated ? (userId ?? lastAuthUserId) : null;
     lastAuthRealm = isAuthenticated ? (realm ?? lastAuthRealm) : null;
     sync.handleAuthChange({ isAuthenticated, userId, realm });
+    if (isAuthenticated && identityChanged) {
+      const expectedGeneration = authGeneration;
+      const expectedUserId = lastAuthUserId;
+      const expectedRealm = lastAuthRealm;
+      void reloadAccountDerivedProviderModelDiscovery(
+        () =>
+          authGeneration === expectedGeneration
+          && lastAuthUserId === expectedUserId
+          && lastAuthRealm === expectedRealm,
+      ).catch((err) => {
+        log.warn('native provider model discovery reload after auth boundary failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }
   };
 
   authManager.onAuthStateChange((state) => {
