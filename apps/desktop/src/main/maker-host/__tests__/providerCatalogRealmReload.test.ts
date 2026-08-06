@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
     resolve: (result: unknown) => void;
   }>,
   customProviderRead: vi.fn(),
+  clearAnthropicDiscovery: vi.fn(async () => undefined),
   warn: vi.fn(),
 }));
 
@@ -122,6 +123,7 @@ vi.mock('../codex-model-discovery.js', () => ({
   readCodexDiscoveredModelsForAuthRefresh: async () => [],
 }));
 vi.mock('../model-discovery/anthropic.js', () => ({
+  clearAnthropicDiscoveredModels: h.clearAnthropicDiscovery,
   getAnthropicModelDiscoveryFailure: () => null,
   loadAnthropicModelsFromDiskCache: async () => undefined,
   refreshAnthropicModelsFromHttp: async () => undefined,
@@ -134,6 +136,7 @@ import {
   BUNDLED_CATALOG,
   buildUserProvider,
   type Catalog,
+  type CatalogModel,
   type CustomProviderConfig,
 } from '@cindy/model-providers';
 import {
@@ -145,6 +148,7 @@ import {
 import {
   __testing,
   ensureActiveCatalogLoaded,
+  invalidateAccountDerivedProviderModelDiscovery,
   refreshActiveCatalogFromSource,
   refreshCustomProvidersIntoCatalog,
   reloadActiveCatalogForEndpointChange,
@@ -169,6 +173,29 @@ function activeMarker(): string | undefined {
 }
 
 describe('provider catalog realm reload', () => {
+  it('drops a late Codex cache result after an account discovery boundary', async () => {
+    h.clearAnthropicDiscovery.mockClear();
+    let resolveModels!: (models: CatalogModel[]) => void;
+    const load = new Promise<CatalogModel[]>((resolve) => {
+      resolveModels = resolve;
+    });
+    const apply = vi.fn();
+    const pending = __testing.applyAccountScopedCodexModels(() => load, apply);
+
+    invalidateAccountDerivedProviderModelDiscovery();
+    resolveModels([{
+      id: 'account-a-only',
+      name: 'Account A Only',
+      contextWindow: 200_000,
+      efforts: [],
+      defaultEffort: null,
+    }]);
+
+    await expect(pending).resolves.toBe(false);
+    expect(apply).not.toHaveBeenCalled();
+    expect(h.clearAnthropicDiscovery).toHaveBeenCalledOnce();
+  });
+
   it('drops a stale owner custom-provider read and clears the current snapshot on failure', async () => {
     const provider: CustomProviderConfig = {
       id: 'owner-a-provider',

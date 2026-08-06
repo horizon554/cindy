@@ -385,6 +385,41 @@ describe('titleModel 契约(动态供应商豁免静态存在性校验)', () => 
     }
   });
 
+  it('v3 validates optional runtime model metadata without closing future capabilities', () => {
+    const withMetadata = (metadata: Record<string, unknown>) => ({
+      version: '3',
+      providers: [{
+        id: 'xai',
+        models: {
+          codex: [{ ...model('xai/runtime-metadata'), ...metadata }],
+        },
+      }],
+    });
+
+    expect(() => parseCatalog(withMetadata({
+      maxOutput: 8_192,
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      capabilities: { reasoning: true, toolCall: false, futureCapability: 'additive' },
+    }))).not.toThrow();
+
+    const invalidCases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ maxOutput: '8192' }, /maxOutput/],
+      [{ maxOutput: 0 }, /maxOutput/],
+      [{ maxOutput: -1 }, /maxOutput/],
+      [{ maxOutput: Number.POSITIVE_INFINITY }, /maxOutput/],
+      [{ modalities: [] }, /modalities/],
+      [{ modalities: { output: ['text'] } }, /modalities\.input/],
+      [{ modalities: { input: ['text'] } }, /modalities\.output/],
+      [{ modalities: { input: {}, output: ['text'] } }, /modalities\.input/],
+      [{ modalities: { input: ['text', 1], output: ['text'] } }, /modalities\.input/],
+      [{ capabilities: [] }, /capabilities/],
+      [{ capabilities: { reasoning: 'yes' } }, /capabilities\.reasoning/],
+    ];
+    for (const [metadata, expected] of invalidCases) {
+      expect(() => parseCatalog(withMetadata(metadata))).toThrow(expected);
+    }
+  });
+
   it('v3 bundled deltas cannot change an embedded provider into a user provider', () => {
     expect(parseCatalog({
       version: '3',

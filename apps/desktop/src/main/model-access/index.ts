@@ -15,6 +15,7 @@ import {
   finalizeCodexAfterAuthModeChange,
   cancelCodexAuthModeChange,
 } from '../maker-host/index.js';
+import { invalidateAccountDerivedProviderModelDiscovery } from '../maker-host/createDesktopProviderService.js';
 import {
   clearAccountDerivedProviderModels,
   setModelResolveApplySlotsInvalidator,
@@ -381,6 +382,7 @@ export function initModelAccess(): void {
       // 旧身份模型清单与 resolve metadata 都不能跨账号/区域继续显示。
       // 先同步作废旧身份已发出的结果并清内存，再清 overlay。持久化 LKG 物理落在
       // ownerScopedUserDataPath 下，新身份无法读取；旧回包也有 owner generation 闸。
+      invalidateAccountDerivedProviderModelDiscovery();
       invalidateModelResolveApplyState();
       clearAccountDerivedProviderModels();
       applyGatewayModels([]);

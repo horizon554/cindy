@@ -55,6 +55,7 @@ import {
   readCodexDiscoveredModelsForAuthRefresh,
 } from './codex-model-discovery.js';
 import {
+  clearAnthropicDiscoveredModels,
   getAnthropicModelDiscoveryFailure,
   loadAnthropicModelsFromDiskCache,
   refreshAnthropicModelsFromHttp,
@@ -109,6 +110,37 @@ import { hasLegacyOwnerNamespaceClaim } from '../ownerNamespaceMigration.js';
 import { broadcastReferenceModelPricing } from '../usage/referenceModelPricing.js';
 
 const log = createLogger('provider-service');
+let accountModelDiscoveryGeneration = 0;
+
+type DiscoveredCodexModels = NonNullable<Awaited<ReturnType<typeof readCodexDiscoveredModels>>>;
+
+async function applyAccountScopedCodexModels(
+  load: () => Promise<DiscoveredCodexModels | null>,
+  apply: (models: DiscoveredCodexModels) => void,
+  shouldApply: () => boolean = () => true,
+): Promise<boolean> {
+  const generation = accountModelDiscoveryGeneration;
+  const models = await load();
+  if (
+    models === null
+    || generation !== accountModelDiscoveryGeneration
+    || !shouldApply()
+  ) return false;
+  apply(models);
+  return true;
+}
+
+/** Retire account-derived discovery producers before their consumer snapshots are cleared. */
+export function invalidateAccountDerivedProviderModelDiscovery(): void {
+  accountModelDiscoveryGeneration += 1;
+  // clearAnthropicDiscoveredModels bumps its own generation before the first await, so old HTTP /
+  // SDK work is synchronously retired; cache deletion then finishes in its existing serialized queue.
+  void clearAnthropicDiscoveredModels().catch((err) => {
+    log.warn('anthropic model discovery account-boundary cleanup failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
 
 function resolveDiscoveredCodexModels(models: Catalog['providers'][number]['models']['codex']): void {
   if (!models || models.length === 0 || process.env.XDT_DISABLE_MODEL_CATALOG_RESOLVE === '1') return;
@@ -513,11 +545,13 @@ export function ensureActiveCatalogLoaded(): Promise<Catalog> {
         // 读 codex models_cache.json 得到规范化快照,由 active-catalog 同时投影到 Codex 与
         // Claude bridge。null 表示没读到有效 cache,保留现值 / 静态兜底;[] 表示合法空快照。
         try {
-          const discovered = await readCodexDiscoveredModels();
-          if (discovered !== null) {
-            setDiscoveredCodexModels(discovered);
-            resolveDiscoveredCodexModels(discovered);
-          }
+          await applyAccountScopedCodexModels(
+            readCodexDiscoveredModels,
+            (discovered) => {
+              setDiscoveredCodexModels(discovered);
+              resolveDiscoveredCodexModels(discovered);
+            },
+          );
         } catch {
           /* 读/映射失败:保持现值,不影响启动 */
         }
@@ -706,11 +740,14 @@ export async function refreshDiscoveredCodexModels(
     if (shouldApply()) setDiscoveredCodexModels([]);
     return;
   }
-  const discovered = await readCodexDiscoveredModelsForAuthRefresh();
-  if (shouldApply()) {
-    setDiscoveredCodexModels(discovered);
-    resolveDiscoveredCodexModels(discovered);
-  }
+  await applyAccountScopedCodexModels(
+    readCodexDiscoveredModelsForAuthRefresh,
+    (discovered) => {
+      setDiscoveredCodexModels(discovered);
+      resolveDiscoveredCodexModels(discovered);
+    },
+    shouldApply,
+  );
 }
 
 /**
@@ -890,6 +927,7 @@ export function getDesktopProviderService(): ProviderService {
 }
 
 export const __testing = {
+  applyAccountScopedCodexModels,
   catalogLkgEnvelope,
   catalogLkgPath,
   catalogLkgTemporaryPath,

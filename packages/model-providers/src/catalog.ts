@@ -175,6 +175,39 @@ function validateModel(m: CatalogModel, providerId: string): void {
   if (m.icon !== undefined) {
     assert(typeof m.icon === 'string' && m.icon.trim().length > 0, `model.icon must be a non-empty string for '${m.id}'`);
   }
+  if (m.maxOutput !== undefined) {
+    assert(
+      typeof m.maxOutput === 'number' && Number.isFinite(m.maxOutput) && m.maxOutput > 0,
+      `model.maxOutput must be a positive finite number for '${m.id}'`,
+    );
+  }
+  if (m.modalities !== undefined) {
+    assert(
+      m.modalities && typeof m.modalities === 'object' && !Array.isArray(m.modalities),
+      `model.modalities must be an object for '${m.id}'`,
+    );
+    const modalities = m.modalities as unknown as Record<string, unknown>;
+    for (const field of ['input', 'output'] as const) {
+      assert(
+        Array.isArray(modalities[field])
+          && modalities[field].every((value) => typeof value === 'string'),
+        `model.modalities.${field} must be an array of strings for '${m.id}'`,
+      );
+    }
+  }
+  if (m.capabilities !== undefined) {
+    assert(
+      m.capabilities && typeof m.capabilities === 'object' && !Array.isArray(m.capabilities),
+      `model.capabilities must be an object for '${m.id}'`,
+    );
+    const capabilities = m.capabilities as unknown as Record<string, unknown>;
+    for (const field of ['reasoning', 'toolCall', 'attachment', 'temperature'] as const) {
+      assert(
+        capabilities[field] === undefined || typeof capabilities[field] === 'boolean',
+        `model.capabilities.${field} must be a boolean for '${m.id}'`,
+      );
+    }
+  }
   if (m.newSessionDefault !== undefined) {
     assert(
       Array.isArray(m.newSessionDefault) && m.newSessionDefault.length > 0,
