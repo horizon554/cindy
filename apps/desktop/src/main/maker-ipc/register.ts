@@ -587,6 +587,7 @@ import {
   fetchProviderModels,
 } from '../maker-host/provider-model-fetch.js';
 import { beginProviderRouteMutation, isUserProviderSession } from '../maker-host/provider-route.js';
+import { withSessionDefaultModel } from './agentCapabilitiesResponse.js';
 import {
   getAnthropicModelDiscoveryFailure,
   refreshAnthropicModelsFromHttp,
@@ -4695,6 +4696,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       return;
     setNewMakerDraftCache({
       lastByVendor: p.lastByVendor,
+      modelChosenByVendor: {
+        ...(p.modelChosenByVendor?.cc === true ? { cc: true } : {}),
+        ...(p.modelChosenByVendor?.codex === true ? { codex: true } : {}),
+        ...(p.modelChosenByVendor?.pi === true ? { pi: true } : {}),
+      },
       fastModeByModel: p.fastModeByModel,
       effortByModel: p.effortByModel,
       // worktree 勾选记忆(vendor 无关根字段):旧 renderer 不推此字段 → false 兜底。
@@ -4826,8 +4832,13 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   );
 
   ipcMain.handle(MAKER_INVOKE.GET_CAPABILITIES, (_e, agentKind: unknown) => {
+    const agent = requireAgentKind(agentKind);
     return {
-      ...maker.getCapabilities(requireAgentKind(agentKind)),
+      ...withSessionDefaultModel(
+        maker.getCapabilities(agent),
+        getActiveCatalog(),
+        agent,
+      ),
       // host 级 optional 能力；旧 desktop 缺省为 false。两个 agent 查询都带回，
       // 手机读取当前 agent 快照即可决定是否展示切换入口。
       supportsSessionAgentSwitch: true,
@@ -5048,6 +5059,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           const providerReported = {
             ...(m.mode !== undefined ? { mode: m.mode } : {}),
             ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+            ...(m.maxOutput !== undefined ? { maxOutput: m.maxOutput } : {}),
             ...(m.modalities ? { modalities: m.modalities } : {}),
             ...(m.capabilities ? { capabilities: m.capabilities } : {}),
           };
@@ -5120,8 +5132,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         resolved.knowledgeRevision,
         uploadedIds,
       );
-      // durability:把 resolve 补全的 modalities/capabilities gap-fill 回 config(缺才补,不覆盖
-      // 厂商自报/用户手填)。服务端这两个字段只来自 provider/KB、从不编造,有值即真;capabilities
+      // durability:把 resolve 补全的 maxOutput/modalities/capabilities 写回 config；其中
+      // maxOutput 按硬上限取新旧较小值，其余字段 gap-fill。服务端这些字段只来自 provider/KB；capabilities
       // 为空对象时跳过。contextWindow 走原有厂商自报/预设路径,不在此写(避免固化 200K 保守默认)。
       const gapFilled = mergeDiscoveredModelsIntoConfig(
         nextCfg,
@@ -5130,6 +5142,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
           id: m.id,
           name: m.name,
           ...(m.mode ? { mode: m.mode } : {}),
+          ...(m.maxOutput !== undefined ? { maxOutput: m.maxOutput } : {}),
           ...(m.modalities ? { modalities: m.modalities } : {}),
           ...(m.capabilities && Object.keys(m.capabilities).length > 0
             ? { capabilities: m.capabilities }
@@ -5254,7 +5267,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
               resolved.knowledgeRevision,
               models.map((m) => m.id),
             );
-            // durability:把 resolve 补全的 modalities/capabilities gap-fill 回 config。刷新不自报
+            // durability:把 resolve 补全的 maxOutput/modalities/capabilities 写回 config；maxOutput
+            // 按硬上限取新旧较小值，其余字段 gap-fill。刷新不自报
             // 厂商(如 Kimi/DeepSeek)时 path 1(save-resolve)常因配置无变化不触发,这里兜住;走
             // store 直写不经 IPC handler → 不触发 resolve、无循环。乐观锁 + gap-fill 幂等,失败静默
             // (overlay 已保证本 session 生效)。
@@ -5271,6 +5285,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                     id: m.id,
                     name: m.name,
                     ...(m.mode ? { mode: m.mode } : {}),
+                    ...(m.maxOutput !== undefined ? { maxOutput: m.maxOutput } : {}),
                     ...(m.modalities ? { modalities: m.modalities } : {}),
                     ...(m.capabilities && Object.keys(m.capabilities).length > 0
                       ? { capabilities: m.capabilities }
@@ -5466,6 +5481,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                       : {}),
                     ...(m.providerReported?.contextWindow
                       ? { contextWindow: m.providerReported.contextWindow }
+                      : {}),
+                    ...(m.providerReported?.maxOutput
+                      ? { maxOutput: m.providerReported.maxOutput }
                       : {}),
                     ...(m.providerReported?.modalities
                       ? { modalities: m.providerReported.modalities }

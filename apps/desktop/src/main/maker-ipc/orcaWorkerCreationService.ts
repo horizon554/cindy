@@ -1,5 +1,5 @@
 import type { AgentKind } from '@cindy/maker-core';
-import { resolveDefaultModel, type AuthStrategy } from '@cindy/model-providers';
+import type { AuthStrategy } from '@cindy/model-providers';
 
 import { getActiveCatalog } from '../maker-host/active-catalog.js';
 import { isCredentialModeSwitchBusyError } from '../maker-host/codex-credential-switch.js';
@@ -10,6 +10,7 @@ import type {
   OrcaWorkerStatus,
 } from './orcaTeamService.js';
 import type { MakerSessionCreateOpts } from './sessionRequest.js';
+import { resolveActiveSessionDefaultModel } from './agentCapabilitiesResponse.js';
 
 /** active team 的最小快照；创建 service 不直接持有 Drizzle row。 */
 export interface OrcaTeamSnapshot {
@@ -110,6 +111,9 @@ export interface OrcaWorkerModelCapabilities {
   efforts?: readonly string[];
   defaultEffort?: string | null;
   supportsFastMode?: boolean;
+  sortOrder?: number;
+  defaultEnabled?: boolean;
+  newSessionDefault?: boolean;
 }
 
 /** 写入 orca_workers 的最小输入；createdAt/updatedAt 等 store 默认值仍由 store 负责。 */
@@ -347,34 +351,36 @@ type ResolveWorkerModelIdResult = { ok: true; model: string } | { ok: false; mes
 const ORCA_MANAGED_GATEWAY_PROVIDER_ID = 'xd';
 
 /** Worker 的候选 model；此函数只读快照，不迁移 Lead/default 的持久化值。 */
+type SelectedWorkerModel = {
+  model: string;
+  source: 'input' | 'new-maker' | 'catalog' | 'lead';
+};
+
 function selectWorkerModel(params: {
   input: OrcaWorkerCreateParams;
   lead: OrcaLeadSessionSnapshot;
   defaults: OrcaWorkerDefaultsSnapshot;
   availableModels: readonly OrcaWorkerModelCapabilities[];
   providers: readonly OrcaWorkerProviderSnapshot[];
-}): string {
+}): SelectedWorkerModel {
   const { input, lead, defaults, availableModels, providers } = params;
-  // Pi 可桥接任意已连接来源，没有跨来源合法的静态默认；无显式/记忆/Lead 模型时
-  // 按拍平清单顺序取第一个被当前已连接来源实际提供的模型，与创建面板的 connected
-  // activeModels 收敛保持一致；不能直接取 availableModels[0]，该清单不含连接态。
-  const firstRoutablePiModel = availableModels.find((candidate) =>
-    providers.some((provider) => provider.models.includes(candidate.id)),
-  )?.id;
-  const catalogDefaultModel =
-    input.agent === 'pi'
-      ? (firstRoutablePiModel ?? '')
-      : resolveDefaultModel(
-          getActiveCatalog(),
-          input.agent,
-          'session',
-          input.agent === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6',
-        );
-  return (
-    input.model ??
-    defaults.model ??
-    (input.agent === lead.agentKind ? lead.model : catalogDefaultModel)
+  if (input.model !== undefined) return { model: input.model, source: 'input' };
+  // getWorkerDefaultsFromNewMaker 只返回用户显式选过的模型；未自定义的 sanitize 种子
+  // 不再遮蔽 registry marker / active catalog sessionModel。
+  if (defaults.model !== undefined && defaults.model !== null) {
+    return { model: defaults.model, source: 'new-maker' };
+  }
+  // 同 agent Worker 延续 Lead 的模型/来源是既有语义；跨 agent（或 Lead 模型不可继承）
+  // 才进入 registry marker / active catalog 默认解析。
+  if (input.agent === lead.agentKind) return { model: lead.model, source: 'lead' };
+  const catalogDefaultModel = resolveActiveSessionDefaultModel(
+    availableModels,
+    getActiveCatalog(),
+    input.agent,
+    (modelId) => providers.some((provider) => provider.models.includes(modelId)),
   );
+  if (catalogDefaultModel) return { model: catalogDefaultModel, source: 'catalog' };
+  return { model: '', source: 'catalog' };
 }
 
 /**
@@ -745,22 +751,21 @@ export function createOrcaWorkerCreationService(
     }
 
     const defaults = deps.getWorkerDefaults(params.agent);
-    const inheritedModelComesFromDefaults =
-      params.model === undefined && defaults.model !== undefined && defaults.model !== null;
-    const selectedModel =
-      explicitModelResolution?.model ??
-      selectWorkerModel({
+    const selectedModel = explicitModelResolution
+      ? { model: explicitModelResolution.model, source: 'input' as const }
+      : selectWorkerModel({
         input: params,
         lead,
         defaults,
         availableModels,
         providers: agentProviders,
       });
+    const inheritedModelComesFromDefaults = selectedModel.source === 'new-maker';
     const inheritedProviderId =
       explicitSourceId ??
       (inheritedModelComesFromDefaults
         ? (defaults.providerId ?? null)
-        : params.agent === lead.agentKind
+        : selectedModel.source === 'lead'
           ? lead.providerId
           : null);
     const cachedProviderMayFallback =
@@ -772,7 +777,7 @@ export function createOrcaWorkerCreationService(
       explicitModelResolution ??
       resolveWorkerModelId({
         agent: params.agent,
-        model: selectedModel,
+        model: selectedModel.model,
         providerId: inheritedProviderId,
         allowProviderFallback: cachedProviderMayFallback,
         availableModels,

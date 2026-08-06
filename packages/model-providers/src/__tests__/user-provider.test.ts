@@ -186,6 +186,25 @@ describe('buildUserProvider (per-runtime)', () => {
     });
   });
 
+  it('projects a provider-reported maxOutput into the catalog for Pi runtime limits', () => {
+    const p = buildUserProvider({
+      id: 'limited-pi',
+      name: 'Limited Pi',
+      runtimes: {
+        pi: {
+          baseUrl: 'https://example.test/v1',
+          wireProtocol: 'openai-chat',
+          models: [{ id: 'small-output', name: 'Small Output', maxOutput: 8_192 }],
+        },
+      },
+    });
+
+    expect(p.models.pi?.[0]).toMatchObject({
+      id: 'small-output',
+      maxOutput: 8_192,
+    });
+  });
+
   it('attaches per-runtime custom headers (still no api key)', () => {
     const p = buildUserProvider({
       ...codexOnly,

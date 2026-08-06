@@ -8,6 +8,7 @@ import {
   fillCustomProviderModelMetadata,
   fillCustomProviderModelsMetadata,
   fillMatchingCustomProviderPickerModels,
+  mergeCustomProviderPickerSelection,
   providerViewToCustomProviderConfig,
   refreshCustomProviderModels,
   replaceCustomProviderModelId,
@@ -198,6 +199,20 @@ describe('customProviderModelConfigFromCatalogModel', () => {
       capabilities: { reasoning: true, toolCall: true },
     });
   });
+
+  it('preserves provider maxOutput through the edit round trip', () => {
+    expect(customProviderModelConfigFromCatalogModel({
+      id: 'limited-output',
+      name: 'Limited Output',
+      contextWindow: 128_000,
+      maxOutput: 8_192,
+    })).toEqual({
+      id: 'limited-output',
+      name: 'Limited Output',
+      contextWindow: 128_000,
+      maxOutput: 8_192,
+    });
+  });
 });
 
 describe('CustomProviderDialog model metadata projection', () => {
@@ -207,6 +222,7 @@ describe('CustomProviderDialog model metadata projection', () => {
       name: '  Vision Model  ',
       mode: 'responses',
       contextWindow: 1_048_576,
+      maxOutput: 8_192,
       modalities: { input: ['text', 'image'], output: ['text'] },
       capabilities: { reasoning: true, toolCall: true, attachment: false },
       defaultEnabled: false,
@@ -247,11 +263,13 @@ describe('CustomProviderDialog model metadata projection', () => {
         name: 'VLM',
         mode: 'chat',
         contextWindow: 128_000,
+        maxOutput: 16_384,
         modalities: { input: ['text'], output: ['text'] },
       },
       {
         mode: 'embedding',
         contextWindow: 1_048_576,
+        maxOutput: 8_192,
         modalities: { input: ['text', 'image'], output: ['text'] },
         capabilities: { reasoning: true, toolCall: true, unknown: true },
       },
@@ -260,6 +278,7 @@ describe('CustomProviderDialog model metadata projection', () => {
       name: 'VLM',
       mode: 'embedding',
       contextWindow: 128_000,
+      maxOutput: 8_192,
       modalities: { input: ['text'], output: ['text'] },
       capabilities: { reasoning: true, toolCall: true },
     });
@@ -270,6 +289,7 @@ describe('CustomProviderDialog model metadata projection', () => {
       id: 'model-a',
       mode: 'responses',
       contextWindow: 1_000_000,
+      maxOutput: 16_384,
       capabilities: { reasoning: true },
     }];
 
@@ -281,8 +301,30 @@ describe('CustomProviderDialog model metadata projection', () => {
       name: 'Model A',
       mode: 'responses',
       contextWindow: 1_000_000,
+      maxOutput: 16_384,
       capabilities: { reasoning: true },
     }]);
+  });
+
+  it('keeps the conservative maxOutput through picker confirmation while preserving form edits', () => {
+    const result = mergeCustomProviderPickerSelection(
+      [
+        { id: 'edited', name: 'Edited Name', maxOutput: 16_384 },
+        { id: 'late-manual', name: 'Late Manual', maxOutput: 2_048 },
+      ],
+      [
+        { id: 'edited', name: 'Fetched Name', maxOutput: 8_192 },
+        { id: 'resolved', name: 'Resolved', maxOutput: 16_384 },
+        { id: 'unchecked', name: 'Unchecked', maxOutput: 32_768 },
+      ],
+      new Set(['edited', 'resolved']),
+    );
+
+    expect(result).toEqual([
+      { id: 'edited', name: 'Edited Name', maxOutput: 8_192 },
+      { id: 'resolved', name: 'Resolved', maxOutput: 16_384 },
+      { id: 'late-manual', name: 'Late Manual', maxOutput: 2_048 },
+    ]);
   });
 
   it('applies a late resolve push only to its exact request picker', () => {
@@ -477,6 +519,32 @@ describe('appendDiscoveredCustomProviderModels', () => {
       { id: 'b', name: 'B', defaultEnabled: false },
       { id: 'c', name: 'C', defaultEnabled: false },
     ]);
+  });
+
+  it('persists maxOutput, accepts lower limits, and never auto-raises an existing limit', () => {
+    const result = appendDiscoveredCustomProviderModels(
+      [
+        { id: 'kept', name: 'Kept', maxOutput: 4_096 },
+        { id: 'lowered', name: 'Lowered', maxOutput: 16_384 },
+        { id: 'gap', name: 'Gap' },
+      ],
+      [
+        { id: 'kept', name: 'Kept', providerReported: { maxOutput: 16_384 } },
+        { id: 'lowered', name: 'Lowered', providerReported: { maxOutput: 8_192 } },
+        { id: 'gap', name: 'Gap', providerReported: { maxOutput: 8_192 } },
+        { id: 'fresh', name: 'Fresh', providerReported: { maxOutput: 32_768 } },
+        { id: 'invalid', name: 'Invalid', providerReported: { maxOutput: Number.POSITIVE_INFINITY } },
+      ],
+    );
+
+    expect(result.models).toEqual([
+      { id: 'kept', name: 'Kept', maxOutput: 4_096 },
+      { id: 'lowered', name: 'Lowered', maxOutput: 8_192 },
+      { id: 'gap', name: 'Gap', maxOutput: 8_192 },
+      { id: 'fresh', name: 'Fresh', defaultEnabled: false, maxOutput: 32_768 },
+      { id: 'invalid', name: 'Invalid', defaultEnabled: false },
+    ]);
+    expect(result.changed).toBe(true);
   });
 
   it('persists provider-reported mode so non-chat classification survives restart', () => {

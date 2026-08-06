@@ -71,6 +71,7 @@ function toCatalogModel(
     // 显式配置的窗口打标:编辑表单回转配置时必须与「缺省物化成的默认值」可区分,
     // 哪怕用户显式填的恰好等于当前默认(未来默认升级后显式值要原样保留)。
     ...(m.contextWindow !== undefined ? { contextWindowExplicit: true } : {}),
+    ...(m.maxOutput !== undefined ? { maxOutput: m.maxOutput } : {}),
     ...(m.mode !== undefined ? { mode: m.mode } : {}),
     efforts,
     defaultEffort,

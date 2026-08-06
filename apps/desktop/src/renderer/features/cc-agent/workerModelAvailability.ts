@@ -85,3 +85,27 @@ export function selectWorkerModels({
   );
   return models.filter((model) => executableIds.has(model.id));
 }
+
+/**
+ * Pick the best display seed from the already-routable Worker model list.
+ *
+ * `sessionDefaultModel` comes from Main's active-catalog default resolver. If an older peer does
+ * not expose it (or the model is no longer routable), fall back to the catalog marker and then
+ * catalog order.
+ */
+export function selectWorkerDefaultModel(
+  models: readonly ModelDescriptor[],
+  sessionDefaultModel?: string,
+): ModelDescriptor | undefined {
+  const byOrder = (a: ModelDescriptor, b: ModelDescriptor): number =>
+    (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER);
+  const visible = models.filter((model) => model.defaultEnabled !== false);
+  const marked = visible.filter((model) => model.newSessionDefault === true);
+  if (marked.length > 0) return marked.slice().sort(byOrder)[0];
+  const mainDefault = sessionDefaultModel
+    ? visible.find((model) => model.id === sessionDefaultModel)
+    : undefined;
+  if (mainDefault) return mainDefault;
+  const pool = visible.length > 0 ? visible : models;
+  return pool.slice().sort(byOrder)[0];
+}

@@ -1955,17 +1955,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   /**
    * renderer 把 newMakerDraft 的 vendor/model 偏好快照推给 main 缓存 ——
    * collab mode spawn worker (enableOrca / orca-bridge.create_worker) 读这份
-   * 缓存决定 worker 的 model/effort/fastMode, 让 worker 默认 = "用户在 New Maker
-   * 面板该 vendor 当前的选择"。启动时推一次 + 用户每次改 New Maker 偏好都推,
+   * 缓存决定 worker 的显式 model/effort/fastMode 偏好；用户未主动选过模型时仍跟随
+   * active catalog 产品默认。启动时推一次 + 用户每次改 New Maker 偏好都推，
    * fire-and-forget。
    */
   syncNewMakerDraft: (snapshot: {
     lastByVendor: Partial<
       Record<
-        'cc' | 'codex',
+        'cc' | 'codex' | 'pi',
         { model?: string; effort?: string; permissionMode?: string; providerId?: string | null }
       >
     >;
+    modelChosenByVendor?: Partial<Record<'cc' | 'codex' | 'pi', boolean>>;
     fastModeByModel: Record<string, boolean>;
     effortByModel: Record<string, string>;
     /** 「新建会话默认启用 worktree」勾选记忆(vendor 无关根字段,远程草稿播种用)。 */

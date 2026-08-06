@@ -20,24 +20,36 @@ const mocks = vi.hoisted(() => ({
       efforts: string[];
       defaultEffort: string | null;
       supportsFastMode?: boolean;
+      sortOrder?: number;
+      defaultEnabled?: boolean;
+      newSessionDefault?: boolean;
     }>,
     'claude-code': [] as Array<{
       id: string;
       efforts: string[];
       defaultEffort: string | null;
       supportsFastMode?: boolean;
+      sortOrder?: number;
+      defaultEnabled?: boolean;
+      newSessionDefault?: boolean;
     }>,
     pi: [] as Array<{
       id: string;
       efforts: string[];
       defaultEffort: string | null;
       supportsFastMode?: boolean;
+      sortOrder?: number;
+      defaultEnabled?: boolean;
+      newSessionDefault?: boolean;
     }>,
   },
   capabilitiesByAgent: {
-    codex: null as { availableModels: Array<{ id: string }> } | null,
-    'claude-code': null as { availableModels: Array<{ id: string }> } | null,
-    pi: null as { availableModels: Array<{ id: string }> } | null,
+    codex: null as { availableModels: Array<{ id: string }>; sessionDefaultModel?: string } | null,
+    'claude-code': null as {
+      availableModels: Array<{ id: string }>;
+      sessionDefaultModel?: string;
+    } | null,
+    pi: null as { availableModels: Array<{ id: string }>; sessionDefaultModel?: string } | null,
   },
   capabilitiesLoading: false,
   providersLoading: false,
@@ -189,6 +201,27 @@ vi.mock('@/state/modelVisibilityPrefs', () => ({
 vi.mock('../workerModelAvailability', () => ({
   selectWorkerModels: ({ agent }: { agent: 'codex' | 'claude-code' | 'pi' }) =>
     mocks.modelsByAgent[agent],
+  selectWorkerDefaultModel: (
+    models: Array<{
+      id: string;
+      sortOrder?: number;
+      defaultEnabled?: boolean;
+      newSessionDefault?: boolean;
+    }>,
+    sessionDefaultModel?: string,
+  ) => {
+    const byOrder = (a: { sortOrder?: number }, b: { sortOrder?: number }) =>
+      (a.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.sortOrder ?? Number.MAX_SAFE_INTEGER);
+    const visible = models.filter((candidate) => candidate.defaultEnabled !== false);
+    const marked = visible.filter((candidate) => candidate.newSessionDefault === true);
+    if (marked.length > 0) return marked.slice().sort(byOrder)[0];
+    const mainDefault = sessionDefaultModel
+      ? visible.find((candidate) => candidate.id === sessionDefaultModel)
+      : undefined;
+    if (mainDefault) return mainDefault;
+    const pool = marked.length > 0 ? marked : visible.length > 0 ? visible : models;
+    return pool.slice().sort(byOrder)[0];
+  },
 }));
 
 describe('CreateWorkerPopover', () => {
@@ -276,7 +309,7 @@ describe('CreateWorkerPopover', () => {
     expect(submit.getAttribute('aria-busy')).toBe('false');
   });
 
-  it('replaces a provider-gated local preference with the first available model and valid effort', async () => {
+  it('turns a stale local preference back into an implicit live default', async () => {
     window.localStorage.setItem(
       'workerCreationPrefs',
       JSON.stringify({
@@ -302,6 +335,43 @@ describe('CreateWorkerPopover', () => {
         expect.objectContaining({ agent: 'codex', model: 'gpt-5.5', effort: 'medium' }),
       ),
     );
+  });
+
+  it('uses Main active-catalog sessionModel when the worker has no explicit preference', async () => {
+    mocks.modelsByAgent.codex = [
+      { ...model('codex/gpt-5.5'), sortOrder: 1 },
+      { ...model('deepseek/deepseek-v4-pro'), sortOrder: 44, newSessionDefault: true },
+    ];
+    mocks.capabilitiesByAgent.codex = {
+      availableModels: [{ id: 'codex/gpt-5.5' }, { id: 'deepseek/deepseek-v4-pro' }],
+      sessionDefaultModel: 'deepseek/deepseek-v4-pro',
+    };
+    const onCreate = vi.fn();
+
+    render(<CreateWorkerPopover open onClose={vi.fn()} onCreate={onCreate} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('model-selector').textContent).toBe('deepseek/deepseek-v4-pro'),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'orca.createWorker.submit' }));
+
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agent: 'codex',
+          model: 'deepseek/deepseek-v4-pro',
+          effort: 'high',
+          fast: undefined,
+          providerId: null,
+        }),
+      ),
+    );
+    const stored = JSON.parse(window.localStorage.getItem('workerCreationPrefs') ?? '{}');
+    expect(stored.codex).toMatchObject({
+      model: 'deepseek/deepseek-v4-pro',
+      modelExplicit: false,
+      providerId: null,
+    });
   });
 
   it('restores an available stored preference before converging a stale default model', async () => {
@@ -360,7 +430,7 @@ describe('CreateWorkerPopover', () => {
     await waitFor(() => expect(screen.getByTestId('model-selector').textContent).toBe('gpt-5.5'));
   });
 
-  it('replaces a remote preference whose provider disconnected even if capabilities still list it', async () => {
+  it('turns a stale remote preference back into an implicit controlled-device default', async () => {
     window.localStorage.setItem(
       'workerCreationPrefs',
       JSON.stringify({
@@ -467,7 +537,7 @@ describe('CreateWorkerPopover', () => {
     ).toBe(false);
   });
 
-  it('selects the first live Pi model instead of a static vendor fallback', async () => {
+  it('submits the first live Pi model when Main has no catalog default', async () => {
     mocks.modelsByAgent.pi = [model('custom-pi-model')];
     mocks.capabilitiesByAgent.pi = { availableModels: [{ id: 'custom-pi-model' }] };
     const onCreate = vi.fn();

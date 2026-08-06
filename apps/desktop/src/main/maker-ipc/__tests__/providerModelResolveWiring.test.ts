@@ -22,6 +22,7 @@ describe('provider model resolve wiring', () => {
     expect(savedStart).toBeGreaterThan(-1);
     expect(savedEnd).toBeGreaterThan(savedStart);
     expect(saved).toContain('...(m.mode !== undefined ? { mode: m.mode } : {})');
+    expect(saved).toContain('...(m.maxOutput !== undefined ? { maxOutput: m.maxOutput } : {})');
     expect(saved).toContain('const resolveModels = toModelResolveRequestModels(');
     expect(saved).toContain('models: resolveModels,');
   });

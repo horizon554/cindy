@@ -87,6 +87,8 @@ export type CapabilityStatus =
 
 export interface AgentCapabilities {
   availableModels: ModelDescriptor[];
+  /** Main 从当前 active catalog 解析出的 session 默认模型；旧端缺省时由调用方回退。 */
+  sessionDefaultModel?: string;
   /** Agent 是否实现 Fast Mode 运行时能力。 */
   hasFastMode: boolean;
   effortLevels: EffortDescriptor[];
@@ -191,6 +193,7 @@ function parseAgentCapabilities(value: unknown): AgentCapabilities {
     !value.effortLevels.every(isNamedDescriptor) ||
     !Array.isArray(value.permissionModes) ||
     !value.permissionModes.every(isNamedDescriptor) ||
+    !isOptionalString(value.sessionDefaultModel) ||
     !isOptionalBoolean(value.supportsSessionAgentSwitch) ||
     !isOptionalBoolean(value.supportsSessionAgentSwitchCas)
   ) {

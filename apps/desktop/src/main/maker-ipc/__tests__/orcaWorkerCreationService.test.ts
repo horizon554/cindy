@@ -1403,6 +1403,68 @@ describe('OrcaWorkerCreationService', () => {
     );
   });
 
+  it('uses a routable registry new-session marker before stale catalog and Lead defaults', async () => {
+    const { deps, service } = createDeps({
+      getLeadSessionRow: vi.fn(async () => ({
+        id: 'lead-1',
+        agentKind: 'claude-code' as const,
+        workspaceKind: 'project' as const,
+        workingDir: 'C:\\repo',
+        model: 'claude-sonnet-4-6',
+        effort: 'high',
+        permissionMode: 'default',
+        fastMode: false,
+        providerId: 'xd',
+        remoteHostId: null,
+      })),
+      getAvailableModels: vi.fn((agent: AgentKind) =>
+        agent === 'codex'
+          ? [
+              {
+                id: 'gpt-5.5',
+                efforts: ['high'],
+                defaultEffort: 'high',
+              },
+              {
+                id: 'deepseek/deepseek-v4-pro',
+                efforts: ['high'],
+                defaultEffort: 'high',
+                sortOrder: 44,
+                newSessionDefault: true,
+              },
+            ]
+          : [],
+      ),
+      getWorkerDefaults: vi.fn(() => ({})),
+      getProviderRoutingContext: vi.fn(async () =>
+        providerRoutingContext({
+          codex: [
+            {
+              id: 'xd',
+              name: 'Cindy AI',
+              models: ['gpt-5.5', 'deepseek/deepseek-v4-pro'],
+            },
+          ],
+        }),
+      ),
+    });
+
+    await expect(
+      service.createWorker({
+        leadSessionId: 'lead-1',
+        role: 'reviewer',
+        agent: 'codex',
+        label: 'marker-reviewer',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      resolved: { model: 'deepseek/deepseek-v4-pro' },
+    });
+    expect(deps.buildCreateOptsWithStderr).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'deepseek/deepseek-v4-pro' }),
+    );
+  });
+
   it('creates a worker with resolved defaults without dispatching or broadcasting from the creation boundary', async () => {
     const { calls, deps, service } = createDeps({
       getWorkerDefaults: vi.fn(() => ({

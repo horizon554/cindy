@@ -188,6 +188,10 @@ describe('useAgentCapabilities deviceId-aware cache', () => {
 
   it('远程路径:prefetch 命中 deviceLink.invoke(maker:get-capabilities),不碰本地 maker', async () => {
     const { getCapabilities, invoke } = stubElectron();
+    invoke.mockImplementation(async (deviceId: string, _channel: string, args: unknown[]) => ({
+      ...caps(`${deviceId}:${String(args[0])}`),
+      sessionDefaultModel: args[0] === 'codex' ? 'remote-session-default' : undefined,
+    }));
     const mod = await import('@/hooks/useAgentCapabilities');
     await mod.prefetchDeviceCapabilities('dev-1');
     expect(invoke).toHaveBeenCalledWith('dev-1', 'maker:get-capabilities', ['claude-code']);
@@ -196,6 +200,9 @@ describe('useAgentCapabilities deviceId-aware cache', () => {
     expect(getCapabilities).not.toHaveBeenCalled();
     expect(mod.getCachedCapabilities('claude-code', 'dev-1')?.availableModels[0].displayName).toBe(
       'dev-1:claude-code',
+    );
+    expect(mod.getCachedCapabilities('codex', 'dev-1')?.sessionDefaultModel).toBe(
+      'remote-session-default',
     );
     // 本地缓存不受影响(没预热过)
     expect(mod.getCachedCapabilities('claude-code')).toBeNull();
@@ -327,6 +334,28 @@ describe('useAgentCapabilities deviceId-aware cache', () => {
       error: 'Invalid agent capabilities response',
     });
     expect(mod.getCachedCapabilities('codex', 'dev-invalid-marker')).toBeNull();
+  });
+
+  it('sessionDefaultModel 必须是字符串,非法默认值不得落缓存', async () => {
+    const invoke = vi.fn(async () => ({
+      ...caps('invalid-session-default'),
+      sessionDefaultModel: { id: 'not-a-string' },
+    }));
+    const getCapabilities = vi.fn(async (k: string) => caps(`local:${k}`));
+    vi.stubGlobal('window', {
+      electronAPI: { maker: { getCapabilities }, deviceLink: { invoke } },
+    });
+    const mod = await import('@/hooks/useAgentCapabilities');
+    const listener = vi.fn();
+    mod.subscribeDeviceCapabilities('dev-invalid-default', 'codex', listener);
+
+    await mod.prefetchDeviceCapabilities('dev-invalid-default');
+
+    expect(listener).toHaveBeenCalledWith({
+      status: 'error',
+      error: 'Invalid agent capabilities response',
+    });
+    expect(mod.getCachedCapabilities('codex', 'dev-invalid-default')).toBeNull();
   });
 
   it('category 必须是字符串,非法分类不得落入远程能力缓存', async () => {

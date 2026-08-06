@@ -187,10 +187,10 @@ function allowsBundledImageInheritance(
 
 /**
  * 同 id preset 仍以远端为主；bundled 只给远端仍保留的同 runtime / 同 model
- * 回填缺失的 contextWindow。这样旧远端不会把已核实的长上下文元数据降级，同时远端
- * 仍可通过移除 runtime / model 停止新建，或用显式窗口覆盖 bundled。
+ * 回填缺失的 contextWindow / maxOutput。这样旧远端不会把新版客户端已核实的模型
+ * 限额降级，同时远端仍可通过移除 runtime / model 停止新建，或用显式值覆盖 bundled。
  */
-function backfillPresetContextWindows(
+function backfillPresetModelLimits(
   primary: ProviderPreset,
   bundled: ProviderPreset,
 ): ProviderPreset {
@@ -210,15 +210,23 @@ function backfillPresetContextWindows(
     );
     let runtimeChanged = false;
     const models = runtime.models.map((model) => {
-      const bundledContextWindow = bundledModels.get(model.id)?.contextWindow;
-      if (
-        model.contextWindow !== undefined ||
-        bundledContextWindow === undefined
-      )
-        return model;
+      const bundledModel = bundledModels.get(model.id);
+      const shouldBackfillContextWindow =
+        model.contextWindow === undefined && bundledModel?.contextWindow !== undefined;
+      const shouldBackfillMaxOutput =
+        model.maxOutput === undefined && bundledModel?.maxOutput !== undefined;
+      if (!shouldBackfillContextWindow && !shouldBackfillMaxOutput) return model;
       runtimeChanged = true;
       changed = true;
-      return { ...model, contextWindow: bundledContextWindow };
+      return {
+        ...model,
+        ...(shouldBackfillContextWindow
+          ? { contextWindow: bundledModel?.contextWindow }
+          : {}),
+        ...(shouldBackfillMaxOutput
+          ? { maxOutput: bundledModel?.maxOutput }
+          : {}),
+      };
     });
     runtimes[agent] = runtimeChanged ? { ...runtime, models } : runtime;
   }
@@ -358,7 +366,7 @@ export function mergeWithBundled(primary: Catalog): Catalog {
   const bundledPresetIds = new Set(bundledPresets.map((preset) => preset.id));
   const presets = bundledPresets.map((bundled) => {
     const remote = primaryPresetsById.get(bundled.id);
-    return remote ? backfillPresetContextWindows(remote, bundled) : bundled;
+    return remote ? backfillPresetModelLimits(remote, bundled) : bundled;
   });
   for (const preset of primaryPresets) {
     if (!bundledPresetIds.has(preset.id)) presets.push(preset);

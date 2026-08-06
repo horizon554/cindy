@@ -33,6 +33,7 @@ import {
   fillCustomProviderModelMetadata,
   fillCustomProviderModelsMetadata,
   fillMatchingCustomProviderPickerModels,
+  mergeCustomProviderPickerSelection,
   readCustomProviderKey,
   replaceCustomProviderModelId,
   setCustomProviderModelReasoning,
@@ -728,6 +729,7 @@ export function CustomProviderDialog({
               name: cur?.name || m.name,
               ...(cur?.mode !== undefined ? { mode: cur.mode } : {}),
               ...(contextWindow !== undefined ? { contextWindow } : {}),
+              ...(cur?.maxOutput !== undefined ? { maxOutput: cur.maxOutput } : {}),
               ...(cur?.modalities !== undefined ? { modalities: cur.modalities } : {}),
               ...(cur?.capabilities !== undefined ? { capabilities: cur.capabilities } : {}),
               ...(cur?.defaultEnabled === false ? { defaultEnabled: false } : {}),
@@ -737,10 +739,12 @@ export function CustomProviderDialog({
                 : {}),
             };
             // mode 没有手工编辑入口,最新有效上报是权威事实；contextWindow 允许用户显式
-            // 清空，所以已有行不回填；modalities/capabilities 缺失时可安全吸收厂商事实。
+            // 清空，所以已有行不回填；modalities/capabilities 是隐藏厂商事实，缺失时吸收；
+            // maxOutput 是硬上限，由 helper 取新旧较小值以吸收供应商降限。
             return fillCustomProviderModelMetadata(row, {
               mode: m.providerReported?.mode,
               ...(cur ? {} : { contextWindow: m.providerReported?.contextWindow }),
+              maxOutput: m.providerReported?.maxOutput,
               modalities: m.providerReported?.modalities,
               capabilities: m.providerReported?.capabilities,
             });
@@ -786,7 +790,6 @@ export function CustomProviderDialog({
     if (!picker) return;
     const chosen = picker.models.filter((m) => picker.selected.has(m.id));
     if (chosen.length === 0) return;
-    const pickerIds = new Set(picker.models.map((m) => m.id));
     // 重映射靠 id 而不是行号:picker 确认会任意增删/重排该 runtime 的行,旧行号
     // 不能直接套到新数组。合并结果必须同步算出一份普通数组,同时喂给状态更新和
     // 草稿重映射——不能指望 patch() 调用后立即读 rtRef 拿到刚提交的值:rtRef 只
@@ -795,62 +798,11 @@ export function CustomProviderDialog({
     // 已有排队工作时,这次读到的可能仍是 previousModels,导致草稿按旧下标错配到
     // 一个已经不存在的行上(review P1)。
     const previousModels = rtRef.current[picker.agent].models;
-    const latestById = new Map<string, ModelRow>();
-    for (const pm of previousModels) {
-      const id = pm.id.trim();
-      if (id && !latestById.has(id)) latestById.set(id, pm);
-    }
-    const merged: ModelRow[] = chosen.map((m) => {
-      const latest = latestById.get(m.id);
-      const contextWindow = latest?.contextWindow ?? m.contextWindow;
-      const defaultEnabled = latest?.defaultEnabled ?? m.defaultEnabled;
-      const mode = latest?.mode ?? m.mode;
-      const supportsImageInput = latest ? latest.supportsImageInput : m.supportsImageInput;
-      const reasoning = latest ? latest.reasoning : m.reasoning;
-      const reasoningEfforts = latest ? latest.reasoningEfforts : m.reasoningEfforts;
-      const modalities = latest?.modalities ?? m.modalities;
-      const capabilities = latest?.capabilities ?? m.capabilities;
-      return {
-        id: m.id,
-        name: latest?.name.trim() ? latest.name.trim() : m.name,
-        ...(mode !== undefined ? { mode } : {}),
-        ...(contextWindow !== undefined ? { contextWindow } : {}),
-        ...(modalities !== undefined
-          ? { modalities: { input: [...modalities.input], output: [...modalities.output] } }
-          : {}),
-        ...(capabilities !== undefined ? { capabilities: { ...capabilities } } : {}),
-        ...(defaultEnabled === false ? { defaultEnabled: false } : {}),
-        ...(supportsImageInput === true ? { supportsImageInput: true } : {}),
-        ...(reasoning === true && reasoningEfforts?.length
-          ? { reasoning: true, reasoningEfforts: [...reasoningEfforts] }
-          : {}),
-      };
-    });
-    for (const m of previousModels) {
-      const id = m.id.trim();
-      if (id && !pickerIds.has(id) && !merged.some((r) => r.id === id)) {
-        merged.push({
-          id,
-          name: m.name.trim() || id,
-          ...(m.mode !== undefined ? { mode: m.mode } : {}),
-          ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
-          ...(m.modalities !== undefined
-            ? {
-                modalities: {
-                  input: [...m.modalities.input],
-                  output: [...m.modalities.output],
-                },
-              }
-            : {}),
-          ...(m.capabilities !== undefined ? { capabilities: { ...m.capabilities } } : {}),
-          ...(m.defaultEnabled === false ? { defaultEnabled: false } : {}),
-          ...(m.supportsImageInput === true ? { supportsImageInput: true } : {}),
-          ...(m.reasoning === true && m.reasoningEfforts?.length
-            ? { reasoning: true, reasoningEfforts: [...m.reasoningEfforts] }
-            : {}),
-        });
-      }
-    }
+    const merged = mergeCustomProviderPickerSelection(
+      previousModels,
+      picker.models,
+      picker.selected,
+    );
     patch(picker.agent, (x) => ({ ...x, models: merged }));
     const oldIndexToId = new Map(previousModels.map((m, i) => [i, m.id.trim()]));
     const newIndexById = new Map<string, number>();

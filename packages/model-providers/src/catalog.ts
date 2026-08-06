@@ -465,6 +465,10 @@ function isValidPreset(v: unknown): v is ProviderPreset {
         && (typeof mm.contextWindow !== 'number' || !Number.isFinite(mm.contextWindow) || mm.contextWindow <= 0)
       ) return false;
       if (
+        mm.maxOutput !== undefined
+        && (typeof mm.maxOutput !== 'number' || !Number.isFinite(mm.maxOutput) || mm.maxOutput <= 0)
+      ) return false;
+      if (
         mm.mode !== undefined
         && (
           typeof mm.mode !== 'string'

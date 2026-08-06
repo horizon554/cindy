@@ -156,6 +156,24 @@ describe('validateCustomProviderConfig auth 段', () => {
     };
     expect(validateCustomProviderConfig(noModels).ok).toBe(true);
   });
+
+  it('accepts positive finite maxOutput and rejects invalid runtime limits', () => {
+    const withMaxOutput = (maxOutput: unknown) => ({
+      ...BASE,
+      runtimes: {
+        'claude-code': {
+          ...BASE.runtimes['claude-code']!,
+          models: [{ id: 'm1', name: 'M1', maxOutput }],
+        },
+      },
+    });
+
+    expect(validateCustomProviderConfig(withMaxOutput(8_192) as CustomProviderConfig).ok).toBe(true);
+    expect(validateCustomProviderConfig(withMaxOutput(0) as CustomProviderConfig).ok).toBe(false);
+    expect(
+      validateCustomProviderConfig(withMaxOutput(Number.POSITIVE_INFINITY) as CustomProviderConfig).ok,
+    ).toBe(false);
+  });
 });
 
 describe('mergeDiscoveredModelsIntoConfig（发现结果持久化的 additions-only 合并）', () => {
@@ -240,6 +258,37 @@ describe('mergeDiscoveredModelsIntoConfig（发现结果持久化的 additions-o
     ]);
     // 原配置不就地修改（纯函数）。
     expect(BASE.runtimes['claude-code']?.models).toEqual([{ id: 'm1', name: 'M1' }]);
+  });
+
+  it('持久化 maxOutput，允许供应商降限但不自动抬高已有上限', () => {
+    const withExisting: CustomProviderConfig = {
+      ...BASE,
+      runtimes: {
+        'claude-code': {
+          ...BASE.runtimes['claude-code']!,
+          models: [
+            { id: 'm1', name: 'M1', maxOutput: 4_096 },
+            { id: 'lowered', name: 'Lowered', maxOutput: 16_384 },
+            { id: 'gap', name: 'Gap' },
+          ],
+        },
+      },
+    };
+    const merged = mergeDiscoveredModelsIntoConfig(withExisting, 'claude-code', [
+      { id: 'm1', name: 'M1', maxOutput: 16_384 },
+      { id: 'lowered', name: 'Lowered', maxOutput: 8_192 },
+      { id: 'gap', name: 'Gap', maxOutput: 8_192 },
+      { id: 'new', name: 'New', maxOutput: 32_768 },
+      { id: 'invalid', name: 'Invalid', maxOutput: Number.NaN },
+    ]);
+
+    expect(merged?.runtimes['claude-code']?.models).toEqual([
+      { id: 'm1', name: 'M1', maxOutput: 4_096 },
+      { id: 'lowered', name: 'Lowered', maxOutput: 8_192 },
+      { id: 'gap', name: 'Gap', maxOutput: 8_192 },
+      { id: 'new', name: 'New', maxOutput: 32_768 },
+      { id: 'invalid', name: 'Invalid' },
+    ]);
   });
 
   it('端点声明的 contextWindow 随发现落盘,非法值丢弃回落默认(#386)', () => {

@@ -138,6 +138,16 @@ function validateRuntime(agent: string, rt: unknown): ValidationResult {
       return invalid(`runtime '${agent}' model.contextWindow must be a positive number`);
     }
     if (
+      mm.maxOutput !== undefined
+      && (
+        typeof mm.maxOutput !== 'number'
+        || !Number.isFinite(mm.maxOutput)
+        || mm.maxOutput <= 0
+      )
+    ) {
+      return invalid(`runtime '${agent}' model.maxOutput must be a positive number`);
+    }
+    if (
       mm.mode !== undefined
       && (
         typeof mm.mode !== 'string'
@@ -425,6 +435,7 @@ function normalizeRuntime(
         name: m.name.trim(),
         ...(mode !== undefined ? { mode } : {}),
         ...(m.contextWindow !== undefined ? { contextWindow: m.contextWindow } : {}),
+        ...(m.maxOutput !== undefined ? { maxOutput: m.maxOutput } : {}),
         // 厂商自报能力随配置持久化(未命中知识库的第三方模型也保留真实能力)。
         ...(modalities ? { modalities } : {}),
         ...(capabilities ? { capabilities } : {}),
@@ -497,7 +508,8 @@ function normalizeConfig(config: CustomProviderConfig): CustomProviderConfig {
  * 供应商「重启后模型仍在」的保证——内存 augment 会随进程消失。
  *
  * 除追加新模型外,还会更新存量模型的分类/能力事实。mode 没有手工编辑入口,最新有效上报
- * 覆盖旧值；contextWindow / modalities / capabilities 只 gap-fill、不覆盖既有值。老 provider
+ * 覆盖旧值；maxOutput 作为硬上限只收紧，contextWindow / modalities / capabilities 只
+ * gap-fill、不覆盖既有值。老 provider
  * 首次在新版发现时才能拿到厂商真实能力,重启后 boot 的 config-resolve 不再退回保守默认。
  * 无新增且无回填时返回 null(调用方免写库)。
  */
@@ -511,6 +523,7 @@ export function mergeDiscoveredModelsIntoConfig(
     name: string;
     mode?: string;
     contextWindow?: number;
+    maxOutput?: number;
     modalities?: ProviderRuntimeModelConfig['modalities'];
     capabilities?: ProviderRuntimeModelConfig['capabilities'];
   }[],
@@ -521,6 +534,7 @@ export function mergeDiscoveredModelsIntoConfig(
   const reported = new Map<string, {
     mode?: string;
     contextWindow?: number;
+    maxOutput?: number;
     modalities?: ProviderRuntimeModelConfig['modalities'];
     capabilities?: ProviderRuntimeModelConfig['capabilities'];
   }>();
@@ -529,17 +543,24 @@ export function mergeDiscoveredModelsIntoConfig(
     const entry: {
       mode?: string;
       contextWindow?: number;
+      maxOutput?: number;
       modalities?: ProviderRuntimeModelConfig['modalities'];
       capabilities?: ProviderRuntimeModelConfig['capabilities'];
     } = {};
     const mode = sanitizeModelMode(m.mode);
     if (mode !== undefined) entry.mode = mode;
-    if (typeof m.contextWindow === 'number' && m.contextWindow > 0) entry.contextWindow = m.contextWindow;
+    if (typeof m.contextWindow === 'number' && Number.isFinite(m.contextWindow) && m.contextWindow > 0) {
+      entry.contextWindow = m.contextWindow;
+    }
+    if (typeof m.maxOutput === 'number' && Number.isFinite(m.maxOutput) && m.maxOutput > 0) {
+      entry.maxOutput = m.maxOutput;
+    }
     if (m.modalities) entry.modalities = m.modalities;
     if (m.capabilities) entry.capabilities = m.capabilities;
     if (
       entry.mode !== undefined ||
       entry.contextWindow !== undefined ||
+      entry.maxOutput !== undefined ||
       entry.modalities !== undefined ||
       entry.capabilities !== undefined
     ) {
@@ -547,7 +568,8 @@ export function mergeDiscoveredModelsIntoConfig(
     }
   }
   let changed = false;
-  // mode 取最新有效厂商事实；其余字段只在缺失时 gap-fill(不覆盖用户配置)。
+  // mode 取最新有效厂商事实；maxOutput 是上游硬上限，取新旧较小值；其余字段只在
+  // 缺失时 gap-fill(不覆盖用户配置)。
   const backfilled = rt.models.map((m) => {
     const r = reported.get(m.id);
     if (!r) return m;
@@ -558,6 +580,15 @@ export function mergeDiscoveredModelsIntoConfig(
     }
     if (next.contextWindow === undefined && r.contextWindow !== undefined) {
       next = { ...next, contextWindow: r.contextWindow };
+      changed = true;
+    }
+    const maxOutput = next.maxOutput === undefined
+      ? r.maxOutput
+      : r.maxOutput === undefined
+        ? next.maxOutput
+        : Math.min(next.maxOutput, r.maxOutput);
+    if (maxOutput !== undefined && maxOutput !== next.maxOutput) {
+      next = { ...next, maxOutput };
       changed = true;
     }
     if (next.modalities === undefined && r.modalities !== undefined) {
@@ -587,6 +618,7 @@ export function mergeDiscoveredModelsIntoConfig(
             name: m.name,
             ...(r?.mode !== undefined ? { mode: r.mode } : {}),
             ...(r?.contextWindow !== undefined ? { contextWindow: r.contextWindow } : {}),
+            ...(r?.maxOutput !== undefined ? { maxOutput: r.maxOutput } : {}),
             ...(r?.modalities !== undefined ? { modalities: r.modalities } : {}),
             ...(r?.capabilities !== undefined ? { capabilities: r.capabilities } : {}),
           };
@@ -644,6 +676,11 @@ function parseRuntimes(raw: string): Partial<Record<AgentKind, CustomProviderRun
                 && Number.isFinite(m.contextWindow)
                 && m.contextWindow > 0
                 ? { contextWindow: m.contextWindow }
+                : {}),
+              ...(typeof m.maxOutput === 'number'
+                && Number.isFinite(m.maxOutput)
+                && m.maxOutput > 0
+                ? { maxOutput: m.maxOutput }
                 : {}),
               // 与 normalizeRuntime 同口径:读回保留厂商自报能力,round-trip 稳定
               // (updateCustomProviderIfUnchanged 靠 JSON 比较,读写不一致会误判 stale)。

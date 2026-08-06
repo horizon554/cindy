@@ -499,6 +499,8 @@ export interface ProviderRuntimeModelConfig {
   id: string;
   name: string;
   contextWindow?: number;
+  /** 厂商明确上报的最大输出 token 数；缺省时由具体 Agent 使用自身保守默认。 */
+  maxOutput?: number;
   /**
    * 厂商模型列表明确上报的用途类型（chat / responses / embedding / image_generation / …）。
    * 随自定义供应商配置持久化并投影回 CatalogModel，避免重启后丢失非聊天分类事实。

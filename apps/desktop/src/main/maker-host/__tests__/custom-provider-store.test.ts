@@ -436,6 +436,7 @@ describe('custom-provider-store CRUD (per-runtime)', () => {
               id: 'vlm',
               name: 'VLM',
               contextWindow: 1_048_576,
+              maxOutput: 8_192,
               modalities: { input: ['text', 'image'], output: ['text'] },
               // 坏数据:未知键 + 非 boolean 值,写库/读回都应被清洗掉。
               capabilities: {
@@ -455,6 +456,7 @@ describe('custom-provider-store CRUD (per-runtime)', () => {
         id: 'vlm',
         name: 'VLM',
         contextWindow: 1_048_576,
+        maxOutput: 8_192,
         modalities: { input: ['text', 'image'], output: ['text'] },
         capabilities: { reasoning: true, toolCall: false },
       },

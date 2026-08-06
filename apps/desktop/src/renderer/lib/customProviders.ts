@@ -109,6 +109,7 @@ export function customProviderModelConfigFromCatalogModel(
     | 'name'
     | 'contextWindow'
     | 'contextWindowExplicit'
+    | 'maxOutput'
     | 'mode'
     | 'defaultEnabled'
     | 'supportsImageInput'
@@ -130,6 +131,7 @@ export function customProviderModelConfigFromCatalogModel(
     ...(model.contextWindowExplicit === true || model.contextWindow !== DEFAULT_CUSTOM_CONTEXT_WINDOW
       ? { contextWindow: model.contextWindow }
       : {}),
+    ...(model.maxOutput !== undefined ? { maxOutput: model.maxOutput } : {}),
     ...(model.mode !== undefined ? { mode: model.mode } : {}),
     // 厂商自报的模态/能力随编辑往返保留(与 contextWindow 同理,缺省不写)。
     ...(model.modalities ? { modalities: model.modalities } : {}),
@@ -177,6 +179,7 @@ export function providerViewToCustomProviderConfig(p: ProviderView): CustomProvi
 export interface DiscoveredReportedInput {
   mode?: string;
   contextWindow?: number;
+  maxOutput?: number;
   modalities?: { input: string[]; output: string[] };
   capabilities?: Record<string, unknown>;
 }
@@ -185,8 +188,22 @@ export interface DiscoveredReportedInput {
 export interface DiscoveredProviderReported {
   mode?: string;
   contextWindow?: number;
+  maxOutput?: number;
   modalities?: ProviderRuntimeModelConfig['modalities'];
   capabilities?: ProviderRuntimeModelConfig['capabilities'];
+}
+
+/**
+ * `maxOutput` 是上游硬上限而非可编辑偏好。刷新只能维持或收紧限制，不能因较大的新值
+ * 自动放宽；这样供应商降限后不会继续发送超预算请求，升限则等待明确的配置迁移。
+ */
+function conservativeMaxOutput(
+  existing: number | undefined,
+  reported: number | undefined,
+): number | undefined {
+  if (existing === undefined) return reported;
+  if (reported === undefined) return existing;
+  return Math.min(existing, reported);
 }
 
 /** 已知能力键(对齐 CatalogModel.capabilities);上游宽松 capabilities 只取这些 boolean。 */
@@ -203,6 +220,9 @@ export function persistableProviderReportedModelHints(
     if (mode.length > 0 && mode.length <= 128) out.mode = mode;
   }
   if (typeof pr.contextWindow === 'number' && pr.contextWindow > 0) out.contextWindow = pr.contextWindow;
+  if (typeof pr.maxOutput === 'number' && Number.isFinite(pr.maxOutput) && pr.maxOutput > 0) {
+    out.maxOutput = pr.maxOutput;
+  }
   if (pr.modalities && Array.isArray(pr.modalities.input) && Array.isArray(pr.modalities.output)) {
     out.modalities = { input: [...pr.modalities.input], output: [...pr.modalities.output] };
   }
@@ -218,7 +238,8 @@ export function persistableProviderReportedModelHints(
 
 /**
  * 用发现 / resolve 的能力事实更新表单行。mode 没有手工编辑入口，最新有效上报是权威事实，
- * 可覆盖旧值；其余可编辑/可显式配置字段仍只 gap-fill，避免异步响应覆盖用户当前配置。
+ * 可覆盖旧值；contextWindow 与能力字段仍只 gap-fill。maxOutput 是隐藏的安全上限，取已有
+ * 值与新上报值的较小者，允许供应商降限但不自动放宽。
  * 上游宽松 capability map 会先收窄成客户端可持久化的四个 boolean 键。
  */
 export function fillCustomProviderModelMetadata(
@@ -226,11 +247,15 @@ export function fillCustomProviderModelMetadata(
   reported: DiscoveredReportedInput | undefined,
 ): ProviderRuntimeModelConfig {
   const picked = persistableProviderReportedModelHints(reported);
+  const maxOutput = conservativeMaxOutput(model.maxOutput, picked.maxOutput);
   return {
     ...model,
     ...(picked.mode !== undefined && model.mode !== picked.mode ? { mode: picked.mode } : {}),
     ...(model.contextWindow === undefined && picked.contextWindow !== undefined
       ? { contextWindow: picked.contextWindow }
+      : {}),
+    ...(maxOutput !== undefined && maxOutput !== model.maxOutput
+      ? { maxOutput }
       : {}),
     ...(model.modalities === undefined && picked.modalities !== undefined
       ? { modalities: picked.modalities }
@@ -245,12 +270,16 @@ export function fillCustomProviderModelMetadata(
 export function customProviderModelConfigForSave(
   model: ProviderRuntimeModelConfig,
 ): ProviderRuntimeModelConfig {
-  const mode = persistableProviderReportedModelHints({ mode: model.mode }).mode;
+  const persisted = persistableProviderReportedModelHints({
+    mode: model.mode,
+    maxOutput: model.maxOutput,
+  });
   return {
     id: model.id.trim(),
     name: model.name.trim(),
-    ...(mode !== undefined ? { mode } : {}),
+    ...(persisted.mode !== undefined ? { mode: persisted.mode } : {}),
     ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+    ...(persisted.maxOutput !== undefined ? { maxOutput: persisted.maxOutput } : {}),
     ...(model.modalities !== undefined
       ? {
           modalities: {
@@ -273,12 +302,12 @@ export function customProviderModelConfigForSave(
 /**
  * 刷新时把接口发现结果合并进配置:新模型追加(默认隐藏),已存在模型保持成员资格不变。
  *
- * 厂商自报的分类/能力事实(mode / contextWindow / modalities / capabilities,来自 OpenRouter 等
+ * 厂商自报的分类/能力事实(mode / contextWindow / maxOutput / modalities / capabilities,来自 OpenRouter 等
  * /v1/models)会持久化进配置,离线/重启后仍在,并让「保存即 resolve」把它作为 providerReported
  * 上传——未命中知识库的第三方模型也能保留厂商自报的真实窗口与能力,而非在 resolve 时落保守默认。
  *
  * **关键**:不仅新模型,已存在模型也会更新。mode 没有手工编辑入口,最新有效上报覆盖旧值；
- * 其余字段只在缺失时 gap-fill,不覆盖用户配置。否则老 provider 首次在新版刷新时,存量模型
+ * contextWindow/能力字段只在缺失时 gap-fill；maxOutput 取新旧较小值。否则老 provider 首次在新版刷新时,存量模型
  * 永远拿不到这些字段,重启后 boot 的 config-resolve 仍是稀疏输入 → 又落默认。
  *
  * `changed` 标记配置是否实际变化(新增 或 任一字段回填)。调用方据此决定是否落盘持久化:仅看
@@ -298,6 +327,7 @@ export function appendDiscoveredCustomProviderModels(
     if (
       picked.mode !== undefined ||
       picked.contextWindow !== undefined ||
+      picked.maxOutput !== undefined ||
       picked.modalities !== undefined ||
       picked.capabilities !== undefined
     ) {
@@ -305,7 +335,7 @@ export function appendDiscoveredCustomProviderModels(
     }
   }
   let changed = false;
-  // 回填:存量模型缺某字段且厂商这次上报了 → 逐字段补上(不覆盖既有值,含用户手填)。
+  // 回填:除 maxOutput 按硬上限取较小值外，其余存量字段只补缺口。
   const models: ProviderRuntimeModelConfig[] = existing.map((model) => {
     const r = reported.get(model.id);
     if (!r) return model;
@@ -316,6 +346,11 @@ export function appendDiscoveredCustomProviderModels(
     }
     if (next.contextWindow === undefined && r.contextWindow !== undefined) {
       next = { ...next, contextWindow: r.contextWindow };
+      changed = true;
+    }
+    const maxOutput = conservativeMaxOutput(next.maxOutput, r.maxOutput);
+    if (maxOutput !== undefined && maxOutput !== next.maxOutput) {
+      next = { ...next, maxOutput };
       changed = true;
     }
     if (next.modalities === undefined && r.modalities !== undefined) {
@@ -339,6 +374,7 @@ export function appendDiscoveredCustomProviderModels(
       defaultEnabled: false,
       ...(r?.mode !== undefined ? { mode: r.mode } : {}),
       ...(r?.contextWindow !== undefined ? { contextWindow: r.contextWindow } : {}),
+      ...(r?.maxOutput !== undefined ? { maxOutput: r.maxOutput } : {}),
       ...(r?.modalities !== undefined ? { modalities: r.modalities } : {}),
       ...(r?.capabilities !== undefined ? { capabilities: r.capabilities } : {}),
     });
@@ -360,6 +396,82 @@ export function fillCustomProviderModelsMetadata(
   if (!resolved || resolved.length === 0) return [...models];
   const byId = new Map(resolved.map((model) => [model.id, model]));
   return models.map((model) => fillCustomProviderModelMetadata(model, byId.get(model.id)));
+}
+
+/**
+ * Apply a model-picker selection to the latest form rows without losing hidden provider facts.
+ * Picker-seen unchecked ids are removed; rows added after discovery stay intact. For selected ids,
+ * edits made while the picker was open win over its snapshot, while newly resolved metadata fills
+ * gaps. Nested capability values are cloned before entering form state.
+ */
+export function mergeCustomProviderPickerSelection(
+  previousModels: readonly ProviderRuntimeModelConfig[],
+  pickerModels: readonly ProviderRuntimeModelConfig[],
+  selectedIds: ReadonlySet<string>,
+): ProviderRuntimeModelConfig[] {
+  const chosen = pickerModels.filter((model) => selectedIds.has(model.id));
+  const pickerIds = new Set(pickerModels.map((model) => model.id));
+  const latestById = new Map<string, ProviderRuntimeModelConfig>();
+  for (const model of previousModels) {
+    const id = model.id.trim();
+    if (id && !latestById.has(id)) latestById.set(id, model);
+  }
+
+  const merged = chosen.map((model): ProviderRuntimeModelConfig => {
+    const latest = latestById.get(model.id);
+    const contextWindow = latest?.contextWindow ?? model.contextWindow;
+    const maxOutput = conservativeMaxOutput(latest?.maxOutput, model.maxOutput);
+    const defaultEnabled = latest?.defaultEnabled ?? model.defaultEnabled;
+    const mode = latest?.mode ?? model.mode;
+    const supportsImageInput = latest ? latest.supportsImageInput : model.supportsImageInput;
+    const reasoning = latest ? latest.reasoning : model.reasoning;
+    const reasoningEfforts = latest ? latest.reasoningEfforts : model.reasoningEfforts;
+    const modalities = latest?.modalities ?? model.modalities;
+    const capabilities = latest?.capabilities ?? model.capabilities;
+    return {
+      id: model.id,
+      name: latest?.name.trim() ? latest.name.trim() : model.name,
+      ...(mode !== undefined ? { mode } : {}),
+      ...(contextWindow !== undefined ? { contextWindow } : {}),
+      ...(maxOutput !== undefined ? { maxOutput } : {}),
+      ...(modalities !== undefined
+        ? { modalities: { input: [...modalities.input], output: [...modalities.output] } }
+        : {}),
+      ...(capabilities !== undefined ? { capabilities: { ...capabilities } } : {}),
+      ...(defaultEnabled === false ? { defaultEnabled: false } : {}),
+      ...(supportsImageInput === true ? { supportsImageInput: true } : {}),
+      ...(reasoning === true && reasoningEfforts?.length
+        ? { reasoning: true, reasoningEfforts: [...reasoningEfforts] }
+        : {}),
+    };
+  });
+
+  for (const model of previousModels) {
+    const id = model.id.trim();
+    if (!id || pickerIds.has(id) || merged.some((row) => row.id === id)) continue;
+    merged.push({
+      id,
+      name: model.name.trim() || id,
+      ...(model.mode !== undefined ? { mode: model.mode } : {}),
+      ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+      ...(model.maxOutput !== undefined ? { maxOutput: model.maxOutput } : {}),
+      ...(model.modalities !== undefined
+        ? {
+            modalities: {
+              input: [...model.modalities.input],
+              output: [...model.modalities.output],
+            },
+          }
+        : {}),
+      ...(model.capabilities !== undefined ? { capabilities: { ...model.capabilities } } : {}),
+      ...(model.defaultEnabled === false ? { defaultEnabled: false } : {}),
+      ...(model.supportsImageInput === true ? { supportsImageInput: true } : {}),
+      ...(model.reasoning === true && model.reasoningEfforts?.length
+        ? { reasoning: true, reasoningEfforts: [...model.reasoningEfforts] }
+        : {}),
+    });
+  }
+  return merged;
 }
 
 /**
