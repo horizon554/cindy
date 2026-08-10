@@ -6,13 +6,15 @@
  *     → ANTHROPIC_BASE_URL 指向本地 bridge handler
  *       → upstreamBase 指向本地 Responses stub
  *
- * stub 的第一次请求故意「发一半就挂住」,触发 cc 内置 watchdog(阈值压到 1.5s);cc 随后在
- * 同一轮以 `stream:false` 重试,bridge 必须回一个完整的 Anthropic Message JSON。修复前
- * bridge 回的是 HTTP 200 + SSE,cc 会报
+ * stub 在 cc 升级到非流式之前每次都「发两帧后断 socket」,逼它把流式重试耗尽 —— cc 只在
+ * 流式尝试抛错后才走非流式 fallback,且该 fallback 请求**不带 stream 字段**。bridge 必须
+ * 回一个完整的 Anthropic Message JSON;修复前它回的是 HTTP 200 + SSE,cc 随即报
  * "API returned an empty or malformed response (HTTP 200)" —— 正是用户截图那条。
  *
  * 默认跳过(spawn 真实 CLI、耗时数十秒);需要时:
  *   BRIDGE_E2E=1 pnpm --filter @cindy/anthropic-responses-bridge exec vitest run src/__tests__/nonstream-fallback-e2e.test.ts
+ *
+ * 二进制按当前平台解析,本平台没有随包二进制时用例显式 skip(见 resolveClaudeBin)。
  */
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
@@ -28,7 +30,19 @@ const E2E = process.env.BRIDGE_E2E === '1';
 const ANSWER = 'nonstream fallback ok';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-const claudeBin = path.join(repoRoot, 'apps/claude-code-bin/darwin-arm64/claude');
+
+/**
+ * 按当前平台解析随包 cc 二进制(与 scripts/ensure-agent-binaries.mjs 的
+ * `currentPlatformKey()` / `binFileFor()` 同约定:`<platform>-<arch>` 目录 + win32 带 .exe)。
+ * 该平台没有就位的二进制时返回 null —— 由用例显式 skip,而不是断言失败:随包二进制按平台
+ * 下载,别的平台开 BRIDGE_E2E=1 不该看到一个「测试失败」。
+ */
+function resolveClaudeBin(): string | null {
+  const platformKey = `${process.platform}-${process.arch}`;
+  const binFile = platformKey.startsWith('win32') ? 'claude.exe' : 'claude';
+  const candidate = path.join(repoRoot, 'apps/claude-code-bin', platformKey, binFile);
+  return fs.existsSync(candidate) ? candidate : null;
+}
 
 function sseFrame(event: Record<string, unknown>): string {
   return `data: ${JSON.stringify(event)}\n\n`;
@@ -147,8 +161,15 @@ function startBridge(upstreamBase: string, state: ChainState): Promise<{ url: st
 }
 
 describe.skipIf(!E2E)('watchdog → 非流式 fallback → bridge(真实 claude 二进制,本地 stub 上游)', () => {
-  it('上游中途静默 → cc 以 stream:false 重试 → bridge 回完整 Message,cc 正常出答案', async () => {
-    expect(fs.existsSync(claudeBin)).toBe(true);
+  it('上游中途断流 → cc 升级非流式 fallback → bridge 回完整 Message,cc 正常出答案', async (ctx) => {
+    const claudeBin = resolveClaudeBin();
+    if (!claudeBin) {
+      // 随包二进制按平台下载(见 scripts/ensure-agent-binaries.mjs);本平台没有就位时
+      // 明确跳过,不伪装成失败。
+      console.warn(`跳过:本平台(${process.platform}-${process.arch})没有随包 claude 二进制`);
+      ctx.skip();
+      return;
+    }
     const state: ChainState = { nonStream: 0 };
     const stub = await startStubUpstream(state);
     const bridge = await startBridge(stub.url, state);
