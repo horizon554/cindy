@@ -126,11 +126,20 @@ async function readBodyWithLimit(response: Response, limitBytes: number): Promis
   }
 }
 
+/**
+ * 按 SSE 规范切事件:空行分隔事件,**同一事件的多条 `data:` 行先以 `\n` 拼成一个负载**
+ * 再解析。逐行独立 JSON.parse 会把「合法但跨多行」的事件当成坏帧,整个非流式 fallback
+ * 被判成 502(review 反馈)。与 responses-anthropic-bridge 的 parseSseBlock 同口径。
+ */
 function parseSsePayloads(body: string): unknown[] {
   const payloads: unknown[] = [];
-  for (const line of body.split(/\r?\n/)) {
-    if (!line.startsWith('data:')) continue;
-    const payload = line.slice(5).trim();
+  for (const block of body.split(/\r?\n\r?\n/)) {
+    const data: string[] = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+    }
+    if (data.length === 0) continue;
+    const payload = data.join('\n').trim();
     if (!payload || payload === '[DONE]') continue;
     payloads.push(JSON.parse(payload) as unknown);
   }

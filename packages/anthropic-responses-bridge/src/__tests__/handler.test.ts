@@ -28,6 +28,17 @@ const OK_SSE = [
   JSON.stringify({ type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 1, output_tokens: 1 } } }),
 ];
 
+/** 原样投递一段 SSE 文本(用于构造跨多行 data: 的事件)。 */
+function rawStream(text: string): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(enc.encode(text));
+      controller.close();
+    },
+  });
+}
+
 function providerConfig(overrides?: Partial<BridgeProviderConfig>): BridgeProviderConfig {
   return {
     prefix: 'chatgpt/',
@@ -295,6 +306,43 @@ describe('createResponsesHandler', () => {
 
     expect(result.status).toBe(200);
     expect(String(result.headers['content-type'])).toContain('application/json');
+    expect(JSON.parse(result.text)).toMatchObject({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'hi' }],
+      stop_reason: 'end_turn',
+    });
+  });
+
+  it('stream:false 上游 SSE 事件跨多行 data: → 按空行合并后解析,不误判成坏帧(review 反馈)', async () => {
+    // SSE 规范允许同一事件由多条 data: 行组成(以 \n 拼接)。逐行独立 JSON.parse 会在
+    // 第一段就抛错,把一个合法响应变成 502。
+    const body = [
+      'event: response.created',
+      'data: {"type":"response.created",',
+      'data:  "response":{"id":"r","model":"gpt-5.5"}}',
+      '',
+      'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}',
+      '',
+      'data: {"type":"response.output_text.delta","output_index":0,',
+      'data:  "delta":"hi"}',
+      '',
+      'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message"}}',
+      '',
+      'data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}',
+      '',
+      'data: [DONE]',
+      '',
+    ].join('\n');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(rawStream(body), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })));
+    const handler = createResponsesHandler({ providers: [providerConfig()] });
+
+    const result = await invoke(handler, { model: 'chatgpt/gpt-5.5', messages: [], stream: false });
+
+    expect(result.status).toBe(200);
     expect(JSON.parse(result.text)).toMatchObject({
       type: 'message',
       role: 'assistant',
