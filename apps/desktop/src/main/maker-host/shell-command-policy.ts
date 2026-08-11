@@ -677,12 +677,25 @@ function commandWordLiteralCore(token: string): string {
     .replace(/['"]/g, '');
 }
 
-/** A word made only of expansions can resolve to anything, including simctl. */
+/**
+ * A word whose executable *name* is made only of expansions can resolve to
+ * anything, including simctl. Only the basename selects the executable, so a
+ * knowable directory prefix does not make a dynamic name provable:
+ * `$DIR/build/$NAME` is as unknowable as `$NAME`.
+ */
 function isPureExpansionWord(token: string): boolean {
-  return /[$`]/.test(token) && commandWordLiteralCore(token).replace(/[\s/=,.:+-]/g, '') === '';
+  if (!/[$`]/.test(token)) return false;
+  const core = commandWordLiteralCore(token).replace(/\\/g, '/');
+  const basename = core.slice(core.lastIndexOf('/') + 1);
+  return basename.replace(/[\s=,.:+-]/g, '') === '';
 }
 
-/** `simct?`, `simctl~foo`, `xc[r]un`: a literal core that still names the boundary. */
+/**
+ * A literal core that still points at the boundary, either because it already
+ * carries most of the name (`simct?`, `simctl~foo`, `xc[r]un`) or because it is
+ * a fragment of one that the stripped expansion could complete (`xcr$TAIL`,
+ * `${DIR}crun`, `sim*`).
+ */
 function isSimulatorFragmentCore(core: string): boolean {
   // Trailing separators are left behind by stripped expansions (`$X/simctl/$Y`),
   // so classify against the last segment that still carries literal text.
@@ -694,12 +707,10 @@ function isSimulatorFragmentCore(core: string): boolean {
       .at(-1) ?? ''
   ).toLowerCase();
   if (!name) return false;
-  return SIMULATOR_EXECUTOR_NAMES.some((executor) => {
-    for (let length = executor.length; length >= MIN_SIMULATOR_FRAGMENT_LENGTH; length -= 1) {
-      if (name.startsWith(executor.slice(0, length))) return true;
-    }
-    return false;
-  });
+  return SIMULATOR_EXECUTOR_NAMES.some(
+    (executor) =>
+      name.startsWith(executor.slice(0, MIN_SIMULATOR_FRAGMENT_LENGTH)) || executor.includes(name),
+  );
 }
 
 /**

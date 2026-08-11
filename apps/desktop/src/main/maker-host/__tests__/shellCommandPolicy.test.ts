@@ -335,4 +335,32 @@ SH`,
   ])('denies a Simulator executor assembled from string fragments: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
+
+  // Only the basename selects the executable, and a literal fragment of an
+  // executor name can be completed by the expansion next to it. Both stay
+  // fail-closed even though no whole Simulator word appears.
+  it.each([
+    'xcr$TAIL boot DEVICE',
+    'sim$TAIL shutdown DEVICE',
+    'xc$TAIL boot DEVICE',
+    '${DIR}crun boot DEVICE',
+    'simct$TAIL shutdown DEVICE',
+    'sim* shutdown DEVICE',
+    '$DIR/build/$NAME --version',
+    '"$PWD/build/$NAME" --version',
+    '$DIR/simctl/$SUB shutdown DEVICE',
+  ])('denies a command word whose executable name cannot be resolved: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
+  });
+
+  // The deliberate boundary of the narrowing: the executable name is knowable
+  // and is not a Simulator executor, so denying it would be a guess about the
+  // expansion rather than a product rule. Documented in the PR description.
+  it.each([
+    '$DIR/build/tool --version',
+    'tool$SUFFIX --version',
+    'build$SUFFIX --version',
+  ])('allows a resolvable non-Simulator executable name: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
+  });
 });
