@@ -224,6 +224,8 @@ const PREFIX_VALUE_OPTIONS: Record<string, RegExp> = {
   arch: /^(?:-arch|--arch|-d|-e)$/,
   caffeinate: /^(?:-t|-w)$/,
   env: /^(?:-u|--unset|-C|--chdir|-S|--split-string)$/,
+  // `exec [-cl] [-a name] command …` — `-a` supplies argv[0], the command follows.
+  exec: /^-a$/,
   gtimeout: /^(?:-k|-s|--kill-after|--signal)$/,
   nice: /^(?:-n|--adjustment)$/,
   sudo: /^(?:-u|--user|-g|--group|-h|--host|-p|--prompt|-C|--close-from|-D|--chdir|-R|--chroot|-T|--command-timeout|-U|--other-user|-r|--role)$/,
@@ -252,8 +254,21 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     const head = executableName(tokens[0]);
 
     if (SHELL_EXECUTABLES.has(head)) {
-      const flag = tokens.findIndex((token) => /^-[A-Za-z]*c[A-Za-z]*$/.test(token));
-      if (flag > 0) return { tokens: [], nestedShell: tokens[flag + 1] ?? '', assignedValues };
+      // Only leading options belong to the shell. `bash ./run.sh -c 'x'` passes
+      // `-c` to the script as `$1`, so scanning the whole argv would classify an
+      // ordinary script argument as an executed shell program.
+      let index = 1;
+      while (index < tokens.length) {
+        const token = tokens[index]!;
+        if (token === '--') break;
+        if (!token.startsWith('-') && !token.startsWith('+')) break;
+        if (/^-[A-Za-z]*c[A-Za-z]*$/.test(token)) {
+          return { tokens: [], nestedShell: tokens[index + 1] ?? '', assignedValues };
+        }
+        // `-o name` / `+o name` take a value; skipping one token would read the
+        // option's value as the script operand and end the scan early.
+        index += /^[-+]o$/.test(token) ? 2 : 1;
+      }
       return { tokens, nestedShell: null, assignedValues };
     }
     if (head === 'eval') {
