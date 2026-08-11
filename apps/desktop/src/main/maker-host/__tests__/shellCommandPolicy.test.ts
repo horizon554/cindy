@@ -160,6 +160,9 @@ describeMac('embedded iOS Simulator shell policy', () => {
     `CMD='xcrun simctl shutdown DEVICE'; eval "$CMD"; CMD='echo safe'`,
     `CMD='echo safe'; CMD='xcrun simctl shutdown DEVICE'; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; OTHER='echo safe'; eval "$CMD"`,
+    // An assignment attached to another command only changes that command's
+    // environment; it must not replace the shell-scoped value used by eval.
+    `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' /usr/bin/true; eval "$CMD"`,
     // The later text is not a guaranteed replacement when control flow can skip
     // it or keep it inside a child scope, so the earlier value stays possible.
     `CMD='xcrun simctl shutdown DEVICE'; false && CMD='echo safe'; eval "$CMD"`,

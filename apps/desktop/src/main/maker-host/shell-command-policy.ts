@@ -544,7 +544,11 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
     // it or isolate its scope, so both values remain possible there.
     for (const assignment of unwrapped.assignments) {
       if (assignment.name === '') continue;
-      if (assignmentDefinitelyRunsInCurrentScope(segment)) {
+      const persistentAssignment =
+        assignmentDefinitelyRunsInCurrentScope(segment)
+        && unwrapped.tokens.length === 0
+        && unwrapped.nestedShell === null;
+      if (persistentAssignment) {
         assignments.set(assignment.name, [assignment.value]);
       } else {
         const possibleValues = assignments.get(assignment.name) ?? [];

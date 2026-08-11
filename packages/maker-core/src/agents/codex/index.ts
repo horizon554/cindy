@@ -3035,6 +3035,14 @@ export class CodexAgent extends BaseAgent {
         }
       | { source: 'user-stop' }
     >();
+    // A started command can race the asynchronous interrupt and still report a
+    // completed/failed turn. Keep its policy reason separately so those terminal
+    // statuses cannot look like a successful run. The interrupt-origin map above
+    // remains authoritative for abort-shaped completions and explicit Stop.
+    const policyDeniedTurnReasons = new Map<string, string>();
+    // Approval declines happen before execution and may recover into a normal
+    // completed turn, so this reason only owns failed/interrupted completions.
+    const approvalPolicyDeniedTurnReasons = new Map<string, string>();
     // daemon 后端 retry-loop 的终局升级 (issue #677): 远端摸不到 Codex 后端时
     // daemon 无限 willRetry, turn 永不收口。同 turn 重试超阈值 → 合成终态错误,
     // 走与终态 error 完全相同的收口路径 (terminalErroredTurnIds + Done status)。
@@ -6236,6 +6244,10 @@ export class CodexAgent extends BaseAgent {
           requestId: params.approvalId ?? params.itemId,
           reason: hostPolicy.reason,
         });
+        // The decline is followed by an abort-shaped turn completion. Keep the
+        // policy reason attached to this turn so completion cannot replace it
+        // with a generic cancellation/error message.
+        approvalPolicyDeniedTurnReasons.set(params.turnId, hostPolicy.reason);
         // Declining without ever showing the user why renders as a bare failed
         // command, which is indistinguishable from a cancellation. Surface the
         // product reason so the denial is attributed to the policy, not the user.
@@ -7725,6 +7737,10 @@ export class CodexAgent extends BaseAgent {
           currentTurnPlanModeActive = false;
         }
         terminalErroredTurnIds.add(turn.id);
+        // This branch emits the authoritative policy error itself, then recurses
+        // through the normal completion bookkeeping. Do not let that recursive
+        // pass replay the race-preservation marker a second time.
+        policyDeniedTurnReasons.delete(turn.id);
         eventQueue.push({
           type: 'error',
           data: {
@@ -7939,9 +7955,23 @@ export class CodexAgent extends BaseAgent {
       // plain `done`, let the renderer clear the non-terminal warning
       // (`recoverableError: isTurnComplete ? null : …`) and leave the user with a
       // successful outcome even though the command ran and the policy fired.
-      const policyDenialReason = policyDeniedTurnReasons.get(turn.id);
+      // A started command is authoritative for every terminal status because
+      // interrupt is asynchronous. An approval decline can recover into a
+      // normal completed turn, so it only owns abort-shaped completions. An
+      // explicit user Stop suppresses any stale policy attribution.
+      const startedPolicyDenialReason =
+        interruptOrigin?.source === 'user-stop'
+          ? undefined
+          : policyDeniedTurnReasons.get(turn.id);
+      const approvalPolicyDenialReason = approvalPolicyDeniedTurnReasons.get(turn.id);
+      const policyDenialReason =
+        startedPolicyDenialReason
+        ?? ((turn.status === 'failed' || turn.status === 'interrupted')
+          ? approvalPolicyDenialReason
+          : undefined);
+      policyDeniedTurnReasons.delete(turn.id);
+      approvalPolicyDeniedTurnReasons.delete(turn.id);
       if (policyDenialReason !== undefined) {
-        policyDeniedTurnReasons.delete(turn.id);
         eventQueue.push({
           type: 'error',
           data: { message: policyDenialReason, isTerminal: true },
@@ -7954,14 +7984,10 @@ export class CodexAgent extends BaseAgent {
         proposedPlanText = null;
         planCycleActive = false;
         currentTurnPlanModeActive = false;
-<<<<<<< HEAD
-        if (turn.error?.message) {
-=======
         if (policyDenialReason !== undefined) {
           // Already reported above as the authoritative terminal outcome; the
           // interrupt-derived message must not overwrite it.
         } else if (turn.error?.message) {
->>>>>>> 503fb2240 (fix(ios-simulator): make the policy denial authoritative for every terminal status)
           eventQueue.push({
             type: 'error',
             data: { message: turn.error.message, isTerminal: true },
@@ -9068,6 +9094,7 @@ export class CodexAgent extends BaseAgent {
             ) {
               return;
             }
+            policyDeniedTurnReasons.set(params.turnId, hostPolicy.reason);
             log.warn('command execution interrupted by host policy', {
               turnId: params.turnId,
               reason: hostPolicy.reason,
