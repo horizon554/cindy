@@ -144,8 +144,14 @@ function stripShellControlTokens(tokens: string[]): string[] {
   while (out[0] === '') out.shift();
   const last = out.length - 1;
   if (last >= 0) {
-    out[last] = out[last]!.replace(/[)}]+$/, '');
-    if (out[last] === '') out.pop();
+    // A trailing `)` may close a substitution rather than a subshell. Stripping
+    // it there would truncate `CMD='echo $(xcrun simctl boot X)'` into an
+    // unterminated substitution that the recursive scan can no longer read.
+    const closesSubstitution = /\$\(|<\(|>\(/.test(out[last]!);
+    if (!closesSubstitution) {
+      out[last] = out[last]!.replace(/[)}]+$/, '');
+      if (out[last] === '') out.pop();
+    }
   }
   return out;
 }
@@ -427,9 +433,11 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
   for (const segment of shellSegments(command)) {
     const unwrapped = unwrapCommand(tokenizeShellSegment(segment));
     // `CMD="xcrun simctl boot $UDID"` holds a whole recipe; documentation does
-    // write it this way before running it, so the literal value is classified.
+    // write it this way before running it. The value goes through the same
+    // classifier as a command, so a documented prefix (`sudo …`, `env FOO=1 …`),
+    // a nested `bash -lc '…'` or a substitution inside the value is reached too.
     for (const value of unwrapped.assignedValues) {
-      if (isSimulatorRecipeArgv(tokenizeShellSegment(value))) return true;
+      if (containsSimulatorRecipe(value, depth + 1)) return true;
     }
     if (unwrapped.nestedShell !== null) {
       if (containsSimulatorRecipe(unwrapped.nestedShell, depth + 1)) return true;
