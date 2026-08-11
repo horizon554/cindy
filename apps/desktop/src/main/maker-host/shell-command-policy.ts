@@ -601,6 +601,119 @@ function containsLiteralSimulatorExecutor(value: string): boolean {
   );
 }
 
+const MAX_ASSIGNMENT_RESOLUTION_PASSES = 4;
+const MAX_RESOLVED_ASSIGNMENTS = 64;
+const MAX_RESOLUTION_GROWTH_FACTOR = 8;
+const SIMULATOR_EXECUTOR_NAMES = ['xcrun', 'simctl'];
+const MIN_SIMULATOR_FRAGMENT_LENGTH = 4;
+
+/**
+ * Join fragments a shell or interpreter concatenates: `"xcr" + "un"`,
+ * `xcr"un"`, and AppleScript's `"xcr" & "un"`.
+ */
+function normalizeConcatenatedFragments(command: string): string {
+  return command
+    .replace(/(['"`])\s*[+&]\s*\1?/g, '')
+    .replace(/(['"`])\s*\1/g, '')
+    .replace(/['"`]/g, '');
+}
+
+/** Resolve literal `NAME=value` assignments so `"$A$B"` reveals its executor. */
+function resolveSimpleAssignments(command: string): string {
+  const values = new Map<string, string>();
+  for (const match of command.matchAll(
+    /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=(?:'([^']*)'|"([^"$`]*)"|([A-Za-z0-9_./:+-]*))/g,
+  )) {
+    const value = match[2] ?? match[3] ?? match[4] ?? '';
+    if (value) values.set(match[1]!, value);
+    // Bound the work: this runs inside a synchronous hook and a Codex event
+    // handler, so a pathological command must not be able to stall either.
+    if (values.size >= MAX_RESOLVED_ASSIGNMENTS) break;
+  }
+  if (values.size === 0) return command;
+  const budget = command.length * MAX_RESOLUTION_GROWTH_FACTOR;
+  let resolved = command;
+  for (let pass = 0; pass < MAX_ASSIGNMENT_RESOLUTION_PASSES; pass += 1) {
+    let changed = false;
+    for (const [name, value] of values) {
+      const next = resolved.replace(new RegExp(`\\$(?:${name}\\b|\\{${name}\\})`, 'g'), value);
+      if (next !== resolved) {
+        resolved = next;
+        changed = true;
+      }
+      // Self-referential values (`A='$A$A'`) grow geometrically. Stop expanding
+      // and classify what has been resolved so far.
+      if (resolved.length > budget) return resolved;
+    }
+    if (!changed) break;
+  }
+  return resolved;
+}
+
+/**
+ * Whether the command still names the Simulator boundary once the concatenation
+ * and simple-assignment tricks that hide an executor are undone.
+ *
+ * Evidence is never a denial by itself. It is what licenses the shape-only
+ * fail-closed rules below to fire: without it, an unresolvable *shape* — a glob,
+ * a paren, a brace — is just ordinary text. Interpreter payloads, heredoc bodies
+ * and arithmetic expressions are full of such shapes, and denying them blocks
+ * work this boundary was never meant to touch.
+ */
+function hasSimulatorEvidence(command: string): boolean {
+  const resolved = resolveSimpleAssignments(command);
+  return (
+    containsLiteralSimulatorExecutor(command) ||
+    containsLiteralSimulatorExecutor(resolved) ||
+    containsLiteralSimulatorExecutor(normalizeConcatenatedFragments(resolved))
+  );
+}
+
+/** Strip expansions and glob metacharacters, leaving the literal core (if any). */
+function commandWordLiteralCore(token: string): string {
+  return token
+    .replace(/\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]/g, '')
+    .replace(/[*?[\]{}()^~]/g, '')
+    .replace(/['"]/g, '');
+}
+
+/** A word made only of expansions can resolve to anything, including simctl. */
+function isPureExpansionWord(token: string): boolean {
+  return /[$`]/.test(token) && commandWordLiteralCore(token).replace(/[\s/=,.:+-]/g, '') === '';
+}
+
+/** `simct?`, `simctl~foo`, `xc[r]un`: a literal core that still names the boundary. */
+function isSimulatorFragmentCore(core: string): boolean {
+  // Trailing separators are left behind by stripped expansions (`$X/simctl/$Y`),
+  // so classify against the last segment that still carries literal text.
+  const name = (
+    core
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter((segment) => segment !== '')
+      .at(-1) ?? ''
+  ).toLowerCase();
+  if (!name) return false;
+  return SIMULATOR_EXECUTOR_NAMES.some((executor) => {
+    for (let length = executor.length; length >= MIN_SIMULATOR_FRAGMENT_LENGTH; length -= 1) {
+      if (name.startsWith(executor.slice(0, length))) return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * Command position holds something this policy cannot resolve. A pure expansion
+ * stays fail-closed because its value is unknowable; a word that keeps a literal
+ * core is only a bypass candidate when that core, or the command around it,
+ * shows Simulator evidence.
+ */
+function isUnprovableCommandWord(token: string, evidence: boolean): boolean {
+  if (!hasDynamicShellExpansion(token)) return false;
+  if (isPureExpansionWord(token)) return true;
+  return evidence || isSimulatorFragmentCore(commandWordLiteralCore(token));
+}
+
 /**
  * General-purpose interpreters can spawn simctl without making it the shell
  * executable. Treat a literal Simulator executor in their payload/argv as a
@@ -611,14 +724,16 @@ function containsInterpreterSimulatorPayload(tokens: string[]): boolean {
   const interpreter = executableName(tokens[0]);
   const payload = tokens.slice(1).join('\n');
   if (PROGRAMMABLE_INTERPRETER.test(interpreter)) {
-    return containsLiteralSimulatorExecutor(payload);
+    // Interpreters concatenate string fragments, so `"xcr" + "un"` names the
+    // same executor a literal match would miss.
+    return hasSimulatorEvidence(payload);
   }
   if (interpreter === 'osascript') {
     // AppleScript can execute through `do shell script`, while JavaScript for
     // Automation can reach NSTask/NSProcessInfo directly. Once an osascript
-    // payload contains a literal Simulator executor, command-text policy cannot
-    // safely distinguish an inert reference from executable code.
-    return containsLiteralSimulatorExecutor(payload);
+    // payload names a Simulator executor, command-text policy cannot safely
+    // distinguish an inert reference from executable code.
+    return hasSimulatorEvidence(payload);
   }
   return false;
 }
@@ -779,7 +894,7 @@ function hasDynamicShellExpansion(token: string): boolean {
   return /[$`*?[\]{}()^~]/.test(token) || token.indexOf('#') > 0;
 }
 
-function hasUnresolvedExecutableExpansion(tokens: string[]): boolean {
+function hasUnresolvedExecutableExpansion(tokens: string[], evidence: boolean): boolean {
   const executableTokens = stripShellControlTokens(tokens);
   while (executableTokens[0] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(executableTokens[0])) {
     executableTokens.shift();
@@ -788,7 +903,7 @@ function hasUnresolvedExecutableExpansion(tokens: string[]): boolean {
   // `[` and `[[` are literal shell condition builtins, not glob-expanded
   // executable names. Other expansion syntax in command position is unsafe.
   if (executable === '[' || executable === '[[') return false;
-  return hasDynamicShellExpansion(executable);
+  return isUnprovableCommandWord(executable, evidence);
 }
 
 /** Arithmetic compound commands contain expressions, not an executable argv. */
@@ -803,22 +918,31 @@ function isArithmeticCompoundCommand(tokens: string[]): boolean {
 
 /**
  * Shell arithmetic recursively resolves bare variables and array subscripts,
- * which can execute command substitutions stored in their values. Only
- * expressions made entirely from decimal literals and operators are safe to
- * classify without evaluating the shell environment.
+ * which can execute command substitutions stored in their values. Literals and
+ * operators are always safe; a named expansion or a subscript never is. A bare
+ * identifier sits between the two: the shell would resolve it recursively, but
+ * reaching an executor that way requires the command to have stored one, so it
+ * is classified against Simulator evidence rather than denied on shape alone.
  */
-function hasDynamicArithmeticEvaluation(segment: string): boolean {
+function hasDynamicArithmeticEvaluation(segment: string, evidence: boolean): boolean {
   const start = segment.indexOf('((');
   const end = segment.lastIndexOf('))');
   if (start < 0 || end < start + 2) return true;
   const expression = segment.slice(start + 2, end);
-  return !/^[\s0-9()+\-*/%<>=!&|^~?:,]*$/.test(expression);
+  // Positional and special parameters evaluate to numbers in arithmetic, so
+  // they cannot name a command; fold them away before classifying.
+  const probe = expression.replace(/\$(?:[0-9]+|[#?$!]|\{(?:[0-9]+|[#?$!])\})/g, '0');
+  if (/^[\s0-9()+\-*/%<>=!&|^~?:,]*$/.test(probe)) return false;
+  if (/[$`]/.test(probe) || /\[[^\]]*\]/.test(probe)) return true;
+  if (/^[\sA-Za-z_0-9()+\-*/%<>=!&|^~?:,]*$/.test(probe)) return evidence;
+  return true;
 }
 
 /** Unknown wrapper option shapes cannot prove which expanded token becomes the command. */
-function hasUnresolvedWrapperExpansion(unwrapped: UnwrappedCommand): boolean {
+function hasUnresolvedWrapperExpansion(unwrapped: UnwrappedCommand, evidence: boolean): boolean {
   return (
-    unwrapped.unresolvedWrapper && unwrapped.tokens.some((token) => hasDynamicShellExpansion(token))
+    unwrapped.unresolvedWrapper &&
+    unwrapped.tokens.some((token) => isUnprovableCommandWord(token, evidence))
   );
 }
 
@@ -886,24 +1010,24 @@ function opaqueOptionShape(head: string, token: string): OpaqueOptionShape {
   return 'unknown';
 }
 
-function hasDynamicWrappedCommand(tokens: string[], depth: number): boolean {
+function hasDynamicWrappedCommand(tokens: string[], evidence: boolean, depth: number): boolean {
   if (tokens.length === 0) return false;
   if (depth > MAX_WRAPPER_UNWRAP_DEPTH) {
-    return tokens.some((token) => hasDynamicShellExpansion(token));
+    return tokens.some((token) => isUnprovableCommandWord(token, evidence));
   }
   const unwrapped = unwrapCommand(tokens);
   if (unwrapped.inspectionOnly) return false;
-  if (hasUnresolvedWrapperExpansion(unwrapped)) return true;
+  if (hasUnresolvedWrapperExpansion(unwrapped, evidence)) return true;
   if (unwrapped.nestedShell !== null) {
-    if (containsSimulatorBypass(unwrapped.nestedShell, depth + 1)) return true;
-    return unwrapped.tokens.some((token) => hasDynamicShellExpansion(token));
+    if (containsSimulatorBypass(unwrapped.nestedShell, evidence, depth + 1)) return true;
+    return unwrapped.tokens.some((token) => isUnprovableCommandWord(token, evidence));
   }
-  if (hasUnresolvedExecutableExpansion(unwrapped.tokens)) return true;
-  return hasOpaqueWrapperExpansion(tokens, depth + 1);
+  if (hasUnresolvedExecutableExpansion(unwrapped.tokens, evidence)) return true;
+  return hasOpaqueWrapperExpansion(tokens, evidence, depth + 1);
 }
 
 /** Locate the command operand conservatively without mistaking later data argv for executables. */
-function hasOpaqueWrapperExpansion(tokens: string[], depth = 0): boolean {
+function hasOpaqueWrapperExpansion(tokens: string[], evidence: boolean, depth = 0): boolean {
   tokens = stripShellRedirections(tokens);
   const head = executableName(tokens[0]);
   if (head === 'find') {
@@ -914,7 +1038,7 @@ function hasOpaqueWrapperExpansion(tokens: string[], depth = 0): boolean {
           candidateIndex > index && (token === ';' || token === '+' || token === '\\;'),
       );
       const commandEnd = terminator < 0 ? tokens.length : terminator;
-      return hasDynamicWrappedCommand(tokens.slice(index + 1, commandEnd), depth + 1);
+      return hasDynamicWrappedCommand(tokens.slice(index + 1, commandEnd), evidence, depth + 1);
     }
     return false;
   }
@@ -922,12 +1046,12 @@ function hasOpaqueWrapperExpansion(tokens: string[], depth = 0): boolean {
   if (head === 'coproc') {
     // Bash/zsh allow an optional coprocess name, so command position is
     // ambiguous. Any expansion in this execution form must fail closed.
-    return tokens.slice(1).some((token) => hasDynamicShellExpansion(token));
+    return tokens.slice(1).some((token) => isUnprovableCommandWord(token, evidence));
   }
   if (head === 'repeat') {
     // zsh evaluates the count arithmetically before executing argv.
     if (!/^\d+$/.test(tokens[1] ?? '')) return true;
-    return hasDynamicWrappedCommand(tokens.slice(2), depth + 1);
+    return hasDynamicWrappedCommand(tokens.slice(2), evidence, depth + 1);
   }
 
   let index = 1;
@@ -948,7 +1072,7 @@ function hasOpaqueWrapperExpansion(tokens: string[], depth = 0): boolean {
       const commandValue = token.includes('=')
         ? token.slice(token.indexOf('=') + 1)
         : possibleValue;
-      if (hasDynamicShellExpansion(commandValue ?? '')) return true;
+      if (isUnprovableCommandWord(commandValue ?? '', evidence)) return true;
       index += token.includes('=') ? 1 : 2;
       continue;
     }
@@ -963,7 +1087,7 @@ function hasOpaqueWrapperExpansion(tokens: string[], depth = 0): boolean {
     // Unknown option arity makes every later dynamic token ambiguous: it may
     // be either an option value or the actual command. Fail closed instead of
     // guessing and accidentally stepping past the executable.
-    return tokens.slice(index).some((value) => hasDynamicShellExpansion(value));
+    return tokens.slice(index).some((value) => isUnprovableCommandWord(value, evidence));
   }
   if (head === 'sudo') {
     while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index] ?? '')) index += 1;
@@ -971,7 +1095,7 @@ function hasOpaqueWrapperExpansion(tokens: string[], depth = 0): boolean {
   // timeout consumes a duration before its command; macOS script consumes an
   // output file before an optional command.
   if (head === 'timeout' || head === 'gtimeout' || head === 'script') index += 1;
-  return hasDynamicWrappedCommand(tokens.slice(index), depth + 1);
+  return hasDynamicWrappedCommand(tokens.slice(index), evidence, depth + 1);
 }
 
 function referencesVariable(command: string, variable: string): boolean {
@@ -1222,7 +1346,7 @@ function shellCompoundBodyEnd(command: string, openingIndex: number): number | n
 }
 
 /** Function bodies are executable later, so reject unsafe bodies at definition time. */
-function containsSimulatorFunctionBody(command: string, depth: number): boolean {
+function containsSimulatorFunctionBody(command: string, evidence: boolean, depth: number): boolean {
   const functionPattern = new RegExp(
     `(?:^|[;\\n]\\s*)${SHELL_FUNCTION_HEADER_SOURCE}\\s*([({])`,
     'g',
@@ -1231,7 +1355,7 @@ function containsSimulatorFunctionBody(command: string, depth: number): boolean 
     const openingIndex = functionPattern.lastIndex - 1;
     const closingIndex = shellCompoundBodyEnd(command, openingIndex);
     if (closingIndex === null) continue;
-    if (containsSimulatorBypass(command.slice(openingIndex + 1, closingIndex), depth + 1)) {
+    if (containsSimulatorBypass(command.slice(openingIndex + 1, closingIndex), evidence, depth + 1)) {
       return true;
     }
     functionPattern.lastIndex = closingIndex + 1;
@@ -1240,7 +1364,11 @@ function containsSimulatorFunctionBody(command: string, depth: number): boolean 
 }
 
 /** Alias bodies are executable later, so reject unsafe definitions up front. */
-function containsSimulatorAliasDefinition(tokens: string[], depth: number): boolean {
+function containsSimulatorAliasDefinition(
+  tokens: string[],
+  evidence: boolean,
+  depth: number,
+): boolean {
   if (executableName(tokens[0]) !== 'alias') return false;
   let index = tokens[1] === '--' ? 2 : 1;
   for (; index < tokens.length; index += 1) {
@@ -1249,24 +1377,27 @@ function containsSimulatorAliasDefinition(tokens: string[], depth: number): bool
     // `alias` and `alias name` only inspect the current shell state.
     if (separator <= 0) continue;
     const body = definition.slice(separator + 1);
-    if (containsLiteralSimulatorExecutor(body) || containsSimulatorBypass(body, depth + 1)) {
+    if (
+      containsLiteralSimulatorExecutor(body) ||
+      containsSimulatorBypass(body, evidence, depth + 1)
+    ) {
       return true;
     }
   }
   return false;
 }
 
-function containsSimulatorBypass(command: string, depth = 0): boolean {
+function containsSimulatorBypass(command: string, evidence: boolean, depth = 0): boolean {
   if (depth > 8) return /\b(?:simctl|Simulator(?:\.app)?)\b/i.test(command);
   if (
     containsTaintedVariableExecution(command) ||
     containsShellConsumedLiteralBypass(command) ||
-    containsSimulatorFunctionBody(command, depth)
+    containsSimulatorFunctionBody(command, evidence, depth)
   ) {
     return true;
   }
   for (const nested of shellSubcommands(command)) {
-    if (containsSimulatorBypass(nested, depth + 1)) return true;
+    if (containsSimulatorBypass(nested, evidence, depth + 1)) return true;
   }
   for (const segment of shellSegments(command)) {
     // Function bodies were classified recursively above. The leading
@@ -1276,7 +1407,7 @@ function containsSimulatorBypass(command: string, depth = 0): boolean {
     }
     const tokens = tokenizeShellSegment(segment);
     const arithmeticCompound = isArithmeticCompoundCommand(tokens);
-    if (arithmeticCompound && hasDynamicArithmeticEvaluation(segment)) return true;
+    if (arithmeticCompound && hasDynamicArithmeticEvaluation(segment, evidence)) return true;
     const unwrapped = unwrapCommand(tokens);
     if (unwrapped.inspectionOnly) continue;
     // Known wrappers are peeled first so `env "$TOOL"` and `exec "$TOOL"`
@@ -1286,18 +1417,21 @@ function containsSimulatorBypass(command: string, depth = 0): boolean {
     if (
       !arithmeticCompound &&
       unwrapped.nestedShell === null &&
-      hasUnresolvedExecutableExpansion(unwrapped.tokens)
+      hasUnresolvedExecutableExpansion(unwrapped.tokens, evidence)
     ) {
       return true;
     }
-    if (hasUnresolvedWrapperExpansion(unwrapped) || hasOpaqueWrapperExpansion(tokens)) {
+    if (
+      hasUnresolvedWrapperExpansion(unwrapped, evidence) ||
+      hasOpaqueWrapperExpansion(tokens, evidence)
+    ) {
       return true;
     }
-    if (containsSimulatorAliasDefinition(unwrapped.tokens, depth)) return true;
+    if (containsSimulatorAliasDefinition(unwrapped.tokens, evidence, depth)) return true;
     if (unwrapped.nestedShell !== null) {
       if (unwrapped.unresolvedWrapper)
         return containsSimulatorExecutor(tokenizeShellSegment(segment));
-      if (containsSimulatorBypass(unwrapped.nestedShell, depth + 1)) return true;
+      if (containsSimulatorBypass(unwrapped.nestedShell, evidence, depth + 1)) return true;
       continue;
     }
     if (unwrapped.unresolvedWrapper && containsSimulatorExecutor(unwrapped.tokens)) return true;
@@ -1322,7 +1456,7 @@ export function getDesktopShellCommandPolicy(
   // POSIX shells remove an unquoted backslash-newline before tokenization.
   // Mirror that expansion so the policy cannot be bypassed with continuations.
   const expandedCommand = command.replace(/\\\r?\n/g, '');
-  if (containsSimulatorBypass(expandedCommand)) {
+  if (containsSimulatorBypass(expandedCommand, hasSimulatorEvidence(expandedCommand))) {
     return { decision: 'deny', reason: IOS_SIMULATOR_SHELL_DENIAL };
   }
   return undefined;

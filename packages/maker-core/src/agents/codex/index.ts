@@ -6236,6 +6236,14 @@ export class CodexAgent extends BaseAgent {
           requestId: params.approvalId ?? params.itemId,
           reason: hostPolicy.reason,
         });
+        // Declining without ever showing the user why renders as a bare failed
+        // command, which is indistinguishable from a cancellation. Surface the
+        // product reason so the denial is attributed to the policy, not the user.
+        eventQueue.push({
+          type: 'error',
+          data: { message: hostPolicy.reason, isTerminal: false },
+          source: 'codex',
+        });
         return { decision: 'decline' };
       }
       // requestId: approvalId 优先 (zsh-exec-bridge 多 callback 场景); 否则用 itemId

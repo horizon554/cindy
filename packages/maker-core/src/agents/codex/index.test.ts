@@ -13011,6 +13011,10 @@ describe('CodexAgent MCP thread context hooks', () => {
       behavior: 'allow',
     }));
     handle.setInteractionResolver(resolver);
+    const events: AgentEvent[] = [];
+    const collectEvents = (async () => {
+      for await (const event of handle.events()) events.push(event);
+    })();
 
     const command = 'API_TOKEN=super-secret open -a Simulator';
     const result = await handlers.commandExecutionApproval({
@@ -13034,6 +13038,20 @@ describe('CodexAgent MCP thread context hooks', () => {
     });
     expect(JSON.stringify(warn.mock.calls)).not.toContain('super-secret');
     await handle.close();
+    await collectEvents;
+    // Declining silently is indistinguishable from a user cancellation, so the
+    // product reason has to reach the user.
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'error',
+          data: expect.objectContaining({
+            message: 'use the embedded iOS Simulator',
+            isTerminal: false,
+          }),
+        }),
+      ]),
+    );
   });
 
   it('interrupts an already-started absolute-path shell bypass as a fail-safe', async () => {

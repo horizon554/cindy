@@ -246,4 +246,93 @@ PY`,
   ])('allows a non-bypass command: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
+
+  // A heredoc body, an inline interpreter program and an arithmetic expression
+  // are not shell argv. Classifying their contents as command words denied
+  // ordinary work with no Simulator executor anywhere in the command.
+  it.each([
+    // Ordinary HTTPS read through a Python heredoc (issue #2404).
+    `python3 - <<'PY'
+import urllib.request
+data = urllib.request.urlopen("https://example.com").read()
+print(len(data))
+PY`,
+    `python3 - <<'PY'
+print(1)
+PY`,
+    `python3 - <<'PY'
+def main():
+    print("hi")
+main()
+PY`,
+    `node <<'JS'
+console.log(1)
+JS`,
+    `sqlite3 /tmp/app.db <<'SQL'
+SELECT count(*) FROM items;
+SQL`,
+    `jq . <<'JSON'
+{"a": 1}
+JSON`,
+    `cat > /tmp/notes.txt <<'EOF'
+hello (world)
+EOF`,
+    `node -e "
+function check() {
+  console.log(1);
+}
+check();
+"`,
+    `python3 -c "
+def check():
+    print(1)
+check()
+"`,
+  ])('allows an ordinary interpreter heredoc or inline program: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
+  });
+
+  it.each([
+    'n=3; (( n > 1 )) && echo yes',
+    'i=0; (( i++ )); echo "$i"',
+    '(( $# > 0 )) && echo has-args',
+    '(( $? == 0 )) && echo ok',
+    'i=0; while (( i < 3 )); do echo "$i"; i=$((i+1)); done',
+    'if (( count > 0 )); then echo ready; fi',
+  ])('allows shell arithmetic with no Simulator evidence: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
+  });
+
+  it.each([
+    'echo start\n*.ts\necho done',
+    // A redirected group leaves `}` in command position, which is a shell
+    // control token, not a glob-expanded executable name.
+    '{ echo a; echo b; } > /tmp/out.log 2>&1',
+    '{ pnpm build; pnpm test; } 2>&1 | tee /tmp/build.log',
+    '( cd /tmp && ls ) > /tmp/out.txt',
+    'expected=200; actual=$(curl -s -o /dev/null -w \'%{http_code}\' https://example.com); if [ "$expected" != "$actual" ]; then echo bad; fi',
+    'rg -n "Rejected\\((.*)\\)" apps',
+    "rg -n foo --glob '*.{ts,tsx}' apps",
+    'grep -rEn "(foo|bar)" apps',
+    "awk '{print $1}' /tmp/app.log",
+  ])('allows an ordinary command whose shape is not an executable: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
+  });
+
+  // Evidence matching undoes the concatenation an interpreter would perform, so
+  // narrowing the shape-only rules above does not open a fragment bypass.
+  it.each([
+    `python3 -c 'import os; os.system("xcr" + "un" + " sim" + "ctl shutdown DEVICE")'`,
+    `node -e 'require("child_process").execSync("xcr" + "un" + " sim" + "ctl shutdown DEVICE")'`,
+    `python3 - <<'PY'
+import os
+os.system("xcr" + "un" + " sim" + "ctl shutdown DEVICE")
+PY`,
+    `bash <<'SH'
+xcr"un" sim"ctl" shutdown DEVICE
+SH`,
+    `awk 'BEGIN { system("xcr" "un" " sim" "ctl shutdown DEVICE") }'`,
+  ])('denies a Simulator executor assembled from string fragments: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
+  });
 });
