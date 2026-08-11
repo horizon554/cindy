@@ -165,6 +165,11 @@ eval "$CMD"`,
     // A command-scoped assignment shadows the exported parent value only for
     // that child command.
     `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' sh -c '$CMD'`,
+    // A direct unset in the current shell removes the stored value before the
+    // later execution point. Cover the variable-selecting and `--` spellings.
+    `CMD='xcrun simctl shutdown DEVICE'; unset CMD; eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; unset -v CMD; eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; command unset -- CMD; eval "$CMD"`,
   ])('allows a stored recipe that nothing executes: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
@@ -193,6 +198,16 @@ eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' | /usr/bin/cat; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; (CMD='echo safe'); eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; if false; then CMD='echo safe'; fi; eval "$CMD"`,
+    // Conditional and child-scope unsets do not prove that the parent value was
+    // removed. Function-only unset leaves the variable intact as well.
+    `CMD='xcrun simctl shutdown DEVICE'; false && unset CMD; eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; unset CMD | /usr/bin/cat; eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; (unset CMD); eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; unset -f CMD; eval "$CMD"`,
+    // Readonly variables survive an attempted unset, including declaration
+    // builtins that attach the readonly attribute with an option.
+    `readonly CMD='xcrun simctl shutdown DEVICE'; unset CMD; eval "$CMD"`,
+    `declare -r CMD='xcrun simctl shutdown DEVICE'; unset -v CMD; eval "$CMD"`,
   ])('denies the current stored recipe at its execution point: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });

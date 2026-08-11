@@ -335,6 +335,7 @@ function tokenizeHeredocConsumer(segment: string): string[] {
 interface ShellAssignment {
   name: string;
   value: string;
+  readonly: boolean;
 }
 
 const SHELL_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
@@ -352,7 +353,11 @@ function stripLeadingShellPreamble(input: string[]): Preamble {
     const token = tokens[0]!;
     const assignment = SHELL_ASSIGNMENT.exec(token);
     if (assignment) {
-      assignments.push({ name: assignment[1] ?? '', value: assignment[2] ?? '' });
+      assignments.push({
+        name: assignment[1] ?? '',
+        value: assignment[2] ?? '',
+        readonly: false,
+      });
       tokens.shift();
       continue;
     }
@@ -430,10 +435,20 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     if (SHELL_ASSIGNMENT_BUILTINS.has(head)) {
       // `export CMD='xcrun simctl …'` stores the recipe just like a bare
       // assignment, so its operands feed the same stored-value path.
+      const makesReadonly =
+        head === 'readonly'
+        || (
+          (head === 'declare' || head === 'local' || head === 'typeset')
+          && tokens.slice(1).some((token) => /^-[A-Za-z]*r[A-Za-z]*$/.test(token))
+        );
       for (const token of tokens.slice(1)) {
         const assignment = SHELL_ASSIGNMENT.exec(token);
         if (assignment) {
-          assignments.push({ name: assignment[1] ?? '', value: assignment[2] ?? '' });
+          assignments.push({
+            name: assignment[1] ?? '',
+            value: assignment[2] ?? '',
+            readonly: makesReadonly,
+          });
         }
       }
       return { tokens: [], nestedShell: null, assignments };
@@ -480,6 +495,39 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     tokens = next;
   }
   return { tokens, nestedShell: null, assignments };
+}
+
+/** Variables a direct shell `unset` definitely removes from the current scope. */
+function definitelyUnsetVariables(segment: ShellSegment): string[] {
+  if (!assignmentDefinitelyRunsInCurrentScope(segment)) return [];
+  let tokens = stripLeadingShellPreamble(
+    stripShellControlTokens(tokenizeHeredocConsumer(segment.command)),
+  ).tokens;
+  const prefix = executableName(tokens[0]);
+  if (prefix === 'builtin' || prefix === 'command') {
+    tokens = tokens.slice(1);
+    if (tokens[0] === '--') tokens = tokens.slice(1);
+    else if (tokens[0]?.startsWith('-')) return [];
+  }
+  if (executableName(tokens[0]) !== 'unset') return [];
+
+  const names: string[] = [];
+  let parsingOptions = true;
+  for (const token of tokens.slice(1)) {
+    if (parsingOptions && token === '--') {
+      parsingOptions = false;
+      continue;
+    }
+    if (parsingOptions && token.startsWith('-')) {
+      // `-v` selects variables and `-n` selects the nameref itself. `-f` and
+      // unknown options do not prove that a tracked variable was removed.
+      if (!/^-[vn]+$/.test(token)) return [];
+      continue;
+    }
+    parsingOptions = false;
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(token)) names.push(token);
+  }
+  return names;
 }
 
 /** `open -a Simulator` and the Simulator binary, in their documented spellings. */
@@ -1066,21 +1114,25 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
   for (const nested of shellSubcommands(executableCommand)) {
     if (containsSimulatorRecipe(nested, depth + 1)) return true;
   }
-  const assignments = new Map<string, string[]>();
+  interface TrackedShellValue {
+    value: string;
+    readonly: boolean;
+  }
+  const assignments = new Map<string, TrackedShellValue[]>();
   const referencedAssignmentContainsRecipe = (
     reference: string,
-    visibleAssignments: Map<string, string[]> = assignments,
+    visibleAssignments: Map<string, TrackedShellValue[]> = assignments,
   ): boolean => {
     for (const [name, values] of visibleAssignments) {
       // The name matched `[A-Za-z_][A-Za-z0-9_]*`, so it carries no regex syntax.
       if (!new RegExp(`\\$\\{?${name}\\b`).test(reference)) continue;
-      if (values.some((value) => containsSimulatorRecipe(value, depth + 1))) return true;
+      if (values.some(({ value }) => containsSimulatorRecipe(value, depth + 1))) return true;
     }
     return false;
   };
   for (const segment of shellSegments(executableCommand)) {
     const unwrapped = unwrapCommand(tokenizeShellSegment(segment.command));
-    const commandScopedAssignments = new Map<string, string[]>();
+    const commandScopedAssignments = new Map<string, TrackedShellValue[]>();
     // Shell assignments replace the previous value before the command in this
     // segment runs. A `;`/newline-separated assignment therefore supersedes the
     // previous value, while a conditional, pipeline or background edge can skip
@@ -1091,18 +1143,27 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
         assignmentDefinitelyRunsInCurrentScope(segment)
         && unwrapped.tokens.length === 0
         && unwrapped.nestedShell === null;
+      const trackedValue = { value: assignment.value, readonly: assignment.readonly };
       if (persistentAssignment) {
-        assignments.set(assignment.name, [assignment.value]);
+        const existingReadonly = (assignments.get(assignment.name) ?? []).filter(
+          (value) => value.readonly,
+        );
+        assignments.set(assignment.name, [...existingReadonly, trackedValue]);
       } else if (unwrapped.tokens.length > 0 || unwrapped.nestedShell !== null) {
         // A leading assignment shadows the exported value only for this
         // command. Use its last value while classifying the child, then leave
         // the parent-shell possibilities unchanged for later segments.
-        commandScopedAssignments.set(assignment.name, [assignment.value]);
+        commandScopedAssignments.set(assignment.name, [trackedValue]);
       } else {
         const possibleValues = assignments.get(assignment.name) ?? [];
-        possibleValues.push(assignment.value);
+        possibleValues.push(trackedValue);
         assignments.set(assignment.name, possibleValues);
       }
+    }
+    for (const name of definitelyUnsetVariables(segment)) {
+      const readonlyValues = (assignments.get(name) ?? []).filter((value) => value.readonly);
+      if (readonlyValues.length > 0) assignments.set(name, readonlyValues);
+      else assignments.delete(name);
     }
     const visibleAssignments = new Map(assignments);
     for (const [name, values] of commandScopedAssignments) {
