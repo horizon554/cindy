@@ -43,7 +43,7 @@ describeMac('embedded iOS Simulator shell policy', () => {
   // still spelled out and still reachable by reading the command word.
   it.each([
     'exec /usr/bin/xcrun simctl shutdown DEVICE',
-    'command -p xcrun simctl boot DEVICE',
+    'command xcrun simctl boot DEVICE',
     'builtin exec xcrun simctl install DEVICE /tmp/App.app',
     'nohup -- xcrun simctl launch DEVICE com.example.app',
     'env FOO=1 /usr/bin/xcrun simctl shutdown DEVICE',
@@ -60,30 +60,17 @@ describeMac('embedded iOS Simulator shell policy', () => {
     'CMD=xcrun\\ simctl\\ shutdown\\ DEVICE; sh -c "$CMD"',
     'CMD=xcrun\\ simctl\\ shutdown\\ DEVICE; $CMD',
     'time xcrun simctl shutdown DEVICE',
-    'time -p xcrun simctl boot DEVICE',
     `function f () ( printf '%s' "$(date)"; /usr/bin/open -a Simulator ); f`,
     '/usr/bin/xcrun \\\n simctl shutdown DEVICE',
     '/usr/bin/nice /usr/bin/xcrun simctl erase DEVICE',
-    '/usr/bin/arch -arm64 /usr/bin/xcrun simctl boot DEVICE',
-    '/usr/bin/caffeinate -i /usr/bin/xcrun simctl shutdown DEVICE',
+    '/usr/bin/arch /usr/bin/xcrun simctl boot DEVICE',
+    '/usr/bin/caffeinate /usr/bin/xcrun simctl shutdown DEVICE',
     'xargs /usr/bin/xcrun simctl shutdown DEVICE',
-    // A prefix option that consumes the next token must not be mistaken for the
-    // command word, or the peel stops short of a recipe spelled out in full.
-    'env -u FOO xcrun simctl shutdown DEVICE',
-    'env --unset=FOO xcrun simctl shutdown DEVICE',
-    'env -C /tmp xcrun simctl shutdown DEVICE',
-    'sudo -u me xcrun simctl shutdown DEVICE',
-    'nice -n 5 xcrun simctl shutdown DEVICE',
-    'timeout -k 5 30 xcrun simctl shutdown DEVICE',
-    'xargs -n 1 xcrun simctl shutdown DEVICE',
-    'arch -arch arm64 xcrun simctl shutdown DEVICE',
-    'caffeinate -t 60 xcrun simctl shutdown DEVICE',
-    // `exec [-cl] [-a name] command …` supplies argv[0] through `-a`, so the
-    // command word is two tokens further on.
-    'exec -a label xcrun simctl shutdown DEVICE',
-    'exec -a label /usr/bin/xcrun simctl boot DEVICE',
-    'exec -cl -a label xcrun simctl erase DEVICE',
+    'timeout 30 xcrun simctl boot DEVICE',
+    'timeout 1.5s gtimeout 2m xcrun simctl erase DEVICE',
     // A shell option that takes a value must not be read as the script operand.
+    // Unlike a prefix, a shell's `-c` scan can only ever miss when it reads an
+    // option wrongly, so the two value-taking options stay modelled here.
     "bash -o pipefail -c 'xcrun simctl shutdown DEVICE'",
     "bash -O extglob -c 'xcrun simctl shutdown DEVICE'",
     "bash +O extglob -c 'xcrun simctl boot DEVICE'",
@@ -101,6 +88,44 @@ describeMac('embedded iOS Simulator shell policy', () => {
     `cat <<'EOF'\r\ntext\r\nEOF\r\nxcrun simctl shutdown DEVICE`,
   ])('denies a literal recipe behind a documentation-style prefix: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
+  });
+
+  // ── An option on the prefix ends the peel ──────────────────────────────────
+  //
+  // Each command below was denied while the policy carried a per-prefix table of
+  // which options consume the following token. Maintaining that table meant
+  // encoding two things about every CLI: its option arity, and whether the
+  // operands are executed at all. Getting either wrong denies ordinary work, and
+  // both kept being wrong — `bash -O`, then `command -v`, then `sudo -l`, one per
+  // review round. Stopping at the first option can only miss, so the table is
+  // gone and these forms are missed on purpose.
+  //
+  // Documentation spells a recipe as `sudo xcrun simctl boot …`, not
+  // `sudo -u me xcrun simctl boot …`; the plain spelling of every prefix above is
+  // still covered. All of these were also allowed before the embedded simulator
+  // existed, so this restores that behaviour rather than loosening past it.
+  it.each([
+    'command -p xcrun simctl boot DEVICE',
+    'time -p xcrun simctl boot DEVICE',
+    'env -u FOO xcrun simctl shutdown DEVICE',
+    'env --unset=FOO xcrun simctl shutdown DEVICE',
+    'env -C /tmp xcrun simctl shutdown DEVICE',
+    'sudo -u me xcrun simctl shutdown DEVICE',
+    'sudo --user=me xcrun simctl boot DEVICE',
+    'sudo -g staff xcrun simctl shutdown DEVICE',
+    'nice -n 5 xcrun simctl shutdown DEVICE',
+    'timeout -k 5 30 xcrun simctl shutdown DEVICE',
+    'xargs -n 1 xcrun simctl shutdown DEVICE',
+    'xargs -I{} xcrun simctl boot {}',
+    'arch -arch arm64 xcrun simctl shutdown DEVICE',
+    '/usr/bin/arch -arm64 /usr/bin/xcrun simctl boot DEVICE',
+    'caffeinate -t 60 xcrun simctl shutdown DEVICE',
+    '/usr/bin/caffeinate -i /usr/bin/xcrun simctl shutdown DEVICE',
+    'exec -a label xcrun simctl shutdown DEVICE',
+    'exec -a label /usr/bin/xcrun simctl boot DEVICE',
+    'exec -cl -a label xcrun simctl erase DEVICE',
+  ])('no longer denies a recipe behind an option-bearing prefix: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
 
   // A recipe pasted into an interpreter one-liner is still literal text.
@@ -328,12 +353,21 @@ check()
     'sh ./run.sh -c "xcrun simctl boot DEVICE"',
     "zsh tools/x.zsh -c 'open -a Simulator'",
     'bash ./build.sh --release',
-    // `command -v` / `-V` describe their operands; nothing is executed, so the
-    // operands must not be reclassified as the invocation they name.
+    // Some prefixes only report on the command they name. `command -v` prints
+    // where it lives and `sudo -l` asks whether it would be permitted; neither
+    // runs it. Ending the peel at the option covers them without the policy
+    // having to know which prefixes behave this way.
     'command -v simctl shutdown',
     'command -V simctl',
     'command -v xcrun simctl',
     'command -pv simctl boot',
+    'sudo -l xcrun simctl boot DEVICE',
+    'sudo --list xcrun simctl shutdown DEVICE',
+    // The same rule keeps ordinary option-bearing work out of the guard.
+    'sudo -u postgres psql -c "select 1"',
+    'env -u NODE_OPTIONS pnpm test',
+    'timeout -k 5 30 pnpm build',
+    'nice -n 10 make -j8',
     'export PATH=/usr/bin:$PATH; echo ok',
   ])('allows an ordinary command whose shape is not an executable: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();

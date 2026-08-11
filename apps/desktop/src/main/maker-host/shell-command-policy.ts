@@ -192,9 +192,17 @@ const PROGRAMMABLE_INTERPRETER =
   /^(?:python(?:\d+(?:\.\d+)*)?|pypy(?:\d+(?:\.\d+)*)?|node|nodejs|bun|deno|ruby(?:\d+(?:\.\d+)*)?|perl(?:\d+(?:\.\d+)*)?|php(?:\d+(?:\.\d+)*)?|lua(?:\d+(?:\.\d+)*)?|luajit|swift|expect(?:\d+(?:\.\d+)*)?|tclsh(?:\d+(?:\.\d+)*)?|wish(?:\d+(?:\.\d+)*)?|(?:g|m|n)?awk|osascript)$/;
 
 /**
- * Prefixes documentation puts in front of a recipe. Peeling is best-effort: an
- * unfamiliar option shape simply stops the peel, because mislocating the command
- * word now costs a missed literal instead of a denied ordinary command.
+ * Prefixes documentation puts in front of a recipe, in the plain spelling it
+ * actually uses: `sudo xcrun simctl …`, `env FOO=1 xcrun simctl …`,
+ * `timeout 30 xcrun simctl …`.
+ *
+ * **An option on the prefix ends the peel.** Reading past one means knowing that
+ * CLI's option arity *and* whether its operands are executed at all — `sudo -l`
+ * and `command -v` merely report on the command they name. Both kinds of
+ * knowledge were a standing source of defects here, in the direction that
+ * matters: getting either wrong denies ordinary work. Stopping can only miss,
+ * and a recipe copied out of documentation does not arrive decorated with
+ * options.
  */
 const LITERAL_COMMAND_PREFIXES = new Set([
   'arch',
@@ -214,26 +222,6 @@ const LITERAL_COMMAND_PREFIXES = new Set([
   'xargs',
 ]);
 
-/**
- * Options of those prefixes that consume the following token. Without this,
- * `env -u FOO xcrun simctl …` reads `FOO` as the command and the peel stops
- * short of a recipe that is spelled out in full. Separate-word spellings only:
- * an `--opt=value` form starts with `-` and is skipped as a plain flag.
- */
-const PREFIX_VALUE_OPTIONS: Record<string, RegExp> = {
-  arch: /^(?:-arch|--arch|-d|-e)$/,
-  caffeinate: /^(?:-t|-w)$/,
-  env: /^(?:-u|--unset|-C|--chdir|-S|--split-string)$/,
-  // `exec [-cl] [-a name] command …` — `-a` supplies argv[0], the command follows.
-  exec: /^-a$/,
-  gtimeout: /^(?:-k|-s|--kill-after|--signal)$/,
-  nice: /^(?:-n|--adjustment)$/,
-  sudo: /^(?:-u|--user|-g|--group|-h|--host|-p|--prompt|-C|--close-from|-D|--chdir|-R|--chroot|-T|--command-timeout|-U|--other-user|-r|--role)$/,
-  timeout: /^(?:-k|-s|--kill-after|--signal)$/,
-  xargs:
-    /^(?:-n|--max-args|-L|--max-lines|-I|--replace|-P|--max-procs|-s|--max-chars|-E|--eof)$/,
-};
-
 interface UnwrappedCommand {
   tokens: string[];
   /** A literal program string handed to a shell via `-c`, classified recursively. */
@@ -250,17 +238,6 @@ const SHELL_ASSIGNMENT_BUILTINS = new Set([
   'typeset',
 ]);
 
-/** `command -v` / `-V` only describe their operands; nothing is executed. */
-function isInspectionOnlyCommandBuiltin(tokens: string[]): boolean {
-  if (executableName(tokens[0]) !== 'command') return false;
-  for (let index = 1; index < tokens.length; index += 1) {
-    const token = tokens[index]!;
-    if (token === '--' || !token.startsWith('-')) break;
-    if (/^-[A-Za-z]*[vV]/.test(token)) return true;
-  }
-  return false;
-}
-
 /** Peel documentation-style prefixes to reach the command word. */
 function unwrapCommand(input: string[]): UnwrappedCommand {
   const first = stripLeadingShellPreamble(stripShellControlTokens(input));
@@ -273,11 +250,6 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     if (tokens.length === 0) return { tokens, nestedShell: null, assignedValues };
     const head = executableName(tokens[0]);
 
-    if (isInspectionOnlyCommandBuiltin(tokens)) {
-      // Describing `simctl shutdown` is not running it; classifying the operands
-      // would deny an inspection that executes nothing.
-      return { tokens: [], nestedShell: null, assignedValues };
-    }
     if (SHELL_ASSIGNMENT_BUILTINS.has(head)) {
       // `export CMD='xcrun simctl …'` stores the recipe just like a bare
       // assignment, so its operands feed the same assigned-value path.
@@ -311,16 +283,12 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     }
     if (!LITERAL_COMMAND_PREFIXES.has(head)) return { tokens, nestedShell: null, assignedValues };
 
-    const valueOptions = PREFIX_VALUE_OPTIONS[head];
     let index = 1;
-    while (index < tokens.length) {
-      const token = tokens[index]!;
-      if (token === '--') {
-        index += 1;
-        break;
-      }
-      if (!token.startsWith('-')) break;
-      index += valueOptions?.test(token) ? 2 : 1;
+    if (tokens[index] === '--') {
+      // The only option-like token whose meaning needs no per-CLI knowledge.
+      index += 1;
+    } else if (tokens[index]?.startsWith('-')) {
+      return { tokens, nestedShell: null, assignedValues };
     }
     // timeout takes a duration operand before the command it runs.
     if ((head === 'timeout' || head === 'gtimeout') && /^[\d.]+[smhd]?$/.test(tokens[index] ?? '')) {
