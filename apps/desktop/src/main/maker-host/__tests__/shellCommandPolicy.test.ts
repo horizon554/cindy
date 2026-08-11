@@ -349,7 +349,27 @@ SH`,
     '$DIR/build/$NAME --version',
     '"$PWD/build/$NAME" --version',
     '$DIR/simctl/$SUB shutdown DEVICE',
+    // A substitution can supply characters in the middle of the name, and the
+    // tokenizer splits on the whitespace inside it, so the command word arrives
+    // as an unterminated remnant. Contiguity is not a safe test here.
+    'si$(printf m)ctl shutdown DEVICE',
+    'sim$(printf c)tl shutdown DEVICE',
+    'x$(printf c)run simctl shutdown DEVICE',
+    'sim`printf c`tl shutdown DEVICE',
   ])('denies a command word whose executable name cannot be resolved: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
+  });
+
+  // Interpreters join sequences as well as concatenating with an operator.
+  // This is a finite set of forms by construction: a payload can still assemble
+  // a name from character codes or base64, which command text cannot decide.
+  it.each([
+    `python3 - <<'PY'
+import os
+os.system(''.join(('xc','run')) + ' ' + ''.join(('sim','ctl')) + ' shutdown DEVICE')
+PY`,
+    `python3 -c "import os; os.system(''.join(['xc','run']) + ' simctl shutdown DEVICE')"`,
+  ])('denies an executor joined from a sequence of fragments: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
 

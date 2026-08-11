@@ -609,11 +609,17 @@ const MIN_SIMULATOR_FRAGMENT_LENGTH = 4;
 
 /**
  * Join fragments a shell or interpreter concatenates: `"xcr" + "un"`,
- * `xcr"un"`, and AppleScript's `"xcr" & "un"`.
+ * `xcr"un"`, AppleScript's `"xcr" & "un"`, and the sequence forms interpreters
+ * join from (`''.join(('xc','run'))`).
+ *
+ * This is a finite set of forms and cannot cover arbitrary computation — a
+ * payload is free to assemble a name from base64 or character codes. Command
+ * text alone cannot decide those, which the module header already concedes for
+ * script contents; the evidence tests below are defence in depth, not a proof.
  */
 function normalizeConcatenatedFragments(command: string): string {
   return command
-    .replace(/(['"`])\s*[+&]\s*\1?/g, '')
+    .replace(/(['"`])\s*[+&,]\s*\1?/g, '')
     .replace(/(['"`])\s*\1/g, '')
     .replace(/['"`]/g, '');
 }
@@ -671,10 +677,17 @@ function hasSimulatorEvidence(command: string): boolean {
 
 /** Strip expansions and glob metacharacters, leaving the literal core (if any). */
 function commandWordLiteralCore(token: string): string {
-  return token
-    .replace(/\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]/g, '')
-    .replace(/[*?[\]{}()^~]/g, '')
-    .replace(/['"]/g, '');
+  return (
+    token
+      .replace(/\$\([^)]*\)|`[^`]*`|\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?$!-]/g, '')
+      // The tokenizer splits on whitespace inside a substitution, so a command
+      // word can end in an unterminated remnant (`si$(printf` from
+      // `si$(printf m)ctl`). Drop the remnant: a shorter core is the
+      // fail-closed direction under the subsequence test below.
+      .replace(/[$`][^\s]*$/, '')
+      .replace(/[*?[\]{}()^~]/g, '')
+      .replace(/['"]/g, '')
+  );
 }
 
 /**
@@ -709,8 +722,23 @@ function isSimulatorFragmentCore(core: string): boolean {
   if (!name) return false;
   return SIMULATOR_EXECUTOR_NAMES.some(
     (executor) =>
-      name.startsWith(executor.slice(0, MIN_SIMULATOR_FRAGMENT_LENGTH)) || executor.includes(name),
+      name.startsWith(executor.slice(0, MIN_SIMULATOR_FRAGMENT_LENGTH)) ||
+      isSubsequenceOf(name, executor),
   );
+}
+
+/**
+ * Whether every character of `fragment` appears in `executor` in order. The
+ * stripped expansion can supply the missing characters at any position, so
+ * `si$(printf m)ctl` leaves the core `sictl` — contiguity is not a safe test.
+ */
+function isSubsequenceOf(fragment: string, executor: string): boolean {
+  let index = 0;
+  for (const char of fragment) {
+    index = executor.indexOf(char, index) + 1;
+    if (index === 0) return false;
+  }
+  return true;
 }
 
 /**
