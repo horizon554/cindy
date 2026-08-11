@@ -208,6 +208,24 @@ const LITERAL_COMMAND_PREFIXES = new Set([
   'xargs',
 ]);
 
+/**
+ * Options of those prefixes that consume the following token. Without this,
+ * `env -u FOO xcrun simctl …` reads `FOO` as the command and the peel stops
+ * short of a recipe that is spelled out in full. Separate-word spellings only:
+ * an `--opt=value` form starts with `-` and is skipped as a plain flag.
+ */
+const PREFIX_VALUE_OPTIONS: Record<string, RegExp> = {
+  arch: /^(?:-arch|--arch|-d|-e)$/,
+  caffeinate: /^(?:-t|-w)$/,
+  env: /^(?:-u|--unset|-C|--chdir|-S|--split-string)$/,
+  gtimeout: /^(?:-k|-s|--kill-after|--signal)$/,
+  nice: /^(?:-n|--adjustment)$/,
+  sudo: /^(?:-u|--user|-g|--group|-h|--host|-p|--prompt|-C|--close-from|-D|--chdir|-R|--chroot|-T|--command-timeout|-U|--other-user|-r|--role)$/,
+  timeout: /^(?:-k|-s|--kill-after|--signal)$/,
+  xargs:
+    /^(?:-n|--max-args|-L|--max-lines|-I|--replace|-P|--max-procs|-s|--max-chars|-E|--eof)$/,
+};
+
 interface UnwrappedCommand {
   tokens: string[];
   /** A literal program string handed to a shell via `-c`, classified recursively. */
@@ -237,6 +255,7 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     }
     if (!LITERAL_COMMAND_PREFIXES.has(head)) return { tokens, nestedShell: null, assignedValues };
 
+    const valueOptions = PREFIX_VALUE_OPTIONS[head];
     let index = 1;
     while (index < tokens.length) {
       const token = tokens[index]!;
@@ -245,7 +264,7 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
         break;
       }
       if (!token.startsWith('-')) break;
-      index += 1;
+      index += valueOptions?.test(token) ? 2 : 1;
     }
     // timeout takes a duration operand before the command it runs.
     if ((head === 'timeout' || head === 'gtimeout') && /^[\d.]+[smhd]?$/.test(tokens[index] ?? '')) {

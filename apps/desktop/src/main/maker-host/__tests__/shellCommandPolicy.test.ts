@@ -67,6 +67,22 @@ describeMac('embedded iOS Simulator shell policy', () => {
     '/usr/bin/arch -arm64 /usr/bin/xcrun simctl boot DEVICE',
     '/usr/bin/caffeinate -i /usr/bin/xcrun simctl shutdown DEVICE',
     'xargs /usr/bin/xcrun simctl shutdown DEVICE',
+    // A prefix option that consumes the next token must not be mistaken for the
+    // command word, or the peel stops short of a recipe spelled out in full.
+    'env -u FOO xcrun simctl shutdown DEVICE',
+    'env --unset=FOO xcrun simctl shutdown DEVICE',
+    'env -C /tmp xcrun simctl shutdown DEVICE',
+    'sudo -u me xcrun simctl shutdown DEVICE',
+    'nice -n 5 xcrun simctl shutdown DEVICE',
+    'timeout -k 5 30 xcrun simctl shutdown DEVICE',
+    'xargs -n 1 xcrun simctl shutdown DEVICE',
+    'arch -arch arm64 xcrun simctl shutdown DEVICE',
+    'caffeinate -t 60 xcrun simctl shutdown DEVICE',
+    // Removing heredoc region reduction also removed the ways it could swallow a
+    // real recipe: a marker inside a comment, and a CRLF delimiter that never
+    // matched. Body lines are now ordinary segments.
+    `echo hi # <<'EOF'\nxcrun simctl shutdown DEVICE`,
+    `cat <<'EOF'\r\ntext\r\nEOF\r\nxcrun simctl shutdown DEVICE`,
   ])('denies a literal recipe behind a documentation-style prefix: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
@@ -446,6 +462,16 @@ PY`,
     'tool$SUFFIX --version',
     'build$SUFFIX --version',
   ])('allows a resolvable non-Simulator executable name: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
+  });
+
+  // Adjacent string literals are data, not a join. Folding them used to fabricate
+  // an executor name out of ordinary interpreter code.
+  it.each([
+    `python3 -c 'print("xcr", "un")'`,
+    `node -e 'console.log(["sim", "ctl"])'`,
+    `python3 -c 'print(["sim","ctl"])'`,
+  ])('allows adjacent string literals that merely look like fragments: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
 });
