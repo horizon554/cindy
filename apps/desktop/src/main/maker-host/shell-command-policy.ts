@@ -1003,6 +1003,16 @@ function heredocBodyIsProgram(line: string, markerStart: number): boolean {
   return false;
 }
 
+/** Whether a trailing list operator requires another physical command line. */
+function shellClauseNeedsContinuation(command: string): boolean {
+  const lastSegment = shellSegments(command).at(-1);
+  return (
+    lastSegment?.followingOperator === '|'
+    || lastSegment?.followingOperator === '&&'
+    || lastSegment?.followingOperator === '||'
+  );
+}
+
 /**
  * Remove stdin-only heredoc prose before classifying command words.
  *
@@ -1014,9 +1024,26 @@ function stripHeredocBodies(command: string): string {
   const lines = command.split(/\r?\n/);
   const executable: string[] = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    executable.push(line);
-    for (const heredoc of heredocRedirections(line)) {
+    let clause = lines[index]!;
+    const clauseHeredocs = heredocRedirections(clause);
+    // A heredoc body begins only after the complete compound command has been
+    // parsed. With a trailing `|`, `&&` or `||`, the next physical line is the
+    // continuation command rather than body data; retain it in the executable
+    // clause and shift any opener offsets found there.
+    while (shellClauseNeedsContinuation(clause) && index + 1 < lines.length) {
+      index += 1;
+      const continuation = lines[index]!;
+      const continuationStart = clause.length + 1;
+      clause += `\n${continuation}`;
+      clauseHeredocs.push(
+        ...heredocRedirections(continuation).map((heredoc) => ({
+          ...heredoc,
+          start: continuationStart + heredoc.start,
+        })),
+      );
+    }
+    executable.push(clause);
+    for (const heredoc of clauseHeredocs) {
       const body: string[] = [];
       index += 1;
       for (; index < lines.length; index += 1) {
@@ -1025,7 +1052,7 @@ function stripHeredocBodies(command: string): string {
         if (unindented === heredoc.delimiter) break;
         body.push(candidate);
       }
-      if (heredocBodyIsProgram(line, heredoc.start)) executable.push(...body);
+      if (heredocBodyIsProgram(clause, heredoc.start)) executable.push(...body);
       else if (heredoc.expands) executable.push(...shellSubcommands(body.join('\n')));
       if (index >= lines.length) break;
     }

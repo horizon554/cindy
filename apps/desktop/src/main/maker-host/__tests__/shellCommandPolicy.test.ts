@@ -225,6 +225,16 @@ SH`,
     `cat <<'SH' | env FOO=1 bash
 xcrun simctl erase DEVICE
 SH`,
+    // A trailing pipeline operator continues onto the next physical line. The
+    // continuation command is executable shell syntax, not heredoc body data.
+    `cat <<'SH' |
+xcrun simctl shutdown DEVICE
+SH`,
+    // The same multiline pipeline still hands the eventual body to bash.
+    `cat <<'SH' |
+bash
+xcrun simctl shutdown DEVICE
+SH`,
     `cat <<'SH' | bash | cat
 open -a Simulator
 SH`,
@@ -396,6 +406,12 @@ EOF`,
 xcrun simctl shutdown DEVICE
 open -a Simulator
 EOF`,
+    // A multiline pipeline can consume a heredoc as ordinary data. Once the
+    // continuation command is retained, the data body must still disappear.
+    `cat <<'DATA' |
+wc -l
+xcrun simctl shutdown DEVICE
+DATA`,
     // A commit message written through a heredoc is stdin data, never argv. A
     // line starting with a Markdown backtick span used to read as an executable
     // position filled by an unresolvable expansion, which denied the commit and
