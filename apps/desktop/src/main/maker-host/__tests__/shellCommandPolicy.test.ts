@@ -211,6 +211,21 @@ SH`,
     `cat <<'SH' | bash | cat
 open -a Simulator
 SH`,
+    `bash 2>/dev/null <<'SH'
+xcrun simctl shutdown DEVICE
+SH`,
+    `bash>/dev/null <<'SH'
+xcrun simctl shutdown DEVICE
+SH`,
+    `bash &>/dev/null <<'SH'
+xcrun simctl shutdown DEVICE
+SH`,
+    `bash {log}>/dev/null <<'SH'
+xcrun simctl shutdown DEVICE
+SH`,
+    `cat <<'SH' | bash 2>/dev/null
+open -a Simulator
+SH`,
     // An unquoted delimiter still expands, so the body's substitutions run.
     `cat <<MSG
 $(xcrun simctl boot DEVICE)
@@ -350,6 +365,18 @@ MSG`,
 xcrun simctl shutdown DEVICE
 MSG`,
     `git commit -F - <<MSG
+xcrun simctl shutdown DEVICE
+MSG`,
+    `git commit 2>/dev/null -F - <<'MSG'
+xcrun simctl shutdown DEVICE
+MSG`,
+    `bash '2>/dev/null' <<'SH'
+xcrun simctl shutdown DEVICE
+SH`,
+    `bash '&>/dev/null' <<'SH'
+xcrun simctl shutdown DEVICE
+SH`,
+    `git commit &>/dev/null -F - <<'MSG'
 xcrun simctl shutdown DEVICE
 MSG`,
     // A quoted delimiter suppresses expansion in every spelling, and `<<-`

@@ -236,6 +236,73 @@ function shellRedirectionSuffix(token: string): string | null {
   return match ? (match[1] ?? '') : null;
 }
 
+function redirectionAt(segment: string, index: number): string | null {
+  if (
+    (segment[index] === '<' || segment[index] === '>')
+    && segment[index + 1] === '('
+  ) return null;
+  const wordStart = index === 0 || /\s/.test(segment[index - 1]!);
+  const prefix = wordStart ? '(?:(?:\\d+|\\{[A-Za-z_][A-Za-z0-9_]*\\}))?' : '';
+  return new RegExp(`^${prefix}(?:&>>?|<<<|<<-|<<|<>|>>|>&|<&|>\\||<|>)`).exec(
+    segment.slice(index),
+  )?.[0] ?? null;
+}
+
+/** Remove unquoted redirections before deciding whether stdin is the program. */
+function tokenizeHeredocConsumer(segment: string): string[] {
+  let command = '';
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < segment.length; index += 1) {
+    const char = segment[index]!;
+    if (escaped) {
+      command += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      command += char;
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      command += char;
+      if (quote === char) quote = null;
+      else if (quote === null) quote = char;
+      continue;
+    }
+    const redirection = quote === null ? redirectionAt(segment, index) : null;
+    if (redirection === null) {
+      command += char;
+      continue;
+    }
+    index += redirection.length;
+    while (/\s/.test(segment[index] ?? '')) index += 1;
+    let targetQuote: "'" | '"' | null = null;
+    let targetEscaped = false;
+    for (; index < segment.length; index += 1) {
+      const target = segment[index]!;
+      if (targetEscaped) {
+        targetEscaped = false;
+        continue;
+      }
+      if (target === '\\' && targetQuote !== "'") {
+        targetEscaped = true;
+        continue;
+      }
+      if (target === "'" || target === '"') {
+        if (targetQuote === target) targetQuote = null;
+        else if (targetQuote === null) targetQuote = target;
+        continue;
+      }
+      if (targetQuote === null && (/\s/.test(target) || redirectionAt(segment, index))) break;
+    }
+    command += ' ';
+    index -= 1;
+  }
+  return tokenizeShellSegment(command);
+}
+
 /** A `NAME=value` assignment, whose value may hold a whole recipe. */
 interface ShellAssignment {
   name: string;
@@ -642,7 +709,7 @@ function heredocBodyIsProgram(line: string, marker: string): boolean {
     if (index > openingIndex && segment.precedingOperator !== '|') break;
     if (
       consumesStdinAsProgram(
-        tokenizeShellSegment(segment.command.replace(marker, ' ')),
+        tokenizeHeredocConsumer(segment.command.replace(marker, ' ')),
       )
     ) return true;
   }
