@@ -235,9 +235,23 @@ SH`,
     `bash {log}>/dev/null <<'SH'
 xcrun simctl shutdown DEVICE
 SH`,
+    `bash 0<<'SH'
+xcrun simctl shutdown DEVICE
+SH`,
     `cat <<'SH' | bash 2>/dev/null
 open -a Simulator
 SH`,
+    // Multiple stdin heredocs on one consumer: only the last body reaches bash.
+    `bash <<'DATA' <<'CODE'
+echo safe
+DATA
+xcrun simctl shutdown DEVICE
+CODE`,
+    `cat <<'DATA' | bash <<'CODE'
+echo safe
+DATA
+xcrun simctl shutdown DEVICE
+CODE`,
     `printf '<<SH'; cat <<SH | bash
 xcrun simctl shutdown DEVICE
 SH`,
@@ -613,11 +627,24 @@ PY`,
 import os
 os.system("xcr" + "un" + " sim" + "ctl shutdown DEVICE")
 PY`,
+    // The downstream heredoc replaces the pipe as bash's stdin, so DATA is
+    // ordinary cat input even though it looks like a Simulator recipe.
     `cat <<'DATA' | bash <<'CODE'
 xcrun simctl shutdown DEVICE
 DATA
 echo safe
 CODE`,
+    `bash <<'DATA' <<'CODE'
+xcrun simctl shutdown DEVICE
+DATA
+echo safe
+CODE`,
+    `bash 3<<'DATA'
+xcrun simctl shutdown DEVICE
+DATA`,
+    `bash {fd}<<'DATA'
+xcrun simctl shutdown DEVICE
+DATA`,
     `awk 'BEGIN { system("xcr" "un" " sim" "ctl shutdown DEVICE") }'`,
     'xcr$TAIL boot DEVICE',
     'sim$TAIL shutdown DEVICE',

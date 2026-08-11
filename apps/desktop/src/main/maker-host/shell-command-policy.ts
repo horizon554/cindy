@@ -662,6 +662,22 @@ interface HeredocRedirection {
   stripsTabs: boolean;
 }
 
+function heredocDescriptorBefore(
+  segment: string,
+  start: number,
+): { value: string; start: number } | null {
+  const beforeOperator = segment.slice(0, start);
+  const match = /(?:^|[\s;&|()])(\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.exec(beforeOperator);
+  const value = match?.[1];
+  return value === undefined ? null : { value, start: start - value.length };
+}
+
+/** Whether a heredoc redirection feeds the command's stdin rather than another fd. */
+function heredocIsStdinRedirection(segment: string, start: number): boolean {
+  const descriptor = heredocDescriptorBefore(segment, start);
+  return descriptor === null || descriptor.value === '0';
+}
+
 /**
  * Skip a shell arithmetic expression while looking for heredoc operators.
  *
@@ -784,6 +800,21 @@ function heredocRedirections(line: string): HeredocRedirection[] {
   return redirections;
 }
 
+/** Remove heredoc operators before tokenizing the command that consumes them. */
+function removeHeredocRedirections(command: string): string {
+  const redirections = heredocRedirections(command);
+  let result = command;
+  for (let index = redirections.length - 1; index >= 0; index -= 1) {
+    const redirection = redirections[index]!;
+    const descriptor = heredocDescriptorBefore(command, redirection.start);
+    const removalStart = descriptor?.start ?? redirection.start;
+    result =
+      result.slice(0, removalStart)
+      + result.slice(redirection.start + redirection.marker.length);
+  }
+  return result;
+}
+
 /** Find the closing parenthesis for a shell `$(...)`, `<(...)` or `>(...)`. */
 function skipShellSubstitution(input: string, start: number): number {
   let depth = 1;
@@ -890,16 +921,39 @@ function hasUnquotedStdinRedirection(segment: string): boolean {
 }
 
 /** Whether the heredoc's own clause hands its body to a code-reading consumer. */
-function heredocBodyIsProgram(line: string, marker: string, markerStart: number): boolean {
+function heredocBodyIsProgram(line: string, markerStart: number): boolean {
   const segments = shellSegments(line);
   let searchCursor = 0;
+  let openingSegmentStart = -1;
   const openingIndex = segments.findIndex((segment) => {
     const segmentStart = line.indexOf(segment.command, searchCursor);
     if (segmentStart < 0) return false;
     searchCursor = segmentStart + segment.command.length;
-    return markerStart >= segmentStart && markerStart < searchCursor;
+    if (markerStart < segmentStart || markerStart >= searchCursor) return false;
+    openingSegmentStart = segmentStart;
+    return true;
   });
   if (openingIndex < 0) return false;
+  const openingSegment = segments[openingIndex]!;
+  const localMarkerStart = markerStart - openingSegmentStart;
+  const openingRedirections = heredocRedirections(openingSegment.command);
+  const openingRedirection = openingRedirections.find(
+    (redirection) => redirection.start === localMarkerStart,
+  );
+  if (
+    !openingRedirection
+    || !heredocIsStdinRedirection(openingSegment.command, openingRedirection.start)
+  ) return false;
+  // Bash applies multiple stdin heredocs on one consumer from left to right;
+  // only the final stdin redirection supplies the process's input. A previous
+  // body is data even when the later body is the program we should inspect.
+  if (
+    openingRedirections.some(
+      (redirection) =>
+        redirection.start > openingRedirection.start
+        && heredocIsStdinRedirection(openingSegment.command, redirection.start),
+    )
+  ) return false;
   for (let index = openingIndex; index < segments.length; index += 1) {
     const segment = segments[index]!;
     if (index > openingIndex && segment.precedingOperator !== '|') break;
@@ -908,7 +962,7 @@ function heredocBodyIsProgram(line: string, marker: string, markerStart: number)
     if (index > openingIndex && hasUnquotedStdinRedirection(segment.command)) break;
     if (
       consumesStdinAsProgram(
-        tokenizeHeredocConsumer(segment.command.replace(marker, ' ')),
+        tokenizeHeredocConsumer(removeHeredocRedirections(segment.command)),
       )
     ) return true;
   }
@@ -937,7 +991,7 @@ function stripHeredocBodies(command: string): string {
         if (unindented === heredoc.delimiter) break;
         body.push(candidate);
       }
-      if (heredocBodyIsProgram(line, heredoc.marker, heredoc.start)) executable.push(...body);
+      if (heredocBodyIsProgram(line, heredoc.start)) executable.push(...body);
       else if (heredoc.expands) executable.push(...shellSubcommands(body.join('\n')));
       if (index >= lines.length) break;
     }

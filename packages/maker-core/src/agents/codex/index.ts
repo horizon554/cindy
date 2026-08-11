@@ -3043,8 +3043,23 @@ export class CodexAgent extends BaseAgent {
     // one, then make that earlier completion look like recovery progress.
     const approvalPolicyDeniedTurnReasons = new Map<
       string,
-      { reason: string; itemIds: Set<string> }
+      {
+        reason: string;
+        itemIds: Set<string>;
+        // A sibling item may already be running when the denied approval
+        // arrives. Its later update/completion is not recovery progress: the
+        // turn is still in the abort caused by the denial. Snapshot the item
+        // ids seen before the first denial so only genuinely new work clears
+        // the policy attribution.
+        preexistingItemIds: Set<string>;
+      }
     >();
+    // Item ids observed before an approval-path denial. A turn may have
+    // parallel work in flight when one command is declined; that sibling can
+    // emit updated/completed after the denial without representing a
+    // replacement continuation. The snapshot is per-turn and is discarded
+    // with the turn's denial state at terminal completion.
+    const observedModelItemIdsByTurn = new Map<string, Set<string>>();
     // daemon 后端 retry-loop 的终局升级 (issue #677): 远端摸不到 Codex 后端时
     // daemon 无限 willRetry, turn 永不收口。同 turn 重试超阈值 → 合成终态错误,
     // 走与终态 error 完全相同的收口路径 (terminalErroredTurnIds + Done status)。
@@ -6257,6 +6272,7 @@ export class CodexAgent extends BaseAgent {
           approvalPolicyDeniedTurnReasons.set(params.turnId, {
             reason: hostPolicy.reason,
             itemIds: new Set([params.itemId]),
+            preexistingItemIds: new Set(observedModelItemIdsByTurn.get(params.turnId) ?? []),
           });
         }
         // Declining without ever showing the user why renders as a bare failed
@@ -7726,6 +7742,10 @@ export class CodexAgent extends BaseAgent {
 
     function handleTurnCompleted(params: TurnCompletedParams): void {
       const turn = params.turn;
+      // Every branch below represents an authoritative terminal notification,
+      // including the paths that defer UI settlement or return early. Item
+      // history is only needed while approval attribution is still mutable.
+      observedModelItemIdsByTurn.delete(turn.id);
       const interruptOrigin = turnInterruptOrigins.get(turn.id);
       turnInterruptOrigins.delete(turn.id);
       if (
@@ -8089,13 +8109,40 @@ export class CodexAgent extends BaseAgent {
       return type === null || !ITEM_TYPES_WITHOUT_MODEL_WORK.has(type);
     };
 
+    const noteObservedModelItem = (
+      turnId: string,
+      item: { id?: unknown; type?: unknown } | null | undefined,
+    ): void => {
+      if (
+        !item
+        || !itemRepresentsModelWork(item)
+        || typeof item.id !== 'string'
+        || item.id.length === 0
+      ) {
+        return;
+      }
+      const itemIds = observedModelItemIdsByTurn.get(turnId) ?? new Set<string>();
+      itemIds.add(item.id);
+      observedModelItemIdsByTurn.set(turnId, itemIds);
+    };
+
     // An approval decline is only attributable to the immediate abort it
-    // causes. Once the same turn produces model work or starts a replacement
-    // item, a later failure/interruption belongs to that continuation and must
-    // not be reported as the stale Simulator-policy denial.
+    // causes. Work that was already observed before the denial may still emit
+    // progress while that abort settles; only model work first observed after
+    // the denial clears the policy attribution as a genuine continuation.
     const clearApprovalPolicyDenialOnProgress = (turnId: string, itemId?: string): void => {
       const denial = approvalPolicyDeniedTurnReasons.get(turnId);
-      if (!denial || (itemId !== undefined && denial.itemIds.has(itemId))) return;
+      if (!denial) return;
+      // Turn-level progress (diffs, plans, or text deltas without an item id)
+      // cannot prove that a replacement item started after the denial. Keep
+      // the attribution until an item lifecycle event identifies new work.
+      if (itemId === undefined) return;
+      if (
+        denial.itemIds.has(itemId)
+        || denial.preexistingItemIds.has(itemId)
+      ) {
+        return;
+      }
       approvalPolicyDeniedTurnReasons.delete(turnId);
     };
 
@@ -9029,7 +9076,6 @@ export class CodexAgent extends BaseAgent {
       turnDiffUpdated: (params) => {
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.turnDiffUpdated?.(params))) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
-        clearApprovalPolicyDenialOnProgress(params.turnId);
         publishTurnDiff(threadId, params.turnId, params.diff);
       },
       turnCompleted: (params) => {
@@ -9072,6 +9118,7 @@ export class CodexAgent extends BaseAgent {
           return;
         }
         if (itemRepresentsModelWork(params.item)) {
+          noteObservedModelItem(params.turnId, params.item);
           clearApprovalPolicyDenialOnProgress(params.turnId, params.item.id);
         }
         const shellCommand = shellCommandFromCodexItem(params.item);
@@ -9180,6 +9227,7 @@ export class CodexAgent extends BaseAgent {
           return;
         }
         if (itemRepresentsModelWork(params.item)) {
+          noteObservedModelItem(params.turnId, params.item);
           clearApprovalPolicyDenialOnProgress(params.turnId, params.item.id);
           producedOutputTurnIds.add(params.turnId);
         }
@@ -9234,6 +9282,7 @@ export class CodexAgent extends BaseAgent {
         }
         if (collabTerminalKey) handledCollabTerminalItemIds.add(collabTerminalKey);
         if (itemRepresentsModelWork(params.item)) {
+          noteObservedModelItem(params.turnId, params.item);
           clearApprovalPolicyDenialOnProgress(params.turnId, params.item.id);
           producedOutputTurnIds.add(params.turnId);
         }
@@ -9308,7 +9357,6 @@ export class CodexAgent extends BaseAgent {
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.turnPlanUpdated?.(params))) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
         latestPlanByTurn.set(params.turnId, params.plan);
-        clearApprovalPolicyDenialOnProgress(params.turnId);
         translatePlanUpdatedNotification(params, eventQueue);
       },
       reasoningSummaryTextDelta: (params) => {
