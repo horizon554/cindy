@@ -91,7 +91,12 @@ function shellSegments(command: string): ShellSegment[] {
       continue;
     }
     if (char === '\n' || char === ';') {
-      flush(';');
+      // A newline immediately after `&&`, `||` or `|` continues that operator's
+      // command. There is no empty command for the newline to run, so keep the
+      // pending edge instead of turning it into an unconditional list separator.
+      // A lone `&` is already a complete separator, so the next line is
+      // unconditional in the parent shell.
+      if (char === ';' || current.trim() || precedingOperator === '&') flush(';');
       continue;
     }
     if (

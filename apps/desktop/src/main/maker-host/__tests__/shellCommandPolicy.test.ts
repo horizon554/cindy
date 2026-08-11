@@ -152,6 +152,12 @@ describeMac('embedded iOS Simulator shell policy', () => {
     `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe'; eval "$CMD" 2>&1`,
     `CMD='xcrun simctl shutdown DEVICE'; echo if; CMD='echo safe'; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE' && true; CMD='echo safe'; eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'
+CMD='echo safe'
+eval "$CMD"`,
+    // A lone background separator is complete before the newline, so the next
+    // assignment is unconditional in the parent shell and replaces the value.
+    `CMD='xcrun simctl shutdown DEVICE'; false &\nCMD='echo safe'; eval "$CMD"`,
   ])('allows a stored recipe that nothing executes: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
@@ -166,6 +172,9 @@ describeMac('embedded iOS Simulator shell policy', () => {
     // The later text is not a guaranteed replacement when control flow can skip
     // it or keep it inside a child scope, so the earlier value stays possible.
     `CMD='xcrun simctl shutdown DEVICE'; false && CMD='echo safe'; eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; false &&\nCMD='echo safe'; eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; true ||\nCMD='echo safe'; eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; printf ignored |\nCMD='echo safe'; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; (CMD='echo safe'); eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; if false; then CMD='echo safe'; fi; eval "$CMD"`,
   ])('denies the current stored recipe at its execution point: %s', (command) => {
