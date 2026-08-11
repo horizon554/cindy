@@ -1247,13 +1247,7 @@ function containsInterpreterHeredocBypass(command: string): boolean {
     const line = lines[index] ?? '';
     const marker = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(line);
     if (!marker) continue;
-    if (
-      !shellSegments(line.slice(0, marker.index)).some((segment) =>
-        consumesStdinAsProgram(tokenizeShellSegment(segment)),
-      )
-    ) {
-      continue;
-    }
+    if (!heredocBodyIsProgram(line, marker[0]!)) continue;
     const delimiter = marker[2]!;
     const body: string[] = [];
     for (index += 1; index < lines.length; index += 1) {
@@ -1432,19 +1426,154 @@ function containsSimulatorAliasDefinition(
   return false;
 }
 
+type HeredocRedirection = {
+  marker: string;
+  delimiter: string;
+  expands: boolean;
+  stripsTabs: boolean;
+};
+
+/**
+ * Whether the clause opening a heredoc hands the body to a program that runs it.
+ *
+ * The consumer can sit on either side of the marker: `python3 <<'PY'` reads the
+ * body directly, `cat <<'SH' | sh` pipes it into a shell. The search is scoped to
+ * the heredoc's own clause so a `;`-separated interpreter, which reads the
+ * terminal rather than this body, is not mistaken for its consumer, and the
+ * redirection itself is dropped so it cannot read as the interpreter's
+ * positional program argument.
+ */
+function heredocBodyIsProgram(line: string, marker: string): boolean {
+  const opening = shellClauses(line).find((candidate) => candidate.includes(marker)) ?? line;
+  const clause = opening.replace(marker, ' ');
+  return shellSegments(clause).some((segment) =>
+    consumesStdinAsProgram(tokenizeShellSegment(segment)),
+  );
+}
+
+/**
+ * Heredoc redirections opened on one line, skipping `<<` inside quotes and the
+ * `<<<` here-string operator (classified separately). Quoting or escaping any
+ * part of the delimiter disables expansion of the body, which is what decides
+ * whether anything in that body can reach the shell at all.
+ */
+function heredocRedirections(line: string): HeredocRedirection[] {
+  const redirections: HeredocRedirection[] = [];
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (quote === char) quote = null;
+      else if (quote === null) quote = char;
+      continue;
+    }
+    if (quote || char !== '<' || line[index + 1] !== '<') continue;
+    if (line[index + 2] === '<') {
+      index += 2;
+      continue;
+    }
+    let cursor = index + 2;
+    const stripsTabs = line[cursor] === '-';
+    if (stripsTabs) cursor += 1;
+    while (line[cursor] === ' ' || line[cursor] === '\t') cursor += 1;
+    let delimiter = '';
+    let expands = true;
+    while (cursor < line.length) {
+      const delimiterChar = line[cursor]!;
+      if (delimiterChar === "'" || delimiterChar === '"') {
+        expands = false;
+        const closing = line.indexOf(delimiterChar, cursor + 1);
+        if (closing < 0) {
+          delimiter += line.slice(cursor + 1);
+          cursor = line.length;
+          break;
+        }
+        delimiter += line.slice(cursor + 1, closing);
+        cursor = closing + 1;
+        continue;
+      }
+      if (delimiterChar === '\\') {
+        expands = false;
+        cursor += 1;
+        if (cursor < line.length) {
+          delimiter += line[cursor]!;
+          cursor += 1;
+        }
+        continue;
+      }
+      if (/[\s;&|<>()]/.test(delimiterChar)) break;
+      delimiter += delimiterChar;
+      cursor += 1;
+    }
+    if (delimiter !== '') {
+      redirections.push({ marker: line.slice(index, cursor), delimiter, expands, stripsTabs });
+    }
+    index = cursor - 1;
+  }
+  return redirections;
+}
+
+/**
+ * Reduce heredoc bodies to the text that can actually reach a command position.
+ *
+ * A body handed to an interpreter or shell *is* a program, so it stays verbatim —
+ * that is what lets a fragment-assembled executor inside `python3 <<'PY'` still be
+ * classified. A body handed to anything else is stdin data and never argv, so
+ * classifying its lines as command words denies ordinary work: a commit message
+ * line starting with a Markdown backtick span reads as an executable position
+ * filled by an unresolvable expansion. Such a body is dropped, except that an
+ * unquoted delimiter still runs the body's command substitutions, so those are
+ * kept while the surrounding prose is not.
+ */
+function stripHeredocBodies(command: string): string {
+  if (!command.includes('<<')) return command;
+  const lines = command.split('\n');
+  const executable: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    executable.push(line);
+    for (const heredoc of heredocRedirections(line)) {
+      const body: string[] = [];
+      index += 1;
+      for (; index < lines.length; index += 1) {
+        const candidate = lines[index]!;
+        const unindented = heredoc.stripsTabs ? candidate.replace(/^\t+/, '') : candidate;
+        if (unindented === heredoc.delimiter) break;
+        body.push(candidate);
+      }
+      if (heredocBodyIsProgram(line, heredoc.marker)) executable.push(...body);
+      else if (heredoc.expands) executable.push(...shellSubcommands(body.join('\n')));
+      if (index >= lines.length) break;
+    }
+  }
+  return executable.join('\n');
+}
+
 function containsSimulatorBypass(command: string, evidence: boolean, depth = 0): boolean {
   if (depth > 8) return /\b(?:simctl|Simulator(?:\.app)?)\b/i.test(command);
+  // Interpreter payloads are read from the unmodified command; every other rule
+  // below classifies command words, so it must not see heredoc body prose.
+  const argv = stripHeredocBodies(command);
   if (
-    containsTaintedVariableExecution(command) ||
+    containsTaintedVariableExecution(argv) ||
     containsShellConsumedLiteralBypass(command) ||
-    containsSimulatorFunctionBody(command, evidence, depth)
+    containsSimulatorFunctionBody(argv, evidence, depth)
   ) {
     return true;
   }
-  for (const nested of shellSubcommands(command)) {
+  for (const nested of shellSubcommands(argv)) {
     if (containsSimulatorBypass(nested, evidence, depth + 1)) return true;
   }
-  for (const segment of shellSegments(command)) {
+  for (const segment of shellSegments(argv)) {
     // Function bodies were classified recursively above. The leading
     // `name(){` token is not an execution wrapper in its own right.
     if (SHELL_FUNCTION_DEFINITION_PREFIX.test(segment)) {

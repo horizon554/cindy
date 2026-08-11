@@ -178,6 +178,21 @@ PY`,
     `bash -c 'source /dev/stdin' <<< 'xcrun simctl shutdown DEVICE'`,
     `bash -c 'eval "$(cat)"' <<< 'xcrun simctl shutdown DEVICE'`,
     `printf 'xcrun simctl shutdown DEVICE' | bash -c 'eval "$(cat)"'`,
+    // The consumer can also follow the marker, so the heredoc's own pipeline —
+    // not just the text before `<<` — decides whether the body is executable.
+    `cat <<'SH' | sh
+xcrun simctl boot DEVICE
+SH`,
+    `cat <<'SH' | bash -s
+xcrun simctl shutdown DEVICE
+SH`,
+    // An unquoted delimiter still expands, so the body's substitutions run.
+    `cat <<MSG
+$(xcrun simctl boot DEVICE)
+MSG`,
+    `cat <<MSG
+\`xcrun simctl shutdown DEVICE\`
+MSG`,
   ])('denies Simulator mutation hidden behind a programmable interpreter: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
@@ -277,6 +292,46 @@ JSON`,
     `cat > /tmp/notes.txt <<'EOF'
 hello (world)
 EOF`,
+    // A commit message written through a heredoc is stdin data, never argv. A
+    // line starting with a Markdown backtick span used to read as an executable
+    // position filled by an unresolvable expansion, which denied the commit and
+    // interrupted the turn — with no Simulator executor anywhere in the command.
+    `git commit -s -F - <<'MSG'
+fix(scope): 收窄判据
+
+验证：\`pnpm --filter desktop typecheck\` 通过，\`@cindy/ios-simulator-runtime\` 36 文件
+\`pnpm test:unit\` 全绿
+MSG`,
+    `git commit -F - <<'MSG'
+\`ls\`
+MSG`,
+    // A quoted delimiter suppresses expansion in every spelling, and `<<-`
+    // strips leading tabs from the body and the closing delimiter.
+    `git commit -F - <<"MSG"
+\`ls\`
+MSG`,
+    `git commit -F - <<\\MSG
+\`ls\`
+MSG`,
+    `git commit -F - <<-'MSG'
+\t\`ls\`
+\tMSG`,
+    // An unquoted delimiter expands, but running `ls` to build the body is not a
+    // Simulator bypass; only the substitution's own command is classified.
+    `git commit -F - <<MSG
+\`ls\` 通过
+MSG`,
+    `cat <<'A' > /tmp/a && cat <<'B' > /tmp/b
+\`ls\`
+A
+\`pwd\`
+B`,
+    // An unterminated body must not fall back to argv classification either.
+    `git commit -F - <<'MSG'
+\`ls\``,
+    `git commit -F - <<'MSG'
+说明：不要直接用 simctl，走 cindy_ios_simulator
+MSG`,
     `node -e "
 function check() {
   console.log(1);
