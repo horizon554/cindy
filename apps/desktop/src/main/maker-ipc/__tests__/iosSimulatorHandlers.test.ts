@@ -18,6 +18,7 @@ describe('iOS Simulator IPC handlers', () => {
     registerIOSSimulatorHandlers(harness, {
       assertTrustedSender: () => undefined,
       isPluginAvailable: () => true,
+      getSessionContext: async () => ({ workingDir: '/repo/session-a' }),
       getOwnerScopeKey: () => 'local:owner-a:1',
       isOwnerBoundaryPending: () => false,
       getSessionAccess: () => ({ sessionId: 'session-a', generation: 1 }),
@@ -62,6 +63,7 @@ describe('iOS Simulator IPC handlers', () => {
     registerIOSSimulatorHandlers(harness, {
       assertTrustedSender: () => undefined,
       isPluginAvailable: () => false,
+      getSessionContext: async () => ({ workingDir: '/repo/session-a' }),
       getStatus,
       requestSessionAccess,
     });
@@ -91,6 +93,25 @@ describe('iOS Simulator IPC handlers', () => {
       }),
     ).resolves.toEqual({ granted: true });
     expect(requestSessionAccess).not.toHaveBeenCalled();
+  });
+
+  it('passes the authoritative session workdir to the plugin gate', async () => {
+    const harness = new IpcHarness();
+    const isPluginAvailable = vi.fn(() => false);
+    const getStatus = vi.fn();
+    registerTrusted(harness, {
+      isPluginAvailable,
+      getSessionContext: async () => ({ workingDir: '/repo/disabled' }),
+      getStatus,
+    });
+
+    await expect(
+      harness.invokeFrom(17, MAKER_INVOKE.IOS_SIMULATOR_STATUS, {
+        sessionId: 'session-a',
+      }),
+    ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(isPluginAvailable).toHaveBeenCalledWith('/repo/disabled');
+    expect(getStatus).not.toHaveBeenCalled();
   });
 
   it('returns the explicit native confirmation result for a manual access request', async () => {
@@ -364,6 +385,7 @@ describe('iOS Simulator IPC handlers', () => {
     registerIOSSimulatorHandlers(harness, {
       assertTrustedSender: () => undefined,
       isPluginAvailable: () => true,
+      getSessionContext: async () => ({ workingDir: '/repo/session-a' }),
       hasSessionAccess: () => false,
       getStatus,
       callTool,

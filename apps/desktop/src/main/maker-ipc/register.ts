@@ -13248,7 +13248,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   registerIOSSimulatorHandlers(
     createElectronIpcHandlerRegistry(),
     {
-      isPluginAvailable: () => getIOSSimulatorPluginAccessDecision().allowed,
+      isPluginAvailable: (workingDir) =>
+        getIOSSimulatorPluginAccessDecision(workingDir).allowed,
+      getSessionContext: async (sessionId) => {
+        const liveSession = maker.getSession(sessionId);
+        if (liveSession) return { workingDir: liveSession.workDir };
+        const snapshot = await getSessionRowSnapshotStrict(sessionId);
+        return snapshot ? { workingDir: snapshot.workingDir } : null;
+      },
     },
   );
 
