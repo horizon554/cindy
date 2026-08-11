@@ -161,21 +161,28 @@ function shellRedirectionSuffix(token: string): string | null {
   return match ? (match[1] ?? '') : null;
 }
 
+/** A `NAME=value` assignment, whose value may hold a whole recipe. */
+interface ShellAssignment {
+  name: string;
+  value: string;
+}
+
+const SHELL_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
+
 interface Preamble {
   tokens: string[];
-  /** Values of leading `NAME=value` assignments, which may hold a whole recipe. */
-  assignedValues: string[];
+  assignments: ShellAssignment[];
 }
 
 /** Remove leading assignments and redirections so the next token is the command word. */
 function stripLeadingShellPreamble(input: string[]): Preamble {
   const tokens = [...input];
-  const assignedValues: string[] = [];
+  const assignments: ShellAssignment[] = [];
   while (tokens.length > 0) {
     const token = tokens[0]!;
-    const assignment = /^[A-Za-z_][A-Za-z0-9_]*=([\s\S]*)$/.exec(token);
+    const assignment = SHELL_ASSIGNMENT.exec(token);
     if (assignment) {
-      assignedValues.push(assignment[1] ?? '');
+      assignments.push({ name: assignment[1] ?? '', value: assignment[2] ?? '' });
       tokens.shift();
       continue;
     }
@@ -184,7 +191,7 @@ function stripLeadingShellPreamble(input: string[]): Preamble {
     tokens.shift();
     if (redirectionSuffix === '' && tokens.length > 0) tokens.shift();
   }
-  return { tokens, assignedValues };
+  return { tokens, assignments };
 }
 
 const SHELL_EXECUTABLES = new Set(['bash', 'csh', 'dash', 'fish', 'ksh', 'sh', 'tcsh', 'zsh']);
@@ -226,7 +233,7 @@ interface UnwrappedCommand {
   tokens: string[];
   /** A literal program string handed to a shell via `-c`, classified recursively. */
   nestedShell: string | null;
-  assignedValues: string[];
+  assignments: ShellAssignment[];
 }
 
 /** Builtins that declare `NAME=value`, an equally standard way to store a recipe. */
@@ -242,22 +249,24 @@ const SHELL_ASSIGNMENT_BUILTINS = new Set([
 function unwrapCommand(input: string[]): UnwrappedCommand {
   const first = stripLeadingShellPreamble(stripShellControlTokens(input));
   let tokens = first.tokens;
-  const assignedValues = [...first.assignedValues];
+  const assignments = [...first.assignments];
   for (let depth = 0; depth < MAX_RECURSION_DEPTH; depth += 1) {
     const peeled = stripLeadingShellPreamble(tokens);
     tokens = peeled.tokens;
-    assignedValues.push(...peeled.assignedValues);
-    if (tokens.length === 0) return { tokens, nestedShell: null, assignedValues };
+    assignments.push(...peeled.assignments);
+    if (tokens.length === 0) return { tokens, nestedShell: null, assignments };
     const head = executableName(tokens[0]);
 
     if (SHELL_ASSIGNMENT_BUILTINS.has(head)) {
       // `export CMD='xcrun simctl …'` stores the recipe just like a bare
-      // assignment, so its operands feed the same assigned-value path.
+      // assignment, so its operands feed the same stored-value path.
       for (const token of tokens.slice(1)) {
-        const assignment = /^[A-Za-z_][A-Za-z0-9_]*=([\s\S]*)$/.exec(token);
-        if (assignment) assignedValues.push(assignment[1] ?? '');
+        const assignment = SHELL_ASSIGNMENT.exec(token);
+        if (assignment) {
+          assignments.push({ name: assignment[1] ?? '', value: assignment[2] ?? '' });
+        }
       }
-      return { tokens: [], nestedShell: null, assignedValues };
+      return { tokens: [], nestedShell: null, assignments };
     }
 
     if (SHELL_EXECUTABLES.has(head)) {
@@ -270,25 +279,25 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
         if (token === '--') break;
         if (!token.startsWith('-') && !token.startsWith('+')) break;
         if (/^-[A-Za-z]*c[A-Za-z]*$/.test(token)) {
-          return { tokens: [], nestedShell: tokens[index + 1] ?? '', assignedValues };
+          return { tokens: [], nestedShell: tokens[index + 1] ?? '', assignments };
         }
         // `-o name` and `-O shopt_option` take a value; skipping one token would
         // read the option's value as the script operand and end the scan early.
         index += /^[-+][oO]$/.test(token) ? 2 : 1;
       }
-      return { tokens, nestedShell: null, assignedValues };
+      return { tokens, nestedShell: null, assignments };
     }
     if (head === 'eval') {
-      return { tokens: [], nestedShell: tokens.slice(1).join(' '), assignedValues };
+      return { tokens: [], nestedShell: tokens.slice(1).join(' '), assignments };
     }
-    if (!LITERAL_COMMAND_PREFIXES.has(head)) return { tokens, nestedShell: null, assignedValues };
+    if (!LITERAL_COMMAND_PREFIXES.has(head)) return { tokens, nestedShell: null, assignments };
 
     let index = 1;
     if (tokens[index] === '--') {
       // The only option-like token whose meaning needs no per-CLI knowledge.
       index += 1;
     } else if (tokens[index]?.startsWith('-')) {
-      return { tokens, nestedShell: null, assignedValues };
+      return { tokens, nestedShell: null, assignments };
     }
     // timeout takes a duration operand before the command it runs.
     if ((head === 'timeout' || head === 'gtimeout') && /^[\d.]+[smhd]?$/.test(tokens[index] ?? '')) {
@@ -296,11 +305,11 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     }
     const next = tokens.slice(index);
     if (next.length === 0 || next.length === tokens.length) {
-      return { tokens: next, nestedShell: null, assignedValues };
+      return { tokens: next, nestedShell: null, assignments };
     }
     tokens = next;
   }
-  return { tokens, nestedShell: null, assignedValues };
+  return { tokens, nestedShell: null, assignments };
 }
 
 /** `open -a Simulator` and the Simulator binary, in their documented spellings. */
@@ -448,21 +457,39 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
   for (const nested of shellSubcommands(command)) {
     if (containsSimulatorRecipe(nested, depth + 1)) return true;
   }
+  const assignments: ShellAssignment[] = [];
+  const executedReferences: string[] = [];
   for (const segment of shellSegments(command)) {
     const unwrapped = unwrapCommand(tokenizeShellSegment(segment));
-    // `CMD="xcrun simctl boot $UDID"` holds a whole recipe; documentation does
-    // write it this way before running it. The value goes through the same
-    // classifier as a command, so a documented prefix (`sudo …`, `env FOO=1 …`),
-    // a nested `bash -lc '…'` or a substitution inside the value is reached too.
-    for (const value of unwrapped.assignedValues) {
-      if (containsSimulatorRecipe(value, depth + 1)) return true;
-    }
+    assignments.push(...unwrapped.assignments);
     if (unwrapped.nestedShell !== null) {
+      // `eval "$CMD"` and `sh -c "$CMD"` run a variable this scan cannot resolve.
+      executedReferences.push(unwrapped.nestedShell);
       if (containsSimulatorRecipe(unwrapped.nestedShell, depth + 1)) return true;
       continue;
     }
+    // A variable in the command word position is run as the command itself.
+    const commandWord = unwrapped.tokens[0];
+    if (commandWord?.includes('$')) executedReferences.push(commandWord);
     if (isSimulatorRecipeArgv(unwrapped.tokens)) return true;
     if (containsInterpreterSimulatorPayload(unwrapped.tokens)) return true;
+  }
+
+  // `CMD="xcrun simctl boot $UDID"; eval "$CMD"` holds a whole recipe, and
+  // documentation does write it that way before running it. The value only
+  // matters once something runs it, though: `printf '%s\n' "$CMD"` prints the
+  // string and executes nothing, so classifying every stored value would deny a
+  // command that never reaches a simulator. The value goes through the same
+  // classifier as a command, so a documented prefix, a nested `bash -lc '…'` or a
+  // substitution inside it is reached too.
+  for (const assignment of assignments) {
+    if (assignment.name === '') continue;
+    // The name matched `[A-Za-z_][A-Za-z0-9_]*`, so it carries no regex syntax.
+    const referenced = executedReferences.some((reference) =>
+      new RegExp(`\\$\\{?${assignment.name}\\b`).test(reference),
+    );
+    if (!referenced) continue;
+    if (containsSimulatorRecipe(assignment.value, depth + 1)) return true;
   }
   return false;
 }

@@ -75,6 +75,10 @@ describeMac('embedded iOS Simulator shell policy', () => {
     "bash -O extglob -c 'xcrun simctl shutdown DEVICE'",
     "bash +O extglob -c 'xcrun simctl boot DEVICE'",
     "zsh -o extendedglob -c 'xcrun simctl shutdown DEVICE'",
+    // A stored recipe counts once something runs the variable that holds it.
+    `CMD='xcrun simctl shutdown DEVICE'; eval "\${CMD}"`,
+    `CMD='xcrun simctl boot DEVICE'; bash -lc "$CMD"`,
+    `CMD='xcrun simctl boot DEVICE'; echo start; eval "$CMD"`,
     // An assignment builtin stores a recipe just like a bare `NAME=value`.
     `export CMD='xcrun simctl shutdown DEVICE'; eval "$CMD"`,
     `readonly CMD='xcrun simctl boot DEVICE'; eval "$CMD"`,
@@ -125,6 +129,24 @@ describeMac('embedded iOS Simulator shell policy', () => {
     'exec -a label /usr/bin/xcrun simctl boot DEVICE',
     'exec -cl -a label xcrun simctl erase DEVICE',
   ])('no longer denies a recipe behind an option-bearing prefix: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
+  });
+
+  // A stored recipe is only a recipe once something runs it. Classifying every
+  // assignment denied commands that print or write the string and execute
+  // nothing — and printing a command is exactly what a script does while
+  // explaining itself.
+  it.each([
+    `CMD='xcrun simctl shutdown DEVICE'; printf '%s\\n' "$CMD"`,
+    `CMD='xcrun simctl boot DEVICE'; echo "$CMD"`,
+    `CMD='open -a Simulator'; echo "$CMD" > /tmp/note.txt`,
+    `export CMD='xcrun simctl erase DEVICE'; echo "$CMD"`,
+    `CMD='xcrun simctl boot DEVICE'; echo done`,
+    `CMD='xcrun simctl boot DEVICE'`,
+    `readonly DOC='run xcrun simctl boot DEVICE to start'; printf '%s' "$DOC"`,
+    // A different name reaches the execution site, so this value never runs.
+    `CMD='xcrun simctl boot DEVICE'; eval "$OTHER"`,
+  ])('allows a stored recipe that nothing executes: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
 
