@@ -46,14 +46,30 @@ const IOS_SIMULATOR_SHELL_DENIAL =
 
 const MAX_RECURSION_DEPTH = 8;
 
+interface ShellSegment {
+  command: string;
+  /** The operator that ran before this command; null for the first segment. */
+  precedingOperator: ';' | '&&' | '||' | '|' | '&' | null;
+}
+
 /** Split command lists without treating separators inside quotes as boundaries. */
-function shellSegments(command: string): string[] {
-  const segments: string[] = [];
+function shellSegments(command: string): ShellSegment[] {
+  const segments: ShellSegment[] = [];
   let current = '';
   let quote: "'" | '"' | null = null;
   let escaped = false;
+  let precedingOperator: ShellSegment['precedingOperator'] = null;
 
-  for (const char of command) {
+  const flush = (nextOperator: Exclude<ShellSegment['precedingOperator'], null>): void => {
+    if (current.trim()) {
+      segments.push({ command: current.trim(), precedingOperator });
+    }
+    current = '';
+    precedingOperator = nextOperator;
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]!;
     if (escaped) {
       current += char;
       escaped = false;
@@ -74,15 +90,69 @@ function shellSegments(command: string): string[] {
       quote = char;
       continue;
     }
-    if (char === '\n' || char === ';' || char === '|' || char === '&') {
-      if (current.trim()) segments.push(current.trim());
-      current = '';
+    if (char === '\n' || char === ';') {
+      flush(';');
+      continue;
+    }
+    if (
+      (char === '&' && (command[index - 1] === '>' || command[index - 1] === '<')) ||
+      (char === '&' && command[index + 1] === '>') ||
+      (char === '|' && command[index - 1] === '>')
+    ) {
+      current += char;
+      continue;
+    }
+    if (char === '|' || char === '&') {
+      if (char === '|' && command[index + 1] === '&') {
+        flush('|');
+        index += 1;
+        continue;
+      }
+      const doubled = command[index + 1] === char;
+      flush(doubled ? (char === '|' ? '||' : '&&') : char);
+      if (doubled) index += 1;
       continue;
     }
     current += char;
   }
-  if (current.trim()) segments.push(current.trim());
+  if (current.trim()) segments.push({ command: current.trim(), precedingOperator });
   return segments;
+}
+
+/** Whether a segment's assignments definitely replace values in the current scope. */
+function assignmentDefinitelyRunsInCurrentScope(segment: ShellSegment): boolean {
+  if (segment.precedingOperator !== null && segment.precedingOperator !== ';') return false;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let unquoted = '';
+  for (const char of segment.command) {
+    if (escaped) {
+      unquoted += ' ';
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      unquoted += ' ';
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      unquoted += ' ';
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      unquoted += ' ';
+      quote = char;
+      continue;
+    }
+    if (char === '(' || char === ')' || char === '`') return false;
+    unquoted += char;
+  }
+  const start = unquoted.trimStart();
+  return !/^(?:(?:\{|!)\s*|(?:then|do|else|elif|if|while|until|for|select|case|function)\b)/.test(
+    start,
+  );
 }
 
 /** Lightweight argv tokenizer. Quotes group tokens but are not retained. */
@@ -457,39 +527,42 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
   for (const nested of shellSubcommands(command)) {
     if (containsSimulatorRecipe(nested, depth + 1)) return true;
   }
-  const assignments: ShellAssignment[] = [];
-  const executedReferences: string[] = [];
+  const assignments = new Map<string, string[]>();
+  const referencedAssignmentContainsRecipe = (reference: string): boolean => {
+    for (const [name, values] of assignments) {
+      // The name matched `[A-Za-z_][A-Za-z0-9_]*`, so it carries no regex syntax.
+      if (!new RegExp(`\\$\\{?${name}\\b`).test(reference)) continue;
+      if (values.some((value) => containsSimulatorRecipe(value, depth + 1))) return true;
+    }
+    return false;
+  };
   for (const segment of shellSegments(command)) {
-    const unwrapped = unwrapCommand(tokenizeShellSegment(segment));
-    assignments.push(...unwrapped.assignments);
+    const unwrapped = unwrapCommand(tokenizeShellSegment(segment.command));
+    // Shell assignments replace the previous value before the command in this
+    // segment runs. A `;`/newline-separated assignment therefore supersedes the
+    // previous value, while a conditional, pipeline or background edge can skip
+    // it or isolate its scope, so both values remain possible there.
+    for (const assignment of unwrapped.assignments) {
+      if (assignment.name === '') continue;
+      if (assignmentDefinitelyRunsInCurrentScope(segment)) {
+        assignments.set(assignment.name, [assignment.value]);
+      } else {
+        const possibleValues = assignments.get(assignment.name) ?? [];
+        possibleValues.push(assignment.value);
+        assignments.set(assignment.name, possibleValues);
+      }
+    }
     if (unwrapped.nestedShell !== null) {
       // `eval "$CMD"` and `sh -c "$CMD"` run a variable this scan cannot resolve.
-      executedReferences.push(unwrapped.nestedShell);
+      if (referencedAssignmentContainsRecipe(unwrapped.nestedShell)) return true;
       if (containsSimulatorRecipe(unwrapped.nestedShell, depth + 1)) return true;
       continue;
     }
     // A variable in the command word position is run as the command itself.
     const commandWord = unwrapped.tokens[0];
-    if (commandWord?.includes('$')) executedReferences.push(commandWord);
+    if (commandWord?.includes('$') && referencedAssignmentContainsRecipe(commandWord)) return true;
     if (isSimulatorRecipeArgv(unwrapped.tokens)) return true;
     if (containsInterpreterSimulatorPayload(unwrapped.tokens)) return true;
-  }
-
-  // `CMD="xcrun simctl boot $UDID"; eval "$CMD"` holds a whole recipe, and
-  // documentation does write it that way before running it. The value only
-  // matters once something runs it, though: `printf '%s\n' "$CMD"` prints the
-  // string and executes nothing, so classifying every stored value would deny a
-  // command that never reaches a simulator. The value goes through the same
-  // classifier as a command, so a documented prefix, a nested `bash -lc '…'` or a
-  // substitution inside it is reached too.
-  for (const assignment of assignments) {
-    if (assignment.name === '') continue;
-    // The name matched `[A-Za-z_][A-Za-z0-9_]*`, so it carries no regex syntax.
-    const referenced = executedReferences.some((reference) =>
-      new RegExp(`\\$\\{?${assignment.name}\\b`).test(reference),
-    );
-    if (!referenced) continue;
-    if (containsSimulatorRecipe(assignment.value, depth + 1)) return true;
   }
   return false;
 }
