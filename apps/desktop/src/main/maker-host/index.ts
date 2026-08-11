@@ -29,7 +29,7 @@ import {
   type CodexModelBackfillCoordinator,
 } from './codex-model-backfill.js';
 import { createOrcaWorkerBridgeMcpProvider, type OrcaBridgeMcpDeps } from '@cindy/orca-workflow';
-import { LspServerPool } from '@cindy/mcps';
+import { LspServerPool, type IOSSimulatorMcpCallContext } from '@cindy/mcps';
 
 import { createMessage } from '../localDb/ipc/messages.js';
 import { getWorkerLink, updateWorkerStatus } from '../localDb/orcaTeamStore.js';
@@ -49,6 +49,7 @@ import { remoteInvoke } from '../device-link/index.js';
 import { WorktreePool } from '../worktree/index.js';
 import { getReadyBinaryPath, getCachedBinaryStatus } from '../agent-binaries/index.js';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
+import { getIOSSimulatorPluginAccessDecision } from '../cindy-brain/index.js';
 import {
   desktopClaudeAuthAdapter,
   desktopCodexAuthAdapter,
@@ -649,10 +650,32 @@ export function getMaker(): Maker {
     // 和项目 .claude/settings.json, mtime-based 缓存, 只在 session start 时同步检查。
     const pluginRegistry = createPluginRegistry();
 
+    const resolveIOSSimulatorAccess = (context?: IOSSimulatorMcpCallContext) => {
+      const workingDir = context?.workingDir?.trim() || null;
+      const pluginAccess = getIOSSimulatorPluginAccessDecision(workingDir);
+      if (!pluginAccess.allowed) return pluginAccess;
+      if (!pluginRegistry.isEnabled('ios-simulator', workingDir ?? undefined)) {
+        return {
+          allowed: false as const,
+          errorCode: 'IOS_SIMULATOR_DISABLED' as const,
+          message:
+            'The iOS Simulator capability is disabled for the current project. Ask the user to enable it in the project plugin settings before retrying.',
+          data: {
+            reason: 'disabled-in-workdir',
+            action: 'enable-plugin',
+            pluginId: 'ios-simulator',
+            pluginName: 'iOS Simulator',
+          },
+        };
+      }
+      return { allowed: true as const };
+    };
+
     const makerMemoryProviderDeps = {
       getMakerMemoryManager: () => makerMemoryManager,
       lspPool: getLspPool(),
       pluginRegistry,
+      resolveIOSSimulatorAccess,
       invokeRemote: remoteInvoke,
       // 只读活跃 Session 的运行时真相。权限切换是 runtime-first、DB-second，
       // 因此插件过户自动放行不得回退 sessions.permission_mode；会话不再 active
@@ -1112,8 +1135,7 @@ export function getMaker(): Maker {
       },
       makerMemory: makerMemoryManager,
       codexHostDynamicToolProvider: createIOSSimulatorCodexDynamicToolProvider({
-        deps: getIOSSimulatorMcpDeps(),
-        isEnabled: (workingDir) => getPluginRegistry().isEnabled('ios-simulator', workingDir),
+        deps: getIOSSimulatorMcpDeps({ resolveAccess: resolveIOSSimulatorAccess }),
       }),
       getShellCommandPolicy: ({ command }) => getDesktopShellCommandPolicy(command),
       // 通讯录 prompt 段有效状态(codex 版): 在 claude 的判定链之上再与「实际应用

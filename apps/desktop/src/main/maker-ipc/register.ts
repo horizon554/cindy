@@ -88,6 +88,7 @@ import {
   executeGhostSetupInlineAction,
   getGhostManager,
   getGhostSetupAssessment,
+  getIOSSimulatorPluginAccessDecision,
   isGhostAvailableForActiveSession,
 } from '../cindy-brain/index.js';
 import {
@@ -13246,6 +13247,9 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   // ── iOS Simulator pane / Agent discovery ────────────────────────────────
   registerIOSSimulatorHandlers(
     createElectronIpcHandlerRegistry(),
+    {
+      isPluginAvailable: () => getIOSSimulatorPluginAccessDecision().allowed,
+    },
   );
 
   // ── Browser automation (Settings →「电脑使用」) ───────────────────────────

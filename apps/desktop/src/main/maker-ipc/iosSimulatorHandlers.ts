@@ -62,6 +62,7 @@ const IOS_SIMULATOR_SAFE_IPC_MESSAGES: Record<IOSSimulatorIpcOperation, string> 
 
 export interface IOSSimulatorHandlerDeps {
   assertTrustedSender(event: unknown): void;
+  isPluginAvailable(): boolean;
   getOwnerScopeKey(): string;
   isOwnerBoundaryPending(): boolean;
   getSessionAccess(
@@ -138,6 +139,9 @@ export interface IOSSimulatorHandlerDeps {
 const defaultDeps: IOSSimulatorHandlerDeps = {
   assertTrustedSender: (event) =>
     assertTrustedAppRendererEvent(event as Parameters<typeof assertTrustedAppRendererEvent>[0]),
+  // Production registration must inject the live Ghost capability gate. Tests
+  // and any accidental alternate registration fail closed by default.
+  isPluginAvailable: () => false,
   getOwnerScopeKey: activeOwnerScopeKey,
   isOwnerBoundaryPending: isAppSessionBoundaryPending,
   getSessionAccess: getIOSSimulatorRendererSessionAccess,
@@ -195,6 +199,12 @@ async function callIOSSimulatorHost<T>(
     }
   };
   const assertCurrent = (): void => {
+    if (!deps.isPluginAvailable()) {
+      throwIpcError(
+        'PERMISSION_DENIED',
+        'The iOS Simulator plugin must be installed and enabled.',
+      );
+    }
     assertOwnerScopeCurrent();
     assertStillAuthorized?.();
   };
@@ -263,6 +273,12 @@ export function registerIOSSimulatorHandlers(
   const handle: IpcHandlerRegistry['handle'] = (channel, handler) => {
     registry.handle(channel, (event, ...args) => {
       resolved.assertTrustedSender(event);
+      if (!resolved.isPluginAvailable()) {
+        throwIpcError(
+          'PERMISSION_DENIED',
+          'The iOS Simulator plugin must be installed and enabled.',
+        );
+      }
       return handler(event, ...args);
     });
   };

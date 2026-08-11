@@ -17,6 +17,7 @@ describe('iOS Simulator IPC handlers', () => {
   function registerTrusted(harness: IpcHarness, deps: Partial<IOSSimulatorHandlerDeps> = {}): void {
     registerIOSSimulatorHandlers(harness, {
       assertTrustedSender: () => undefined,
+      isPluginAvailable: () => true,
       getOwnerScopeKey: () => 'local:owner-a:1',
       isOwnerBoundaryPending: () => false,
       getSessionAccess: () => ({ sessionId: 'session-a', generation: 1 }),
@@ -51,6 +52,31 @@ describe('iOS Simulator IPC handlers', () => {
       code: 'PERMISSION_DENIED',
     });
     expect(assertTrustedSender).toHaveBeenCalledOnce();
+    expect(getStatus).not.toHaveBeenCalled();
+  });
+
+  it('rejects every Renderer entry before reaching the Host when the plugin is unavailable', async () => {
+    const harness = new IpcHarness();
+    const getStatus = vi.fn();
+    const requestSessionAccess = vi.fn();
+    registerIOSSimulatorHandlers(harness, {
+      assertTrustedSender: () => undefined,
+      isPluginAvailable: () => false,
+      getStatus,
+      requestSessionAccess,
+    });
+
+    await expect(
+      harness.invokeFrom(17, MAKER_INVOKE.IOS_SIMULATOR_REQUEST_ACCESS, {
+        sessionId: 'session-a',
+      }),
+    ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    await expect(
+      harness.invokeFrom(17, MAKER_INVOKE.IOS_SIMULATOR_STATUS, {
+        sessionId: 'session-a',
+      }),
+    ).rejects.toMatchObject({ code: 'PERMISSION_DENIED' });
+    expect(requestSessionAccess).not.toHaveBeenCalled();
     expect(getStatus).not.toHaveBeenCalled();
   });
 
@@ -337,6 +363,7 @@ describe('iOS Simulator IPC handlers', () => {
     const callTool = vi.fn();
     registerIOSSimulatorHandlers(harness, {
       assertTrustedSender: () => undefined,
+      isPluginAvailable: () => true,
       hasSessionAccess: () => false,
       getStatus,
       callTool,
