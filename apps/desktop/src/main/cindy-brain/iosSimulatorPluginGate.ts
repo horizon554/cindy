@@ -24,6 +24,30 @@ function pluginActionData(
 }
 
 /**
+ * Whether the shell guard that blocks external `simctl` / `Simulator.app` use
+ * should still apply.
+ *
+ * That guard exists to protect the ownership, admission, viewer and cleanup
+ * contracts of Cindy's *embedded* simulator. With no plugin there is no embedded
+ * simulator to protect, and blocking the user's own Xcode tooling — while
+ * pointing them at a `cindy_ios_simulator` tool that this gate has just removed
+ * — is a dead end rather than a boundary.
+ *
+ * The runtime condition is the safety half: a simulator instance booted while
+ * the plugin was enabled stays Cindy-owned after it is disabled, and a shell
+ * `simctl shutdown` would then race Cindy's own cleanup. `hostRuntimeActive` is
+ * deliberately coarser than "an instance is live" because the Host exposes no
+ * synchronous instance snapshot, and erring toward keeping the guard on is the
+ * safe direction.
+ */
+export function shouldEnforceIOSSimulatorShellPolicy(state: {
+  pluginAccessAllowed: boolean;
+  hostRuntimeActive: boolean;
+}): boolean {
+  return state.pluginAccessAllowed || state.hostRuntimeActive;
+}
+
+/**
  * Resolve the live product gate for Cindy's Host-owned iOS Simulator.
  *
  * The gateway remains discoverable so an Agent can explain how to install or

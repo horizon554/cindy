@@ -50,6 +50,7 @@ import { WorktreePool } from '../worktree/index.js';
 import { getReadyBinaryPath, getCachedBinaryStatus } from '../agent-binaries/index.js';
 import { activeOwnerScopeKey, isAppSessionBoundaryPending } from '../appSessionState.js';
 import { getIOSSimulatorPluginAccessDecision } from '../cindy-brain/index.js';
+import { shouldEnforceIOSSimulatorShellPolicy } from '../cindy-brain/iosSimulatorPluginGate.js';
 import {
   desktopClaudeAuthAdapter,
   desktopCodexAuthAdapter,
@@ -133,7 +134,10 @@ import {
 } from './codex-proxy-host.js';
 import { createDesktopMcpProviders } from '../mcp-integrations/mcp-providers.js';
 import { getGhostRosterPrompt } from '../mcp-integrations/ghost.js';
-import { getIOSSimulatorMcpDeps } from '../mcp-integrations/ios-simulator.js';
+import {
+  getIOSSimulatorMcpDeps,
+  isIOSSimulatorHostRuntimeActive,
+} from '../mcp-integrations/ios-simulator.js';
 import { readContactsSettings } from './contacts-settings-store.js';
 import { createIOSSimulatorCodexDynamicToolProvider } from './ios-simulator-codex-dynamic-tools.js';
 import { captureKnownFileBefore, noteOpaqueTurnChange } from '../turn-change-set/store.js';
@@ -671,6 +675,19 @@ export function getMaker(): Maker {
       return { allowed: true as const };
     };
 
+    // The shell guard protects the embedded simulator's ownership/admission/
+    // viewer/cleanup contracts. With the plugin gated off there is nothing to
+    // protect, so blocking the user's own `simctl` / Simulator.app work — and
+    // pointing them at a cindy_ios_simulator tool the gate just removed — would
+    // be a dead end. A runtime this process already installed keeps its
+    // protection either way.
+    const shouldEnforceSimulatorShellGuard = (workingDir: string | null): boolean =>
+      shouldEnforceIOSSimulatorShellPolicy({
+        pluginAccessAllowed: resolveIOSSimulatorAccess({ workingDir: workingDir ?? undefined })
+          .allowed,
+        hostRuntimeActive: isIOSSimulatorHostRuntimeActive(),
+      });
+
     const makerMemoryProviderDeps = {
       getMakerMemoryManager: () => makerMemoryManager,
       lspPool: getLspPool(),
@@ -865,7 +882,12 @@ export function getMaker(): Maker {
           PreToolUse: [
             {
               matcher: 'Bash|PowerShell',
-              hooks: [createIOSSimulatorShellGuardHook(desktopMakerLogger)],
+              hooks: [
+                createIOSSimulatorShellGuardHook(
+                  desktopMakerLogger,
+                  shouldEnforceSimulatorShellGuard,
+                ),
+              ],
             },
             {
               matcher: 'Read',
@@ -1137,7 +1159,10 @@ export function getMaker(): Maker {
       codexHostDynamicToolProvider: createIOSSimulatorCodexDynamicToolProvider({
         deps: getIOSSimulatorMcpDeps({ resolveAccess: resolveIOSSimulatorAccess }),
       }),
-      getShellCommandPolicy: ({ command }) => getDesktopShellCommandPolicy(command),
+      getShellCommandPolicy: ({ command, cwd }) =>
+        shouldEnforceSimulatorShellGuard(cwd?.trim() || null)
+          ? getDesktopShellCommandPolicy(command)
+          : undefined,
       // 通讯录 prompt 段有效状态(codex 版): 在 claude 的判定链之上再与「实际应用
       // 到 running app-server 的 spawn 快照」对齐 —— 开关切换后失效失败(busy,
       // contacts-ipc 折成 codexMcpRefreshed:false)时 stale 桥里没有新工具面,
