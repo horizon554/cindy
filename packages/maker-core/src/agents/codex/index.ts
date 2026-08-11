@@ -8099,6 +8099,14 @@ export class CodexAgent extends BaseAgent {
       return type === null || !ITEM_TYPES_WITHOUT_MODEL_WORK.has(type);
     };
 
+    // An approval decline is only attributable to the immediate abort it
+    // causes. Once the same turn produces model work or starts a replacement
+    // item, a later failure/interruption belongs to that continuation and must
+    // not be reported as the stale Simulator-policy denial.
+    const clearApprovalPolicyDenialOnProgress = (turnId: string): void => {
+      approvalPolicyDeniedTurnReasons.delete(turnId);
+    };
+
     /** 取消挂起的过载重投（会话关闭 / 用户打断 / 新 turn 覆盖时调用）。 */
     const cancelOverloadRetry = (reason: string): void => {
       const state = overloadRetry;
@@ -9029,6 +9037,7 @@ export class CodexAgent extends BaseAgent {
       turnDiffUpdated: (params) => {
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.turnDiffUpdated?.(params))) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
+        clearApprovalPolicyDenialOnProgress(params.turnId);
         publishTurnDiff(threadId, params.turnId, params.diff);
       },
       turnCompleted: (params) => {
@@ -9069,6 +9078,9 @@ export class CodexAgent extends BaseAgent {
         if (interceptProposedPlanItem(params.item)) {
           discardPendingSpawnLineageIds(reservedChildThreadIds);
           return;
+        }
+        if (itemRepresentsModelWork(params.item)) {
+          clearApprovalPolicyDenialOnProgress(params.turnId);
         }
         const shellCommand = shellCommandFromCodexItem(params.item);
         if (shellCommand) {
@@ -9176,7 +9188,10 @@ export class CodexAgent extends BaseAgent {
           discardPendingSpawnLineageIds(reservedChildThreadIds);
           return;
         }
-        if (itemRepresentsModelWork(params.item)) producedOutputTurnIds.add(params.turnId);
+        if (itemRepresentsModelWork(params.item)) {
+          clearApprovalPolicyDenialOnProgress(params.turnId);
+          producedOutputTurnIds.add(params.turnId);
+        }
         noteActiveToolContext(params.item, params.turnId);
         // updated 也要登记映射,顺序与 started / completed 一致(先登记 → 翻译 → 后发重放帧)。
         // V1 的 spawn 是长跑 item(started → updated* → completed):started 那帧若没到我们手里
@@ -9227,7 +9242,10 @@ export class CodexAgent extends BaseAgent {
           return;
         }
         if (collabTerminalKey) handledCollabTerminalItemIds.add(collabTerminalKey);
-        if (itemRepresentsModelWork(params.item)) producedOutputTurnIds.add(params.turnId);
+        if (itemRepresentsModelWork(params.item)) {
+          clearApprovalPolicyDenialOnProgress(params.turnId);
+          producedOutputTurnIds.add(params.turnId);
+        }
         noteActiveToolContext(params.item, params.turnId);
         // This late item belongs to an already-terminal parent. The parent
         // cleanup already cleared its pending tools; touching the shared
@@ -9291,6 +9309,7 @@ export class CodexAgent extends BaseAgent {
           modelWork: true,
         })) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
+        clearApprovalPolicyDenialOnProgress(params.turnId);
         producedOutputTurnIds.add(params.turnId);
         translateAgentMessageDelta(params, eventQueue, { rt: translatorRt, log });
       },
@@ -9298,6 +9317,7 @@ export class CodexAgent extends BaseAgent {
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.turnPlanUpdated?.(params))) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
         latestPlanByTurn.set(params.turnId, params.plan);
+        clearApprovalPolicyDenialOnProgress(params.turnId);
         translatePlanUpdatedNotification(params, eventQueue);
       },
       reasoningSummaryTextDelta: (params) => {
@@ -9305,6 +9325,7 @@ export class CodexAgent extends BaseAgent {
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.reasoningSummaryTextDelta?.(params), { modelWork: true })) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
         // thinking 流也算产出：模型已经在这一轮里工作了，整体重放不再等价。
+        clearApprovalPolicyDenialOnProgress(params.turnId);
         producedOutputTurnIds.add(params.turnId);
         translateReasoningSummaryTextDelta(params, eventQueue, { rt: translatorRt, log });
       },
@@ -9312,6 +9333,7 @@ export class CodexAgent extends BaseAgent {
         // thinking 流同样算产出(与非缓冲路径一致)。
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.reasoningSummaryPartAdded?.(params), { modelWork: true })) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
+        clearApprovalPolicyDenialOnProgress(params.turnId);
         producedOutputTurnIds.add(params.turnId);
         translateReasoningSummaryPartAdded(params, eventQueue, { rt: translatorRt, log });
       },
@@ -9319,6 +9341,7 @@ export class CodexAgent extends BaseAgent {
         // thinking 流同样算产出(与非缓冲路径一致)。
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.reasoningTextDelta?.(params), { modelWork: true })) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
+        clearApprovalPolicyDenialOnProgress(params.turnId);
         producedOutputTurnIds.add(params.turnId);
         translateReasoningTextDelta(params, eventQueue, { rt: translatorRt, log });
       },
