@@ -238,6 +238,9 @@ SH`,
     `cat <<'SH' | bash 2>/dev/null
 open -a Simulator
 SH`,
+    `printf '<<SH'; cat <<SH | bash
+xcrun simctl shutdown DEVICE
+SH`,
     // A non-zero fd redirection leaves stdin connected to the pipeline, so the
     // downstream shell still executes the producer's body.
     `cat <<'DATA' | bash 2<err

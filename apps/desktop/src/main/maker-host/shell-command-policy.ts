@@ -655,6 +655,7 @@ function consumesStdinAsProgram(tokens: string[]): boolean {
 }
 
 interface HeredocRedirection {
+  start: number;
   marker: string;
   delimiter: string;
   expands: boolean;
@@ -770,7 +771,13 @@ function heredocRedirections(line: string): HeredocRedirection[] {
       cursor += 1;
     }
     if (delimiter !== '') {
-      redirections.push({ marker: line.slice(index, cursor), delimiter, expands, stripsTabs });
+      redirections.push({
+        start: index,
+        marker: line.slice(index, cursor),
+        delimiter,
+        expands,
+        stripsTabs,
+      });
     }
     index = cursor - 1;
   }
@@ -883,9 +890,15 @@ function hasUnquotedStdinRedirection(segment: string): boolean {
 }
 
 /** Whether the heredoc's own clause hands its body to a code-reading consumer. */
-function heredocBodyIsProgram(line: string, marker: string): boolean {
+function heredocBodyIsProgram(line: string, marker: string, markerStart: number): boolean {
   const segments = shellSegments(line);
-  const openingIndex = segments.findIndex((segment) => segment.command.includes(marker));
+  let searchCursor = 0;
+  const openingIndex = segments.findIndex((segment) => {
+    const segmentStart = line.indexOf(segment.command, searchCursor);
+    if (segmentStart < 0) return false;
+    searchCursor = segmentStart + segment.command.length;
+    return markerStart >= segmentStart && markerStart < searchCursor;
+  });
   if (openingIndex < 0) return false;
   for (let index = openingIndex; index < segments.length; index += 1) {
     const segment = segments[index]!;
@@ -924,7 +937,7 @@ function stripHeredocBodies(command: string): string {
         if (unindented === heredoc.delimiter) break;
         body.push(candidate);
       }
-      if (heredocBodyIsProgram(line, heredoc.marker)) executable.push(...body);
+      if (heredocBodyIsProgram(line, heredoc.marker, heredoc.start)) executable.push(...body);
       else if (heredoc.expands) executable.push(...shellSubcommands(body.join('\n')));
       if (index >= lines.length) break;
     }
