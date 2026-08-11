@@ -85,9 +85,8 @@ describeMac('embedded iOS Simulator shell policy', () => {
     `declare CMD='open -a Simulator'; eval "$CMD"`,
     `typeset CMD='xcrun simctl erase DEVICE'; eval "$CMD"`,
     `export -p CMD='xcrun simctl boot DEVICE'; eval "$CMD"`,
-    // Removing heredoc region reduction also removed the ways it could swallow a
-    // real recipe: a marker inside a comment, and a CRLF delimiter that never
-    // matched. Body lines are now ordinary segments.
+    // Heredoc reduction must not let a fake marker in a comment swallow a real
+    // following command, and CRLF delimiters must end the data region correctly.
     `echo hi # <<'EOF'\nxcrun simctl shutdown DEVICE`,
     `cat <<'EOF'\r\ntext\r\nEOF\r\nxcrun simctl shutdown DEVICE`,
   ])('denies a literal recipe behind a documentation-style prefix: %s', (command) => {
@@ -206,6 +205,12 @@ SH`,
     `cat <<'SH' | bash -s
 xcrun simctl shutdown DEVICE
 SH`,
+    `cat <<'SH' | env FOO=1 bash
+xcrun simctl erase DEVICE
+SH`,
+    `cat <<'SH' | bash | cat
+open -a Simulator
+SH`,
     // An unquoted delimiter still expands, so the body's substitutions run.
     `cat <<MSG
 $(xcrun simctl boot DEVICE)
@@ -320,6 +325,14 @@ JSON`,
     `cat > /tmp/notes.txt <<'EOF'
 hello (world)
 EOF`,
+    `cat > README.md <<'EOF'
+xcrun simctl shutdown DEVICE
+open -a Simulator
+EOF`,
+    `cat > README.md <<EOF
+xcrun simctl shutdown DEVICE
+open -a Simulator
+EOF`,
     // A commit message written through a heredoc is stdin data, never argv. A
     // line starting with a Markdown backtick span used to read as an executable
     // position filled by an unresolvable expansion, which denied the commit and
@@ -332,6 +345,12 @@ fix(scope): 收窄判据
 MSG`,
     `git commit -F - <<'MSG'
 \`ls\`
+MSG`,
+    `git commit -F - <<'MSG'
+xcrun simctl shutdown DEVICE
+MSG`,
+    `git commit -F - <<MSG
+xcrun simctl shutdown DEVICE
 MSG`,
     // A quoted delimiter suppresses expansion in every spelling, and `<<-`
     // strips leading tabs from the body and the closing delimiter.

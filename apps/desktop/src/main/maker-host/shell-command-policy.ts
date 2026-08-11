@@ -20,10 +20,10 @@
  * executor anywhere in the command. This matcher denies only what it can read
  * directly and lets everything else reach the normal shell permission flow.
  *
- * A useful consequence: a recipe delivered through a heredoc needs no heredoc
- * modelling. Bodies are split into segments like any other text, and a body line
- * only matters when it literally spells out a Simulator command — so
- * `git commit -F - <<'MSG'` carrying backticks is simply not a match.
+ * Heredocs need one narrow boundary: their bodies are stdin data unless the
+ * receiving command executes stdin as a program. Data bodies are omitted from
+ * command classification (while substitutions in an unquoted body still run),
+ * so a commit message may quote a stale recipe without being mistaken for one.
  */
 
 export interface ShellCommandPolicyDenial {
@@ -527,9 +527,162 @@ function shellSubcommands(command: string): string[] {
   return subcommands;
 }
 
+function nestedShellConsumesStdinAsProgram(command: string): boolean {
+  return (
+    /(?:^|[;&|]\s*)(?:source|\.)\s+(?:\/dev\/stdin|\/dev\/fd\/0|-)(?:\s|$)/i.test(command) ||
+    /\beval\b[\s\S]*\$\(\s*cat(?:\s+(?:-|\/dev\/stdin|\/dev\/fd\/0))?\s*\)/i.test(command)
+  );
+}
+
+/** Whether this literal command executes its stdin as source code. */
+function consumesStdinAsProgram(tokens: string[]): boolean {
+  const unwrapped = unwrapCommand(tokens);
+  if (unwrapped.nestedShell !== null) {
+    return nestedShellConsumesStdinAsProgram(unwrapped.nestedShell);
+  }
+  const executable = executableName(unwrapped.tokens[0]);
+  const args = unwrapped.tokens.slice(1);
+  if (SHELL_EXECUTABLES.has(executable)) {
+    if (args.some((arg) => /^-[A-Za-z]*c[A-Za-z]*$/.test(arg))) return false;
+    if (args.some((arg) => /^-[A-Za-z]*s[A-Za-z]*$/.test(arg))) return true;
+  } else if (executable === 'osascript') {
+    if (args.some((arg) => arg === '-e' || arg.startsWith('-e'))) return false;
+  } else if (PROGRAMMABLE_INTERPRETER.test(executable)) {
+    if (/^(?:(?:g|m|n)?awk)$/.test(executable)) return false;
+    if (args.some((arg) => /^(?:-c|-e|-p|-m|--eval|--print|--input-type|--module)$/.test(arg))) {
+      return false;
+    }
+  } else {
+    return false;
+  }
+  const positional = args.find((arg) => !arg.startsWith('-'));
+  return positional === undefined || positional === '-';
+}
+
+interface HeredocRedirection {
+  marker: string;
+  delimiter: string;
+  expands: boolean;
+  stripsTabs: boolean;
+}
+
+/** Heredoc markers on one shell line, excluding quoted text, comments and `<<<`. */
+function heredocRedirections(line: string): HeredocRedirection[] {
+  const redirections: HeredocRedirection[] = [];
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (quote === char) quote = null;
+      else if (quote === null) quote = char;
+      continue;
+    }
+    if (quote) continue;
+    // In shell grammar `#` starts a comment when it begins a word. A marker in
+    // that comment must not consume later commands as a fake heredoc body.
+    if (char === '#' && (index === 0 || /[\s;&|()]/.test(line[index - 1]!))) break;
+    if (char !== '<' || line[index + 1] !== '<' || line[index + 2] === '<') continue;
+    let cursor = index + 2;
+    const stripsTabs = line[cursor] === '-';
+    if (stripsTabs) cursor += 1;
+    while (line[cursor] === ' ' || line[cursor] === '\t') cursor += 1;
+    let delimiter = '';
+    let expands = true;
+    while (cursor < line.length) {
+      const delimiterChar = line[cursor]!;
+      if (delimiterChar === "'" || delimiterChar === '"') {
+        expands = false;
+        const closing = line.indexOf(delimiterChar, cursor + 1);
+        if (closing < 0) {
+          delimiter += line.slice(cursor + 1);
+          cursor = line.length;
+          break;
+        }
+        delimiter += line.slice(cursor + 1, closing);
+        cursor = closing + 1;
+        continue;
+      }
+      if (delimiterChar === '\\') {
+        expands = false;
+        cursor += 1;
+        if (cursor < line.length) {
+          delimiter += line[cursor]!;
+          cursor += 1;
+        }
+        continue;
+      }
+      if (/[\s;&|<>()]/.test(delimiterChar)) break;
+      delimiter += delimiterChar;
+      cursor += 1;
+    }
+    if (delimiter !== '') {
+      redirections.push({ marker: line.slice(index, cursor), delimiter, expands, stripsTabs });
+    }
+    index = cursor - 1;
+  }
+  return redirections;
+}
+
+/** Whether the heredoc's own clause hands its body to a code-reading consumer. */
+function heredocBodyIsProgram(line: string, marker: string): boolean {
+  const segments = shellSegments(line);
+  const openingIndex = segments.findIndex((segment) => segment.command.includes(marker));
+  if (openingIndex < 0) return false;
+  for (let index = openingIndex; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    if (index > openingIndex && segment.precedingOperator !== '|') break;
+    if (
+      consumesStdinAsProgram(
+        tokenizeShellSegment(segment.command.replace(marker, ' ')),
+      )
+    ) return true;
+  }
+  return false;
+}
+
+/**
+ * Remove stdin-only heredoc prose before classifying command words.
+ *
+ * Bodies executed by a shell/interpreter remain visible. Data bodies disappear,
+ * except that an unquoted delimiter still executes command/process substitutions.
+ */
+function stripHeredocBodies(command: string): string {
+  if (!command.includes('<<')) return command;
+  const lines = command.split(/\r?\n/);
+  const executable: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    executable.push(line);
+    for (const heredoc of heredocRedirections(line)) {
+      const body: string[] = [];
+      index += 1;
+      for (; index < lines.length; index += 1) {
+        const candidate = lines[index]!;
+        const unindented = heredoc.stripsTabs ? candidate.replace(/^\t+/, '') : candidate;
+        if (unindented === heredoc.delimiter) break;
+        body.push(candidate);
+      }
+      if (heredocBodyIsProgram(line, heredoc.marker)) executable.push(...body);
+      else if (heredoc.expands) executable.push(...shellSubcommands(body.join('\n')));
+      if (index >= lines.length) break;
+    }
+  }
+  return executable.join('\n');
+}
+
 function containsSimulatorRecipe(command: string, depth = 0): boolean {
   if (depth > MAX_RECURSION_DEPTH) return false;
-  for (const nested of shellSubcommands(command)) {
+  const executableCommand = stripHeredocBodies(command);
+  for (const nested of shellSubcommands(executableCommand)) {
     if (containsSimulatorRecipe(nested, depth + 1)) return true;
   }
   const assignments = new Map<string, string[]>();
@@ -541,7 +694,7 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
     }
     return false;
   };
-  for (const segment of shellSegments(command)) {
+  for (const segment of shellSegments(executableCommand)) {
     const unwrapped = unwrapCommand(tokenizeShellSegment(segment.command));
     // Shell assignments replace the previous value before the command in this
     // segment runs. A `;`/newline-separated assignment therefore supersedes the
