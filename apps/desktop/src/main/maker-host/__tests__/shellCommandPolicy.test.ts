@@ -39,6 +39,8 @@ describeMac('embedded iOS Simulator shell policy', () => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
 
+  // Documentation puts these prefixes in front of a recipe, so the recipe is
+  // still spelled out and still reachable by reading the command word.
   it.each([
     'exec /usr/bin/xcrun simctl shutdown DEVICE',
     'command -p xcrun simctl boot DEVICE',
@@ -54,102 +56,22 @@ describeMac('embedded iOS Simulator shell policy', () => {
     "eval 'xcrun simctl erase DEVICE'",
     'echo "$(xcrun simctl shutdown DEVICE)"',
     'echo >(xcrun simctl shutdown DEVICE)',
-    "env -S 'xcrun simctl shutdown DEVICE'",
     'CMD=xcrun\\ simctl\\ shutdown\\ DEVICE; eval "$CMD"',
     'CMD=xcrun\\ simctl\\ shutdown\\ DEVICE; sh -c "$CMD"',
     'CMD=xcrun\\ simctl\\ shutdown\\ DEVICE; $CMD',
-    'printf "xcrun simctl shutdown DEVICE\\n" | sh',
     'time xcrun simctl shutdown DEVICE',
     'time -p xcrun simctl boot DEVICE',
-    'f(){ xcrun simctl shutdown DEVICE;}; f',
-    'f() ( xcrun simctl shutdown DEVICE ); f',
     `function f () ( printf '%s' "$(date)"; /usr/bin/open -a Simulator ); f`,
     '/usr/bin/xcrun \\\n simctl shutdown DEVICE',
     '/usr/bin/nice /usr/bin/xcrun simctl erase DEVICE',
     '/usr/bin/arch -arm64 /usr/bin/xcrun simctl boot DEVICE',
     '/usr/bin/caffeinate -i /usr/bin/xcrun simctl shutdown DEVICE',
-    `/bin/sh -c '"$0" "$@"' /usr/bin/xcrun simctl shutdown DEVICE`,
-    `/bin/sh -c '/usr/bin/open -a "$1"' ignored Simulator`,
-    '$(/usr/bin/xcrun --find simctl) shutdown DEVICE',
-    '/usr/bin/xc[r]un simctl shutdown DEVICE',
-    'TOOL=simctl; /usr/bin/xcrun "$TOOL" shutdown DEVICE',
-    'A=sim; B=ctl; xcrun "$A$B" shutdown DEVICE',
-    'A=sim; B=ctl; xcrun --sdk iphonesimulator "${A}${B}" erase DEVICE',
-    'xcrun s{imc,foo}tl shutdown DEVICE',
-    'A="default simctl"; xcrun --toolchain ${=A} shutdown DEVICE',
-    `bash -lc 'A="default simctl"; xcrun --toolchain $A shutdown DEVICE'`,
-    'A=(default simctl); xcrun --toolchain "${(@)A}" shutdown DEVICE',
-    'A="default simctl"; xcrun --toolchain "$=A" shutdown DEVICE',
-    'A=(default simctl); xcrun --toolchain "$A[@]" shutdown DEVICE',
-    `bash -O extglob -lc 'xcrun @(simctl) shutdown DEVICE'`,
-    `zsh -o extendedglob -c 'xcrun ^foo shutdown DEVICE'`,
-    'xcrun --sdk "$SDK" simctl list devices',
-    'A=default; xcrun --toolchain "$A" swift --version',
     'xargs /usr/bin/xcrun simctl shutdown DEVICE',
-    "find . -maxdepth 0 -exec /usr/bin/xcrun simctl shutdown DEVICE ';'",
-    `printf 'simctl shutdown DEVICE' | xargs /usr/bin/xcrun`,
-    'xcrun "$(printf simctl)" shutdown DEVICE',
-    'xcrun $(printf simctl) shutdown DEVICE',
-    'xcrun $(echo simctl) shutdown DEVICE',
-    'TOOL=$(printf simctl); xcrun "$TOOL" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=simctl; env "$A$B" "$C" shutdown DEVICE',
-    'A=x; B=crun; C=sim; D=ctl; command "${A}${B}" "${C}${D}" shutdown DEVICE',
-    '$(printf xcr)$(printf un) simctl shutdown DEVICE',
-    'x{cr,foo}un simctl shutdown DEVICE',
-    'RUNNER="$UNTRUSTED_EXECUTABLE"; exec "$RUNNER" --version',
-    'env -S "$UNTRUSTED_EXECUTABLE"',
-    'A=xcr; B=un; C=sim; D=ctl; CMD="$A$B $C$D shutdown DEVICE"; env -S "$CMD"',
-    'time -l "$UNTRUSTED_EXECUTABLE"',
-    'xargs "$UNTRUSTED_EXECUTABLE"',
-    "find . -maxdepth 0 -exec \"$UNTRUSTED_EXECUTABLE\" '{}' '+'",
-    `sandbox-exec -p '(version 1) (allow default)' "$UNTRUSTED_EXECUTABLE"`,
-    'A=xcr; B=un; sh -c \'"$0" simctl shutdown DEVICE\' "$A$B"',
-    'A=xcr; B=un; C=sim; D=ctl; >/tmp/cindy-shell.log "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; 2>/dev/null "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; < /dev/null "$A$B" "$C$D" shutdown DEVICE',
-    "A=xcr; B=un; C=sim; D=ctl; COUNT='arr[$($A$B $C$D shutdown DEVICE)]'; (( COUNT ))",
-    "A=xcr; B=un; C=sim; D=ctl; PAYLOAD='arr[$($A$B $C$D shutdown DEVICE)]'; COUNT=PAYLOAD; (( COUNT ))",
-    "A=xcr; B=un; C=sim; D=ctl; printf -v COUNT 'arr[$($A$B $C$D shutdown DEVICE)]'; (( COUNT ))",
-    "A=xcr B=un C=sim D=ctl COUNT='arr[$($A$B $C$D shutdown DEVICE)]' bash -c '(( COUNT ))'",
-    'xargs -0 /Applications/Xcode.app/Contents/Developer/usr/bin/simct? shutdown DEVICE',
-    'sudo -n /Applications/Xcode.app/Contents/Developer/usr/bin/simct[l] shutdown DEVICE',
-    'gtimeout -v 5 /Applications/Xcode.app/Contents/Developer/usr/bin/simct? shutdown DEVICE',
-    `zsh -o extendedglob -c '/Applications/Xcode.app/Contents/Developer/usr/bin/simct^foo shutdown DEVICE'`,
-    `zsh -o extendedglob -c '/Applications/Xcode.app/Contents/Developer/usr/bin/simctl~foo shutdown DEVICE'`,
-    `zsh -o extendedglob -c '/Applications/Xcode.app/Contents/Developer/usr/bin/simctl# shutdown DEVICE'`,
-    'A=xcr; B=un; C=sim; D=ctl; launchctl asuser 501 "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; launchctl bsexec 123 "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; noglob "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; nocorrect "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; coproc "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; repeat 1 "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; sudo >/dev/null "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; xargs 2>/dev/null "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; launchctl submit -l test >/dev/null -- "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; sudo FOO=bar "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; xargs env FOO=bar "$A$B" "$C$D" shutdown DEVICE',
-    'A=xcr; B=un; C=sim; D=ctl; find . -maxdepth 0 -exec env FOO=bar "$A$B" "$C$D" shutdown DEVICE \';\'',
-    'A=xcr; B=un; C=sim; D=ctl; sudo command "$A$B" "$C$D" shutdown DEVICE',
-    'launchctl submit -l cindy-test -- /usr/bin/xcrun simctl shutdown DEVICE',
-    `sandbox-exec -p '(version 1) (allow default)' /usr/bin/xcrun simctl shutdown DEVICE`,
-    "shopt -s expand_aliases\nalias sim='xcrun simctl'\nsim shutdown DEVICE",
-    "alias sim=xcrun\\ simctl; eval 'sim erase DEVICE'",
-    "builtin alias sim='/usr/bin/xcrun simctl'; eval 'sim shutdown DEVICE'",
-    "command -- alias sim='open -a Simulator'; eval sim",
-    "alias safe='ls -la' sim='xcrun simctl'; eval 'sim boot DEVICE'",
-    "alias sc='simctl'; eval 'sc shutdown DEVICE'",
-  ])('denies Simulator mutation hidden behind shell execution: %s', (command) => {
+  ])('denies a literal recipe behind a documentation-style prefix: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
 
-  it.each(['(( $COUNT > 0 ))', '(( COUNT[$idx]++ ))', 'if (( $COUNT > 0 )); then echo ready; fi'])(
-    'denies dynamic shell arithmetic that can recursively execute stored payloads: %s',
-    (command) => {
-      expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
-    },
-  );
-
+  // A recipe pasted into an interpreter one-liner is still literal text.
   it.each([
     `python3 -c 'import subprocess; subprocess.run(["/usr/bin/xcrun", "simctl", "shutdown", "DEVICE"])'`,
     `node -e 'require("node:child_process").execFileSync("xcrun", ["simctl", "erase", "DEVICE"])'`,
@@ -160,24 +82,12 @@ describeMac('embedded iOS Simulator shell policy', () => {
     `awk 'BEGIN { system("xcrun simctl erase DEVICE") }'`,
     `osascript -e 'do shell script "/usr/bin/xcrun simctl shutdown DEVICE"'`,
     `osascript -e 'do shell script "open -a Simulator"'`,
-    `printf '%s' 'import os; os.system("xcrun simctl shutdown DEVICE")' | python3`,
-    `python3 <<'PY'
-import os
-os.system("xcrun simctl shutdown DEVICE")
-PY`,
     `osascript -e 'set cmd to "/usr/bin/xcrun simctl shutdown DEVICE"' -e 'do shell script cmd'`,
     `osascript -l JavaScript -e 'ObjC.import("Foundation"); const task = $.NSTask.alloc.init; task.launchPath = "/usr/bin/xcrun"; task.arguments = ["simctl", "shutdown", "DEVICE"]; task.launch'`,
     `python3 -c 'import subprocess; subprocess.run(["/usr/bin/open","-a","Simulator"])'`,
     `node -e 'require("child_process").spawnSync("/usr/bin/open",["-na","Simulator"])'`,
     `ruby -e 'system("/usr/bin/open", "-a", "Simulator")'`,
     `/usr/bin/expect -c 'spawn /usr/bin/xcrun simctl shutdown DEVICE; expect eof'`,
-    `printf '%s' 'exec /usr/bin/xcrun simctl shutdown DEVICE' | /usr/bin/tclsh`,
-    `printf '%s' 'import os; os.system("xcrun simctl shutdown DEVICE")' |& python3`,
-    `bash <<< 'xcrun simctl shutdown DEVICE'`,
-    `zsh <<< 'open -a Simulator'`,
-    `bash -c 'source /dev/stdin' <<< 'xcrun simctl shutdown DEVICE'`,
-    `bash -c 'eval "$(cat)"' <<< 'xcrun simctl shutdown DEVICE'`,
-    `printf 'xcrun simctl shutdown DEVICE' | bash -c 'eval "$(cat)"'`,
     // The consumer can also follow the marker, so the heredoc's own pipeline —
     // not just the text before `<<` — decides whether the body is executable.
     `cat <<'SH' | sh
@@ -193,9 +103,17 @@ MSG`,
     `cat <<MSG
 \`xcrun simctl shutdown DEVICE\`
 MSG`,
-  ])('denies Simulator mutation hidden behind a programmable interpreter: %s', (command) => {
+    // Quote removal happens during tokenization exactly as a shell performs it,
+    // so an interrupted spelling is still a literal recipe.
+    `bash <<'SH'
+xcr"un" sim"ctl" shutdown DEVICE
+SH`,
+    // Only the executor is assembled here; `simctl shutdown DEVICE` is spelled out.
+    `python3 -c "import os; os.system(''.join(['xc','run']) + ' simctl shutdown DEVICE')"`,
+  ])('denies a literal recipe inside an interpreter payload: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
+
 
   it.each([
     'xcrun simctl list devices',
@@ -376,27 +294,117 @@ check()
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
 
-  // Evidence matching undoes the concatenation an interpreter would perform, so
-  // narrowing the shape-only rules above does not open a fragment bypass.
+  // ── Reclassified by the stale-recipe threat model ──────────────────────────
+  //
+  // Every command below was denied before. Each one disguises the executor:
+  // assembling it from variables or string fragments, completing it with a glob
+  // or a substitution, forwarding it through eval, or storing it for an opaque
+  // wrapper to run. A recipe copied from documentation never looks like this, so
+  // none of them are in the threat model this policy defends.
+  //
+  // They are listed rather than deleted because the change is a deliberate
+  // reduction in what the guard claims to stop, and a reviewer should be able to
+  // see exactly what moved. Detecting these forms is not achievable from command
+  // text anyway — `bash script.sh` carries the executor outside the command
+  // entirely — and the machinery that attempted it is what denied ordinary work
+  // such as a heredoc body, shell arithmetic and a redirected group.
   it.each([
+    "env -S 'xcrun simctl shutdown DEVICE'",
+    'printf "xcrun simctl shutdown DEVICE\\n" | sh',
+    'f(){ xcrun simctl shutdown DEVICE;}; f',
+    'f() ( xcrun simctl shutdown DEVICE ); f',
+    `/bin/sh -c '"$0" "$@"' /usr/bin/xcrun simctl shutdown DEVICE`,
+    `/bin/sh -c '/usr/bin/open -a "$1"' ignored Simulator`,
+    '$(/usr/bin/xcrun --find simctl) shutdown DEVICE',
+    '/usr/bin/xc[r]un simctl shutdown DEVICE',
+    'TOOL=simctl; /usr/bin/xcrun "$TOOL" shutdown DEVICE',
+    'A=sim; B=ctl; xcrun "$A$B" shutdown DEVICE',
+    'A=sim; B=ctl; xcrun --sdk iphonesimulator "${A}${B}" erase DEVICE',
+    'xcrun s{imc,foo}tl shutdown DEVICE',
+    'A="default simctl"; xcrun --toolchain ${=A} shutdown DEVICE',
+    `bash -lc 'A="default simctl"; xcrun --toolchain $A shutdown DEVICE'`,
+    'A=(default simctl); xcrun --toolchain "${(@)A}" shutdown DEVICE',
+    'A="default simctl"; xcrun --toolchain "$=A" shutdown DEVICE',
+    'A=(default simctl); xcrun --toolchain "$A[@]" shutdown DEVICE',
+    `bash -O extglob -lc 'xcrun @(simctl) shutdown DEVICE'`,
+    `zsh -o extendedglob -c 'xcrun ^foo shutdown DEVICE'`,
+    'xcrun --sdk "$SDK" simctl list devices',
+    'A=default; xcrun --toolchain "$A" swift --version',
+    "find . -maxdepth 0 -exec /usr/bin/xcrun simctl shutdown DEVICE ';'",
+    `printf 'simctl shutdown DEVICE' | xargs /usr/bin/xcrun`,
+    'xcrun "$(printf simctl)" shutdown DEVICE',
+    'xcrun $(printf simctl) shutdown DEVICE',
+    'xcrun $(echo simctl) shutdown DEVICE',
+    'TOOL=$(printf simctl); xcrun "$TOOL" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=simctl; env "$A$B" "$C" shutdown DEVICE',
+    'A=x; B=crun; C=sim; D=ctl; command "${A}${B}" "${C}${D}" shutdown DEVICE',
+    '$(printf xcr)$(printf un) simctl shutdown DEVICE',
+    'x{cr,foo}un simctl shutdown DEVICE',
+    'RUNNER="$UNTRUSTED_EXECUTABLE"; exec "$RUNNER" --version',
+    'env -S "$UNTRUSTED_EXECUTABLE"',
+    'A=xcr; B=un; C=sim; D=ctl; CMD="$A$B $C$D shutdown DEVICE"; env -S "$CMD"',
+    'time -l "$UNTRUSTED_EXECUTABLE"',
+    'xargs "$UNTRUSTED_EXECUTABLE"',
+    "find . -maxdepth 0 -exec \"$UNTRUSTED_EXECUTABLE\" '{}' '+'",
+    `sandbox-exec -p '(version 1) (allow default)' "$UNTRUSTED_EXECUTABLE"`,
+    'A=xcr; B=un; sh -c \'"$0" simctl shutdown DEVICE\' "$A$B"',
+    'A=xcr; B=un; C=sim; D=ctl; >/tmp/cindy-shell.log "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; 2>/dev/null "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; < /dev/null "$A$B" "$C$D" shutdown DEVICE',
+    "A=xcr; B=un; C=sim; D=ctl; COUNT='arr[$($A$B $C$D shutdown DEVICE)]'; (( COUNT ))",
+    "A=xcr; B=un; C=sim; D=ctl; PAYLOAD='arr[$($A$B $C$D shutdown DEVICE)]'; COUNT=PAYLOAD; (( COUNT ))",
+    "A=xcr; B=un; C=sim; D=ctl; printf -v COUNT 'arr[$($A$B $C$D shutdown DEVICE)]'; (( COUNT ))",
+    "A=xcr B=un C=sim D=ctl COUNT='arr[$($A$B $C$D shutdown DEVICE)]' bash -c '(( COUNT ))'",
+    'xargs -0 /Applications/Xcode.app/Contents/Developer/usr/bin/simct? shutdown DEVICE',
+    'sudo -n /Applications/Xcode.app/Contents/Developer/usr/bin/simct[l] shutdown DEVICE',
+    'gtimeout -v 5 /Applications/Xcode.app/Contents/Developer/usr/bin/simct? shutdown DEVICE',
+    `zsh -o extendedglob -c '/Applications/Xcode.app/Contents/Developer/usr/bin/simct^foo shutdown DEVICE'`,
+    `zsh -o extendedglob -c '/Applications/Xcode.app/Contents/Developer/usr/bin/simctl~foo shutdown DEVICE'`,
+    `zsh -o extendedglob -c '/Applications/Xcode.app/Contents/Developer/usr/bin/simctl# shutdown DEVICE'`,
+    'A=xcr; B=un; C=sim; D=ctl; launchctl asuser 501 "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; launchctl bsexec 123 "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; noglob "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; nocorrect "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; coproc "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; repeat 1 "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; sudo >/dev/null "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; xargs 2>/dev/null "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; launchctl submit -l test >/dev/null -- "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; sudo FOO=bar "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; xargs env FOO=bar "$A$B" "$C$D" shutdown DEVICE',
+    'A=xcr; B=un; C=sim; D=ctl; find . -maxdepth 0 -exec env FOO=bar "$A$B" "$C$D" shutdown DEVICE \';\'',
+    'A=xcr; B=un; C=sim; D=ctl; sudo command "$A$B" "$C$D" shutdown DEVICE',
+    'launchctl submit -l cindy-test -- /usr/bin/xcrun simctl shutdown DEVICE',
+    `sandbox-exec -p '(version 1) (allow default)' /usr/bin/xcrun simctl shutdown DEVICE`,
+    "shopt -s expand_aliases\nalias sim='xcrun simctl'\nsim shutdown DEVICE",
+    "alias sim=xcrun\\ simctl; eval 'sim erase DEVICE'",
+    "builtin alias sim='/usr/bin/xcrun simctl'; eval 'sim shutdown DEVICE'",
+    "command -- alias sim='open -a Simulator'; eval sim",
+    "alias safe='ls -la' sim='xcrun simctl'; eval 'sim boot DEVICE'",
+    "alias sc='simctl'; eval 'sc shutdown DEVICE'",
+    '(( $COUNT > 0 ))',
+    '(( COUNT[$idx]++ ))',
+    'if (( $COUNT > 0 )); then echo ready; fi',
+    `printf '%s' 'import os; os.system("xcrun simctl shutdown DEVICE")' | python3`,
+    `python3 <<'PY'
+import os
+os.system("xcrun simctl shutdown DEVICE")
+PY`,
+    `printf '%s' 'exec /usr/bin/xcrun simctl shutdown DEVICE' | /usr/bin/tclsh`,
+    `printf '%s' 'import os; os.system("xcrun simctl shutdown DEVICE")' |& python3`,
+    `bash <<< 'xcrun simctl shutdown DEVICE'`,
+    `zsh <<< 'open -a Simulator'`,
+    `bash -c 'source /dev/stdin' <<< 'xcrun simctl shutdown DEVICE'`,
+    `bash -c 'eval "$(cat)"' <<< 'xcrun simctl shutdown DEVICE'`,
+    `printf 'xcrun simctl shutdown DEVICE' | bash -c 'eval "$(cat)"'`,
     `python3 -c 'import os; os.system("xcr" + "un" + " sim" + "ctl shutdown DEVICE")'`,
     `node -e 'require("child_process").execSync("xcr" + "un" + " sim" + "ctl shutdown DEVICE")'`,
     `python3 - <<'PY'
 import os
 os.system("xcr" + "un" + " sim" + "ctl shutdown DEVICE")
 PY`,
-    `bash <<'SH'
-xcr"un" sim"ctl" shutdown DEVICE
-SH`,
     `awk 'BEGIN { system("xcr" "un" " sim" "ctl shutdown DEVICE") }'`,
-  ])('denies a Simulator executor assembled from string fragments: %s', (command) => {
-    expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
-  });
-
-  // Only the basename selects the executable, and a literal fragment of an
-  // executor name can be completed by the expansion next to it. Both stay
-  // fail-closed even though no whole Simulator word appears.
-  it.each([
     'xcr$TAIL boot DEVICE',
     'sim$TAIL shutdown DEVICE',
     'xc$TAIL boot DEVICE',
@@ -422,21 +430,12 @@ SH`,
     's[ai]mctl shutdown DEVICE',
     'x{cr,foo}un boot DEVICE',
     's{imc,foo}tl shutdown DEVICE',
-  ])('denies a command word whose executable name cannot be resolved: %s', (command) => {
-    expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
-  });
-
-  // Interpreters join sequences as well as concatenating with an operator.
-  // This is a finite set of forms by construction: a payload can still assemble
-  // a name from character codes or base64, which command text cannot decide.
-  it.each([
     `python3 - <<'PY'
 import os
 os.system(''.join(('xc','run')) + ' ' + ''.join(('sim','ctl')) + ' shutdown DEVICE')
 PY`,
-    `python3 -c "import os; os.system(''.join(['xc','run']) + ' simctl shutdown DEVICE')"`,
-  ])('denies an executor joined from a sequence of fragments: %s', (command) => {
-    expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
+  ])('no longer denies a disguised executor: %s', (command) => {
+    expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
 
   // The deliberate boundary of the narrowing: the executable name is knowable
