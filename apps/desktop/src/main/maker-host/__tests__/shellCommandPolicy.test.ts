@@ -174,6 +174,10 @@ eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; false &&\nCMD='echo safe'; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; true ||\nCMD='echo safe'; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; printf ignored |\nCMD='echo safe'; eval "$CMD"`,
+    // A comment's separators and assignments are not shell syntax. Quoted
+    // hashes remain ordinary data and must not disable comment scanning.
+    `CMD='xcrun simctl shutdown DEVICE'; # note; CMD='echo safe'\neval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; echo "# not a comment"; eval "$CMD"`,
     // Assignments in a pipeline or background segment run in a child shell;
     // they cannot replace the parent value consumed by the later eval.
     `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' & eval "$CMD"`,

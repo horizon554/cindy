@@ -60,6 +60,7 @@ function shellSegments(command: string): ShellSegment[] {
   let current = '';
   let quote: "'" | '"' | null = null;
   let escaped = false;
+  let atWordStart = true;
   let precedingOperator: ShellSegment['precedingOperator'] = null;
 
   const flush = (nextOperator: Exclude<ShellSegment['precedingOperator'], null>): void => {
@@ -79,11 +80,13 @@ function shellSegments(command: string): ShellSegment[] {
     if (escaped) {
       current += char;
       escaped = false;
+      atWordStart = false;
       continue;
     }
     if (char === '\\' && quote !== "'") {
       current += char;
       escaped = true;
+      atWordStart = false;
       continue;
     }
     if (quote) {
@@ -94,6 +97,16 @@ function shellSegments(command: string): ShellSegment[] {
     if (char === "'" || char === '"') {
       current += char;
       quote = char;
+      atWordStart = false;
+      continue;
+    }
+    if (char === '#' && atWordStart) {
+      // A comment consumes the rest of the current physical line. Keep the
+      // newline for the normal separator handling so assignments before the
+      // comment retain their real shell scope.
+      const newline = command.indexOf('\n', index);
+      if (newline < 0) break;
+      index = newline - 1;
       continue;
     }
     if (char === '\n' || char === ';') {
@@ -103,6 +116,7 @@ function shellSegments(command: string): ShellSegment[] {
       // A lone `&` is already a complete separator, so the next line is
       // unconditional in the parent shell.
       if (char === ';' || current.trim() || precedingOperator === '&') flush(';');
+      atWordStart = true;
       continue;
     }
     if (
@@ -111,6 +125,7 @@ function shellSegments(command: string): ShellSegment[] {
       (char === '|' && command[index - 1] === '>')
     ) {
       current += char;
+      atWordStart = false;
       continue;
     }
     if (char === '|' || char === '&') {
@@ -122,9 +137,11 @@ function shellSegments(command: string): ShellSegment[] {
       const doubled = command[index + 1] === char;
       flush(doubled ? (char === '|' ? '||' : '&&') : char);
       if (doubled) index += 1;
+      atWordStart = true;
       continue;
     }
     current += char;
+    atWordStart = /\s/.test(char);
   }
   if (current.trim())
     segments.push({ command: current.trim(), precedingOperator, followingOperator: null });

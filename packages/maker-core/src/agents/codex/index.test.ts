@@ -13127,6 +13127,88 @@ describe('CodexAgent MCP thread context hooks', () => {
     expect(JSON.stringify(terminal)).not.toContain('aborted by user');
   });
 
+  it('keeps all declined approval items attached to an interrupted turn', async () => {
+    const policy = vi.fn(({ command }: { command: string }) => ({
+      decision: 'deny' as const,
+      reason: command.startsWith('open ') ? 'first policy reason' : 'latest policy reason',
+    }));
+    const agent = new CodexAgent(createDeps({}, { getShellCommandPolicy: policy }));
+    const host = installFakeHost(agent);
+    const handle = await agent.startSession({
+      sessionId: 'session-command-approval-policy-multiple-denials',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+      permissionMode: 'bypassPermissions',
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.commandExecutionApproval || !handlers.itemCompleted || !handlers.turnCompleted) {
+      throw new Error('expected commandExecutionApproval, itemCompleted and turnCompleted handlers');
+    }
+    const events: AgentEvent[] = [];
+    const collectEvents = (async () => {
+      for await (const event of handle.events()) events.push(event);
+    })();
+
+    const turnId = 'turn-approval-policy-multiple-denials';
+    await expect(Promise.all([
+      handlers.commandExecutionApproval({
+        threadId: 'start-thread-id',
+        turnId,
+        itemId: 'cmd-approval-policy-first',
+        command: 'open -a Simulator',
+        cwd: '/repo',
+      }),
+      handlers.commandExecutionApproval({
+        threadId: 'start-thread-id',
+        turnId,
+        itemId: 'cmd-approval-policy-second',
+        command: 'xcrun simctl shutdown DEVICE',
+        cwd: '/repo',
+      }),
+    ])).resolves.toEqual([
+      { decision: 'decline' },
+      { decision: 'decline' },
+    ]);
+
+    // Completion of either declined item is not recovery progress. The
+    // interrupted turn must still retain the policy attribution.
+    handlers.itemCompleted({
+      threadId: 'start-thread-id',
+      turnId,
+      item: {
+        id: 'cmd-approval-policy-first',
+        type: 'commandExecution',
+        command: 'open -a Simulator',
+        cwd: '/repo',
+      },
+    });
+    handlers.turnCompleted({
+      threadId: 'start-thread-id',
+      turn: {
+        id: turnId,
+        status: 'interrupted',
+        error: { message: 'aborted by user' },
+      },
+    } as never);
+
+    await handle.close();
+    await collectEvents;
+    const terminal = events.filter(
+      (event) =>
+        (event as { type?: string }).type === 'error' &&
+        (event as { data?: { isTerminal?: boolean } }).data?.isTerminal === true,
+    );
+    expect(terminal).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          message: 'latest policy reason',
+          isTerminal: true,
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(terminal)).not.toContain('aborted by user');
+  });
+
   it('lets an approval-path denial recover to a normal completed turn', async () => {
     const policy = vi.fn(() => ({
       decision: 'deny' as const,

@@ -3042,9 +3042,14 @@ export class CodexAgent extends BaseAgent {
     const policyDeniedTurnReasons = new Map<string, string>();
     // Approval can be declined before execution starts. Codex may still recover
     // and complete the turn, so this reason only owns abort-shaped completions.
-    // Keep the declined item id too: app-server can still emit that item's
-    // completion after the decline, which is not evidence of recovery.
-    const approvalPolicyDeniedTurnReasons = new Map<string, { reason: string; itemId: string }>();
+    // Keep every declined item id: app-server can emit several approval
+    // requests for one turn and may still complete each declined item after the
+    // decline. A single item id would let a later denial overwrite an earlier
+    // one, then make that earlier completion look like recovery progress.
+    const approvalPolicyDeniedTurnReasons = new Map<
+      string,
+      { reason: string; itemIds: Set<string> }
+    >();
     // daemon 后端 retry-loop 的终局升级 (issue #677): 远端摸不到 Codex 后端时
     // daemon 无限 willRetry, turn 永不收口。同 turn 重试超阈值 → 合成终态错误,
     // 走与终态 error 完全相同的收口路径 (terminalErroredTurnIds + Done status)。
@@ -6249,10 +6254,16 @@ export class CodexAgent extends BaseAgent {
         // The decline is followed by an abort-shaped turn completion. Keep the
         // policy reason attached to this turn so completion cannot replace it
         // with a generic cancellation/error message.
-        approvalPolicyDeniedTurnReasons.set(params.turnId, {
-          reason: hostPolicy.reason,
-          itemId: params.itemId,
-        });
+        const existingDenial = approvalPolicyDeniedTurnReasons.get(params.turnId);
+        if (existingDenial) {
+          existingDenial.reason = hostPolicy.reason;
+          existingDenial.itemIds.add(params.itemId);
+        } else {
+          approvalPolicyDeniedTurnReasons.set(params.turnId, {
+            reason: hostPolicy.reason,
+            itemIds: new Set([params.itemId]),
+          });
+        }
         // Declining without ever showing the user why renders as a bare failed
         // command, which is indistinguishable from a cancellation. Surface the
         // product reason so the denial is attributed to the policy, not the user.
@@ -8110,7 +8121,7 @@ export class CodexAgent extends BaseAgent {
     // not be reported as the stale Simulator-policy denial.
     const clearApprovalPolicyDenialOnProgress = (turnId: string, itemId?: string): void => {
       const denial = approvalPolicyDeniedTurnReasons.get(turnId);
-      if (!denial || denial.itemId === itemId) return;
+      if (!denial || (itemId !== undefined && denial.itemIds.has(itemId))) return;
       approvalPolicyDeniedTurnReasons.delete(turnId);
     };
 
