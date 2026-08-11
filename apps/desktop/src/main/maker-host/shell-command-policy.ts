@@ -335,7 +335,6 @@ function tokenizeHeredocConsumer(segment: string): string[] {
 interface ShellAssignment {
   name: string;
   value: string;
-  readonly: boolean;
 }
 
 const SHELL_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/;
@@ -353,11 +352,7 @@ function stripLeadingShellPreamble(input: string[]): Preamble {
     const token = tokens[0]!;
     const assignment = SHELL_ASSIGNMENT.exec(token);
     if (assignment) {
-      assignments.push({
-        name: assignment[1] ?? '',
-        value: assignment[2] ?? '',
-        readonly: false,
-      });
+      assignments.push({ name: assignment[1] ?? '', value: assignment[2] ?? '' });
       tokens.shift();
       continue;
     }
@@ -435,20 +430,10 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     if (SHELL_ASSIGNMENT_BUILTINS.has(head)) {
       // `export CMD='xcrun simctl …'` stores the recipe just like a bare
       // assignment, so its operands feed the same stored-value path.
-      const makesReadonly =
-        head === 'readonly'
-        || (
-          (head === 'declare' || head === 'local' || head === 'typeset')
-          && tokens.slice(1).some((token) => /^-[A-Za-z]*r[A-Za-z]*$/.test(token))
-        );
       for (const token of tokens.slice(1)) {
         const assignment = SHELL_ASSIGNMENT.exec(token);
         if (assignment) {
-          assignments.push({
-            name: assignment[1] ?? '',
-            value: assignment[2] ?? '',
-            readonly: makesReadonly,
-          });
+          assignments.push({ name: assignment[1] ?? '', value: assignment[2] ?? '' });
         }
       }
       return { tokens: [], nestedShell: null, assignments };
@@ -495,39 +480,6 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     tokens = next;
   }
   return { tokens, nestedShell: null, assignments };
-}
-
-/** Variables a direct shell `unset` definitely removes from the current scope. */
-function definitelyUnsetVariables(segment: ShellSegment): string[] {
-  if (!assignmentDefinitelyRunsInCurrentScope(segment)) return [];
-  let tokens = stripLeadingShellPreamble(
-    stripShellControlTokens(tokenizeHeredocConsumer(segment.command)),
-  ).tokens;
-  const prefix = executableName(tokens[0]);
-  if (prefix === 'builtin' || prefix === 'command') {
-    tokens = tokens.slice(1);
-    if (tokens[0] === '--') tokens = tokens.slice(1);
-    else if (tokens[0]?.startsWith('-')) return [];
-  }
-  if (executableName(tokens[0]) !== 'unset') return [];
-
-  const names: string[] = [];
-  let parsingOptions = true;
-  for (const token of tokens.slice(1)) {
-    if (parsingOptions && token === '--') {
-      parsingOptions = false;
-      continue;
-    }
-    if (parsingOptions && token.startsWith('-')) {
-      // `-v` selects variables and `-n` selects the nameref itself. `-f` and
-      // unknown options do not prove that a tracked variable was removed.
-      if (!/^-[vn]+$/.test(token)) return [];
-      continue;
-    }
-    parsingOptions = false;
-    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(token)) names.push(token);
-  }
-  return names;
 }
 
 /** `open -a Simulator` and the Simulator binary, in their documented spellings. */
@@ -677,6 +629,20 @@ function nestedShellConsumesStdinAsProgram(command: string): boolean {
   );
 }
 
+/** Leading shell options removed before deciding whether a script operand exists. */
+function shellPositionalArgs(args: string[]): string[] {
+  let index = 0;
+  while (index < args.length) {
+    const token = args[index]!;
+    if (token === '--') return args.slice(index + 1);
+    if (!token.startsWith('-') && !token.startsWith('+')) break;
+    // Bash/zsh `-o name` and Bash `-O shopt_name` consume the next token; that
+    // operand is not a script filename and does not displace heredoc stdin.
+    index += /^[-+][oO]$/.test(token) ? 2 : 1;
+  }
+  return args.slice(index);
+}
+
 /** Whether this literal command executes its stdin as source code. */
 function consumesStdinAsProgram(tokens: string[]): boolean {
   const unwrapped = unwrapCommand(tokens);
@@ -698,7 +664,9 @@ function consumesStdinAsProgram(tokens: string[]): boolean {
   } else {
     return false;
   }
-  const positional = args.find((arg) => !arg.startsWith('-'));
+  const positional = SHELL_EXECUTABLES.has(executable)
+    ? shellPositionalArgs(args)[0]
+    : args.find((arg) => !arg.startsWith('-'));
   return positional === undefined || positional === '-';
 }
 
@@ -843,6 +811,17 @@ function heredocRedirections(line: string): HeredocRedirection[] {
     let expands = true;
     while (cursor < line.length) {
       const delimiterChar = line[cursor]!;
+      if (
+        delimiterChar === '$'
+        && (line[cursor + 1] === "'" || line[cursor + 1] === '"')
+      ) {
+        // Bash's ANSI-C and locale quote prefixes are removed along with the
+        // surrounding quotes for a simple literal delimiter (`$'EOF'`). Do not
+        // grow this boundary into decoding ANSI-C escape sequences.
+        expands = false;
+        cursor += 1;
+        continue;
+      }
       if (delimiterChar === "'" || delimiterChar === '"') {
         expands = false;
         const closing = line.indexOf(delimiterChar, cursor + 1);
@@ -971,6 +950,10 @@ function hasUnquotedStdinRedirection(segment: string): boolean {
       index = skipArithmeticExpression(segment, index) - 1;
       continue;
     }
+    if (char === '$' && segment[index + 1] === '[') {
+      index = skipLegacyArithmeticExpression(segment, index) - 1;
+      continue;
+    }
     if (
       (char === '$' || char === '<' || char === '>')
       && segment[index + 1] === '('
@@ -1051,16 +1034,6 @@ function heredocBodyIsProgram(line: string, markerStart: number): boolean {
   return false;
 }
 
-/** Whether a trailing list operator requires another physical command line. */
-function shellClauseNeedsContinuation(command: string): boolean {
-  const lastSegment = shellSegments(command).at(-1);
-  return (
-    lastSegment?.followingOperator === '|'
-    || lastSegment?.followingOperator === '&&'
-    || lastSegment?.followingOperator === '||'
-  );
-}
-
 /**
  * Remove stdin-only heredoc prose before classifying command words.
  *
@@ -1072,26 +1045,9 @@ function stripHeredocBodies(command: string): string {
   const lines = command.split(/\r?\n/);
   const executable: string[] = [];
   for (let index = 0; index < lines.length; index += 1) {
-    let clause = lines[index]!;
-    const clauseHeredocs = heredocRedirections(clause);
-    // A heredoc body begins only after the complete compound command has been
-    // parsed. With a trailing `|`, `&&` or `||`, the next physical line is the
-    // continuation command rather than body data; retain it in the executable
-    // clause and shift any opener offsets found there.
-    while (shellClauseNeedsContinuation(clause) && index + 1 < lines.length) {
-      index += 1;
-      const continuation = lines[index]!;
-      const continuationStart = clause.length + 1;
-      clause += `\n${continuation}`;
-      clauseHeredocs.push(
-        ...heredocRedirections(continuation).map((heredoc) => ({
-          ...heredoc,
-          start: continuationStart + heredoc.start,
-        })),
-      );
-    }
-    executable.push(clause);
-    for (const heredoc of clauseHeredocs) {
+    const line = lines[index]!;
+    executable.push(line);
+    for (const heredoc of heredocRedirections(line)) {
       const body: string[] = [];
       index += 1;
       for (; index < lines.length; index += 1) {
@@ -1100,7 +1056,7 @@ function stripHeredocBodies(command: string): string {
         if (unindented === heredoc.delimiter) break;
         body.push(candidate);
       }
-      if (heredocBodyIsProgram(clause, heredoc.start)) executable.push(...body);
+      if (heredocBodyIsProgram(line, heredoc.start)) executable.push(...body);
       else if (heredoc.expands) executable.push(...shellSubcommands(body.join('\n')));
       if (index >= lines.length) break;
     }
@@ -1114,25 +1070,21 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
   for (const nested of shellSubcommands(executableCommand)) {
     if (containsSimulatorRecipe(nested, depth + 1)) return true;
   }
-  interface TrackedShellValue {
-    value: string;
-    readonly: boolean;
-  }
-  const assignments = new Map<string, TrackedShellValue[]>();
+  const assignments = new Map<string, string[]>();
   const referencedAssignmentContainsRecipe = (
     reference: string,
-    visibleAssignments: Map<string, TrackedShellValue[]> = assignments,
+    visibleAssignments: Map<string, string[]> = assignments,
   ): boolean => {
     for (const [name, values] of visibleAssignments) {
       // The name matched `[A-Za-z_][A-Za-z0-9_]*`, so it carries no regex syntax.
       if (!new RegExp(`\\$\\{?${name}\\b`).test(reference)) continue;
-      if (values.some(({ value }) => containsSimulatorRecipe(value, depth + 1))) return true;
+      if (values.some((value) => containsSimulatorRecipe(value, depth + 1))) return true;
     }
     return false;
   };
   for (const segment of shellSegments(executableCommand)) {
     const unwrapped = unwrapCommand(tokenizeShellSegment(segment.command));
-    const commandScopedAssignments = new Map<string, TrackedShellValue[]>();
+    const commandScopedAssignments = new Map<string, string[]>();
     // Shell assignments replace the previous value before the command in this
     // segment runs. A `;`/newline-separated assignment therefore supersedes the
     // previous value, while a conditional, pipeline or background edge can skip
@@ -1143,27 +1095,18 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
         assignmentDefinitelyRunsInCurrentScope(segment)
         && unwrapped.tokens.length === 0
         && unwrapped.nestedShell === null;
-      const trackedValue = { value: assignment.value, readonly: assignment.readonly };
       if (persistentAssignment) {
-        const existingReadonly = (assignments.get(assignment.name) ?? []).filter(
-          (value) => value.readonly,
-        );
-        assignments.set(assignment.name, [...existingReadonly, trackedValue]);
+        assignments.set(assignment.name, [assignment.value]);
       } else if (unwrapped.tokens.length > 0 || unwrapped.nestedShell !== null) {
         // A leading assignment shadows the exported value only for this
         // command. Use its last value while classifying the child, then leave
         // the parent-shell possibilities unchanged for later segments.
-        commandScopedAssignments.set(assignment.name, [trackedValue]);
+        commandScopedAssignments.set(assignment.name, [assignment.value]);
       } else {
         const possibleValues = assignments.get(assignment.name) ?? [];
-        possibleValues.push(trackedValue);
+        possibleValues.push(assignment.value);
         assignments.set(assignment.name, possibleValues);
       }
-    }
-    for (const name of definitelyUnsetVariables(segment)) {
-      const readonlyValues = (assignments.get(name) ?? []).filter((value) => value.readonly);
-      if (readonlyValues.length > 0) assignments.set(name, readonlyValues);
-      else assignments.delete(name);
     }
     const visibleAssignments = new Map(assignments);
     for (const [name, values] of commandScopedAssignments) {

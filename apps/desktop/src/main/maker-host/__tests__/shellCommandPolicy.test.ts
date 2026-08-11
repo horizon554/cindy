@@ -89,6 +89,8 @@ describeMac('embedded iOS Simulator shell policy', () => {
     // following command, and CRLF delimiters must end the data region correctly.
     `echo hi # <<'EOF'\nxcrun simctl shutdown DEVICE`,
     `cat <<'EOF'\r\ntext\r\nEOF\r\nxcrun simctl shutdown DEVICE`,
+    `cat <<$'EOF' >/dev/null\ntext\nEOF\nxcrun simctl shutdown DEVICE`,
+    `cat <<$"EOF" >/dev/null\ntext\nEOF\nxcrun simctl shutdown DEVICE`,
     // Arithmetic left-shift uses the same `<<` spelling as a heredoc opener;
     // it must not make the following command look like a body for delimiter 2.
     `echo $((1 << 2))\nxcrun simctl shutdown DEVICE`,
@@ -165,11 +167,6 @@ eval "$CMD"`,
     // A command-scoped assignment shadows the exported parent value only for
     // that child command.
     `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' sh -c '$CMD'`,
-    // A direct unset in the current shell removes the stored value before the
-    // later execution point. Cover the variable-selecting and `--` spellings.
-    `CMD='xcrun simctl shutdown DEVICE'; unset CMD; eval "$CMD"`,
-    `CMD='xcrun simctl shutdown DEVICE'; unset -v CMD; eval "$CMD"`,
-    `CMD='xcrun simctl shutdown DEVICE'; command unset -- CMD; eval "$CMD"`,
   ])('allows a stored recipe that nothing executes: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
@@ -198,16 +195,6 @@ eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' | /usr/bin/cat; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; (CMD='echo safe'); eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; if false; then CMD='echo safe'; fi; eval "$CMD"`,
-    // Conditional and child-scope unsets do not prove that the parent value was
-    // removed. Function-only unset leaves the variable intact as well.
-    `CMD='xcrun simctl shutdown DEVICE'; false && unset CMD; eval "$CMD"`,
-    `CMD='xcrun simctl shutdown DEVICE'; unset CMD | /usr/bin/cat; eval "$CMD"`,
-    `CMD='xcrun simctl shutdown DEVICE'; (unset CMD); eval "$CMD"`,
-    `CMD='xcrun simctl shutdown DEVICE'; unset -f CMD; eval "$CMD"`,
-    // Readonly variables survive an attempted unset, including declaration
-    // builtins that attach the readonly attribute with an option.
-    `readonly CMD='xcrun simctl shutdown DEVICE'; unset CMD; eval "$CMD"`,
-    `declare -r CMD='xcrun simctl shutdown DEVICE'; unset -v CMD; eval "$CMD"`,
   ])('denies the current stored recipe at its execution point: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
@@ -234,21 +221,15 @@ eval "$CMD"`,
     `cat <<'SH' | sh
 xcrun simctl boot DEVICE
 SH`,
+    `cat <<'SH' |
+echo safe
+SH
+xcrun simctl shutdown DEVICE`,
     `cat <<'SH' | bash -s
 xcrun simctl shutdown DEVICE
 SH`,
     `cat <<'SH' | env FOO=1 bash
 xcrun simctl erase DEVICE
-SH`,
-    // A trailing pipeline operator continues onto the next physical line. The
-    // continuation command is executable shell syntax, not heredoc body data.
-    `cat <<'SH' |
-xcrun simctl shutdown DEVICE
-SH`,
-    // The same multiline pipeline still hands the eventual body to bash.
-    `cat <<'SH' |
-bash
-xcrun simctl shutdown DEVICE
 SH`,
     `cat <<'SH' | bash | cat
 open -a Simulator
@@ -294,6 +275,15 @@ DATA`,
 xcrun simctl shutdown DEVICE
 DATA`,
     `cat <<'SH' | bash -s $((1 << 2))
+xcrun simctl shutdown DEVICE
+SH`,
+    `cat <<'SH' | bash -s $[1 << 2]
+xcrun simctl shutdown DEVICE
+SH`,
+    `cat <<'SH' | bash -o pipefail
+xcrun simctl shutdown DEVICE
+SH`,
+    `cat <<'SH' | bash -O extglob
 xcrun simctl shutdown DEVICE
 SH`,
     `cat <<'DATA' | bash -s $(printf foo < /tmp/x)
@@ -421,12 +411,18 @@ EOF`,
 xcrun simctl shutdown DEVICE
 open -a Simulator
 EOF`,
-    // A multiline pipeline can consume a heredoc as ordinary data. Once the
-    // continuation command is retained, the data body must still disappear.
+    // A trailing pipe does not make the next physical line a consumer: it is
+    // still heredoc body data. The command after the delimiter is separate.
+    `cat <<'SH' |
+xcrun simctl shutdown DEVICE
+SH
+bash`,
     `cat <<'DATA' |
-wc -l
 xcrun simctl shutdown DEVICE
 DATA`,
+    `cat <<$'EOF' >/dev/null
+xcrun simctl shutdown DEVICE
+EOF`,
     // A commit message written through a heredoc is stdin data, never argv. A
     // line starting with a Markdown backtick span used to read as an executable
     // position filled by an unresolvable expansion, which denied the commit and

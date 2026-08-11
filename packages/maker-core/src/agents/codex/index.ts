@@ -5247,6 +5247,8 @@ export class CodexAgent extends BaseAgent {
       resolve: (decision: ApprovalDecision) => void;
       kind: 'commandExecution' | 'fileChange' | 'mcpServerElicitation';
       settled: boolean;
+      turnId: string | null;
+      itemId?: string;
       /** prompt-each-time 高风险审批: 宽松模式也必须弹 UI, dismissAllPending('allow') 不得放行 */
       forcePrompt?: boolean;
     }
@@ -5478,7 +5480,11 @@ export class CodexAgent extends BaseAgent {
       requestId: string,
       kind: 'commandExecution' | 'fileChange' | 'mcpServerElicitation',
       req: InteractionRequest,
-      opts?: { forcePrompt?: boolean; autoReviewAction?: ReviewableAction },
+      opts?: {
+        forcePrompt?: boolean;
+        autoReviewAction?: ReviewableAction;
+        itemId?: string;
+      },
     ): Promise<ApprovalDecision> {
       const timingPauseId = `approval:${kind}:${requestId}`;
       return withCodexGenerationPaused(requestThreadId, turnId, timingPauseId, async () => {
@@ -5560,7 +5566,14 @@ export class CodexAgent extends BaseAgent {
             ? { ...req, suggestions: undefined }
             : req;
         return await new Promise<ApprovalDecision>((resolve) => {
-          const entry: PendingEntry = { resolve, kind, settled: false, forcePrompt };
+          const entry: PendingEntry = {
+            resolve,
+            kind,
+            settled: false,
+            turnId,
+            ...(opts?.itemId ? { itemId: opts.itemId } : {}),
+            forcePrompt,
+          };
           pendingApprovals.set(requestId, entry);
           const finalize = (d: ApprovalDecision) => {
             if (entry.settled) return;
@@ -6269,10 +6282,18 @@ export class CodexAgent extends BaseAgent {
           existingDenial.reason = hostPolicy.reason;
           existingDenial.itemIds.add(params.itemId);
         } else {
+          const preexistingItemIds = new Set(
+            observedModelItemIdsByTurn.get(params.turnId) ?? [],
+          );
+          for (const pending of pendingApprovals.values()) {
+            if (pending.turnId === params.turnId && pending.itemId) {
+              preexistingItemIds.add(pending.itemId);
+            }
+          }
           approvalPolicyDeniedTurnReasons.set(params.turnId, {
             reason: hostPolicy.reason,
             itemIds: new Set([params.itemId]),
-            preexistingItemIds: new Set(observedModelItemIdsByTurn.get(params.turnId) ?? []),
+            preexistingItemIds,
           });
         }
         // Declining without ever showing the user why renders as a bare failed
@@ -6308,6 +6329,7 @@ export class CodexAgent extends BaseAgent {
               ? { cwd: opts.workingDir }
               : { cwdUnknown: true }),
         },
+        itemId: params.itemId,
       });
       return { decision };
     };
@@ -6330,7 +6352,10 @@ export class CodexAgent extends BaseAgent {
         description: params.reason ?? undefined,
         suggestions: codexSessionApprovalSuggestions(),
         metadata: params.reason ? { reason: params.reason } : undefined,
-      }, { autoReviewAction: { kind: 'file-write', path: params.grantRoot ?? undefined } });
+      }, {
+        autoReviewAction: { kind: 'file-write', path: params.grantRoot ?? undefined },
+        itemId: params.itemId,
+      });
       return { decision };
     };
 
@@ -6631,7 +6656,7 @@ export class CodexAgent extends BaseAgent {
         description: params.reason ?? undefined,
         suggestions: codexSessionApprovalSuggestions(),
         metadata: params.reason ? { reason: params.reason } : undefined,
-      });
+      }, { itemId: params.itemId ?? undefined });
       if (decision === 'accept') {
         return { permissions: params.permissions as Record<string, unknown>, scope: 'turn' };
       }
