@@ -85,6 +85,15 @@ describeMac('embedded iOS Simulator shell policy', () => {
     'exec -cl -a label xcrun simctl erase DEVICE',
     // A shell option that takes a value must not be read as the script operand.
     "bash -o pipefail -c 'xcrun simctl shutdown DEVICE'",
+    "bash -O extglob -c 'xcrun simctl shutdown DEVICE'",
+    "bash +O extglob -c 'xcrun simctl boot DEVICE'",
+    "zsh -o extendedglob -c 'xcrun simctl shutdown DEVICE'",
+    // An assignment builtin stores a recipe just like a bare `NAME=value`.
+    `export CMD='xcrun simctl shutdown DEVICE'; eval "$CMD"`,
+    `readonly CMD='xcrun simctl boot DEVICE'; eval "$CMD"`,
+    `declare CMD='open -a Simulator'; eval "$CMD"`,
+    `typeset CMD='xcrun simctl erase DEVICE'; eval "$CMD"`,
+    `export -p CMD='xcrun simctl boot DEVICE'; eval "$CMD"`,
     // Removing heredoc region reduction also removed the ways it could swallow a
     // real recipe: a marker inside a comment, and a CRLF delimiter that never
     // matched. Body lines are now ordinary segments.
@@ -319,6 +328,13 @@ check()
     'sh ./run.sh -c "xcrun simctl boot DEVICE"',
     "zsh tools/x.zsh -c 'open -a Simulator'",
     'bash ./build.sh --release',
+    // `command -v` / `-V` describe their operands; nothing is executed, so the
+    // operands must not be reclassified as the invocation they name.
+    'command -v simctl shutdown',
+    'command -V simctl',
+    'command -v xcrun simctl',
+    'command -pv simctl boot',
+    'export PATH=/usr/bin:$PATH; echo ok',
   ])('allows an ordinary command whose shape is not an executable: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });

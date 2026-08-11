@@ -241,6 +241,26 @@ interface UnwrappedCommand {
   assignedValues: string[];
 }
 
+/** Builtins that declare `NAME=value`, an equally standard way to store a recipe. */
+const SHELL_ASSIGNMENT_BUILTINS = new Set([
+  'declare',
+  'export',
+  'local',
+  'readonly',
+  'typeset',
+]);
+
+/** `command -v` / `-V` only describe their operands; nothing is executed. */
+function isInspectionOnlyCommandBuiltin(tokens: string[]): boolean {
+  if (executableName(tokens[0]) !== 'command') return false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === '--' || !token.startsWith('-')) break;
+    if (/^-[A-Za-z]*[vV]/.test(token)) return true;
+  }
+  return false;
+}
+
 /** Peel documentation-style prefixes to reach the command word. */
 function unwrapCommand(input: string[]): UnwrappedCommand {
   const first = stripLeadingShellPreamble(stripShellControlTokens(input));
@@ -252,6 +272,21 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
     assignedValues.push(...peeled.assignedValues);
     if (tokens.length === 0) return { tokens, nestedShell: null, assignedValues };
     const head = executableName(tokens[0]);
+
+    if (isInspectionOnlyCommandBuiltin(tokens)) {
+      // Describing `simctl shutdown` is not running it; classifying the operands
+      // would deny an inspection that executes nothing.
+      return { tokens: [], nestedShell: null, assignedValues };
+    }
+    if (SHELL_ASSIGNMENT_BUILTINS.has(head)) {
+      // `export CMD='xcrun simctl …'` stores the recipe just like a bare
+      // assignment, so its operands feed the same assigned-value path.
+      for (const token of tokens.slice(1)) {
+        const assignment = /^[A-Za-z_][A-Za-z0-9_]*=([\s\S]*)$/.exec(token);
+        if (assignment) assignedValues.push(assignment[1] ?? '');
+      }
+      return { tokens: [], nestedShell: null, assignedValues };
+    }
 
     if (SHELL_EXECUTABLES.has(head)) {
       // Only leading options belong to the shell. `bash ./run.sh -c 'x'` passes
@@ -265,9 +300,9 @@ function unwrapCommand(input: string[]): UnwrappedCommand {
         if (/^-[A-Za-z]*c[A-Za-z]*$/.test(token)) {
           return { tokens: [], nestedShell: tokens[index + 1] ?? '', assignedValues };
         }
-        // `-o name` / `+o name` take a value; skipping one token would read the
-        // option's value as the script operand and end the scan early.
-        index += /^[-+]o$/.test(token) ? 2 : 1;
+        // `-o name` and `-O shopt_option` take a value; skipping one token would
+        // read the option's value as the script operand and end the scan early.
+        index += /^[-+][oO]$/.test(token) ? 2 : 1;
       }
       return { tokens, nestedShell: null, assignedValues };
     }
