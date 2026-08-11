@@ -315,6 +315,8 @@ check()
     "rg -n foo --glob '*.{ts,tsx}' apps",
     'grep -rEn "(foo|bar)" apps',
     "awk '{print $1}' /tmp/app.log",
+    'ls /tmp/[abc]*.log',
+    'cp file.{ts,ts.bak}',
   ])('allows an ordinary command whose shape is not an executable: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
@@ -356,6 +358,15 @@ SH`,
     'sim$(printf c)tl shutdown DEVICE',
     'x$(printf c)run simctl shutdown DEVICE',
     'sim`printf c`tl shutdown DEVICE',
+    // A character class or brace list holds mutually exclusive candidates, so
+    // merging their contents into the core would invent a literal that matches
+    // nothing and hide the name the shell can expand to.
+    '/usr/bin/[sx]crun s[ai]mctl shutdown DEVICE',
+    '/Applications/Xcode.app/Contents/Developer/usr/bin/[sx]imctl shutdown DEVICE',
+    '[sx]crun boot DEVICE',
+    's[ai]mctl shutdown DEVICE',
+    'x{cr,foo}un boot DEVICE',
+    's{imc,foo}tl shutdown DEVICE',
   ])('denies a command word whose executable name cannot be resolved: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });

@@ -685,6 +685,12 @@ function commandWordLiteralCore(token: string): string {
       // `si$(printf m)ctl`). Drop the remnant: a shorter core is the
       // fail-closed direction under the subsequence test below.
       .replace(/[$`][^\s]*$/, '')
+      // A character class or brace list holds mutually exclusive candidates, so
+      // its contents must go with its delimiters. Merging them invents a
+      // literal that matches nothing: `[sx]crun` would read as `sxcrun` and
+      // hide the `xcrun` the shell can expand to. Dropping the whole group
+      // leaves `crun`, which the subsequence test still catches.
+      .replace(/\[[^\]]*\]|\{[^}]*\}/g, '')
       .replace(/[*?[\]{}()^~]/g, '')
       .replace(/['"]/g, '')
   );
