@@ -661,6 +661,47 @@ interface HeredocRedirection {
   stripsTabs: boolean;
 }
 
+/**
+ * Skip a shell arithmetic expression while looking for heredoc operators.
+ *
+ * `<<` is also the arithmetic left-shift operator. Treating it as a heredoc
+ * opener makes the following physical lines look like the body for a marker
+ * named `2`, so a real command after the arithmetic expression can disappear
+ * from classification. Both `$(( ... ))` expansions and `(( ... ))` commands
+ * use the same balanced-parenthesis shape here.
+ */
+function skipArithmeticExpression(line: string, start: number): number {
+  let depth = 1;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  const expressionStart = line[start] === '$' ? start + 3 : start + 2;
+  for (let index = expressionStart; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (quote === char) quote = null;
+      else if (quote === null) quote = char;
+      continue;
+    }
+    if (quote) continue;
+    if (char === '(') {
+      depth += 1;
+      continue;
+    }
+    if (char !== ')') continue;
+    if (depth === 1 && line[index + 1] === ')') return index + 2;
+    depth -= 1;
+  }
+  return line.length;
+}
+
 /** Heredoc markers on one shell line, excluding quoted text, comments and `<<<`. */
 function heredocRedirections(line: string): HeredocRedirection[] {
   const redirections: HeredocRedirection[] = [];
@@ -682,6 +723,15 @@ function heredocRedirections(line: string): HeredocRedirection[] {
       continue;
     }
     if (quote) continue;
+    // `<<` inside `$(( ... ))` / `(( ... ))` is arithmetic left shift, not a
+    // shell heredoc. Skip the complete expression before looking for markers.
+    if (
+      (char === '$' && line[index + 1] === '(' && line[index + 2] === '(') ||
+      (char === '(' && line[index + 1] === '(')
+    ) {
+      index = skipArithmeticExpression(line, index) - 1;
+      continue;
+    }
     // In shell grammar `#` starts a comment when it begins a word. A marker in
     // that comment must not consume later commands as a fake heredoc body.
     if (char === '#' && (index === 0 || /[\s;&|()]/.test(line[index - 1]!))) break;
@@ -727,6 +777,111 @@ function heredocRedirections(line: string): HeredocRedirection[] {
   return redirections;
 }
 
+/** Find the closing parenthesis for a shell `$(...)`, `<(...)` or `>(...)`. */
+function skipShellSubstitution(input: string, start: number): number {
+  let depth = 1;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = start + 2; index < input.length; index += 1) {
+    const char = input[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (quote === char) quote = null;
+      else if (quote === null) quote = char;
+      continue;
+    }
+    if (quote !== null) continue;
+    if (char === '(') depth += 1;
+    else if (char === ')' && --depth === 0) return index;
+  }
+  return input.length - 1;
+}
+
+/** Find the closing backtick for an old-style shell command substitution. */
+function skipBacktickSubstitution(input: string, start: number): number {
+  let escaped = false;
+  for (let index = start + 1; index < input.length; index += 1) {
+    const char = input[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '`') return index;
+  }
+  return input.length - 1;
+}
+
+/** Whether a pipeline segment explicitly replaces its stdin source. */
+function hasUnquotedStdinRedirection(segment: string): boolean {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = 0; index < segment.length; index += 1) {
+    const char = segment[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (
+      (char === '$' && segment[index + 1] === '(' && segment[index + 2] === '(') ||
+      (char === '(' && segment[index + 1] === '(')
+    ) {
+      index = skipArithmeticExpression(segment, index) - 1;
+      continue;
+    }
+    if (
+      (char === '$' || char === '<' || char === '>')
+      && segment[index + 1] === '('
+    ) {
+      index = skipShellSubstitution(segment, index);
+      continue;
+    }
+    if (char === '`') {
+      index = skipBacktickSubstitution(segment, index);
+      continue;
+    }
+    if (char !== '<') continue;
+    const redirection = redirectionAt(segment, index);
+    if (redirection === null) continue;
+    // A descriptor other than 0 redirects a separate input channel and does
+    // not replace the pipeline's stdin. Cover both `2<file` and Bash's
+    // allocated-fd spelling `{fd}<file`.
+    const beforeOperator = segment.slice(0, index);
+    const explicitDescriptor =
+      /(?:^|[\s;&|()])(\d+)$/.exec(beforeOperator)?.[1]
+      ?? /(?:^|[\s;&|()])(\{[A-Za-z_][A-Za-z0-9_]*\})$/.exec(beforeOperator)?.[1]
+      ?? null;
+    if (explicitDescriptor !== null && explicitDescriptor !== '0') {
+      index += redirection.length - 1;
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 /** Whether the heredoc's own clause hands its body to a code-reading consumer. */
 function heredocBodyIsProgram(line: string, marker: string): boolean {
   const segments = shellSegments(line);
@@ -735,6 +890,9 @@ function heredocBodyIsProgram(line: string, marker: string): boolean {
   for (let index = openingIndex; index < segments.length; index += 1) {
     const segment = segments[index]!;
     if (index > openingIndex && segment.precedingOperator !== '|') break;
+    // A downstream stdin redirection takes precedence over the pipe, so the
+    // current heredoc body cannot become that command's input program.
+    if (index > openingIndex && hasUnquotedStdinRedirection(segment.command)) break;
     if (
       consumesStdinAsProgram(
         tokenizeHeredocConsumer(segment.command.replace(marker, ' ')),

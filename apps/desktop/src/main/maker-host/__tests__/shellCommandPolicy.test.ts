@@ -89,6 +89,10 @@ describeMac('embedded iOS Simulator shell policy', () => {
     // following command, and CRLF delimiters must end the data region correctly.
     `echo hi # <<'EOF'\nxcrun simctl shutdown DEVICE`,
     `cat <<'EOF'\r\ntext\r\nEOF\r\nxcrun simctl shutdown DEVICE`,
+    // Arithmetic left-shift uses the same `<<` spelling as a heredoc opener;
+    // it must not make the following command look like a body for delimiter 2.
+    `echo $((1 << 2))\nxcrun simctl shutdown DEVICE`,
+    `(( 1 << 2 ))\nxcrun simctl shutdown DEVICE`,
   ])('denies a literal recipe behind a documentation-style prefix: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
@@ -234,6 +238,20 @@ SH`,
     `cat <<'SH' | bash 2>/dev/null
 open -a Simulator
 SH`,
+    // A non-zero fd redirection leaves stdin connected to the pipeline, so the
+    // downstream shell still executes the producer's body.
+    `cat <<'DATA' | bash 2<err
+xcrun simctl shutdown DEVICE
+DATA`,
+    `cat <<'DATA' | bash {fd}<err
+xcrun simctl shutdown DEVICE
+DATA`,
+    `cat <<'SH' | bash -s $((1 << 2))
+xcrun simctl shutdown DEVICE
+SH`,
+    `cat <<'DATA' | bash -s $(printf foo < /tmp/x)
+xcrun simctl shutdown DEVICE
+DATA`,
     // An unquoted delimiter still expands, so the body's substitutions run.
     `cat <<MSG
 $(xcrun simctl boot DEVICE)
@@ -434,6 +452,8 @@ check()
     'i=0; (( i++ )); echo "$i"',
     '(( $# > 0 )) && echo has-args',
     '(( $? == 0 )) && echo ok',
+    'echo $((1 << 2))',
+    '(( 1 << 2 ))',
     'i=0; while (( i < 3 )); do echo "$i"; i=$((i+1)); done',
     'if (( count > 0 )); then echo ready; fi',
   ])('allows shell arithmetic with no Simulator evidence: %s', (command) => {
@@ -590,6 +610,11 @@ PY`,
 import os
 os.system("xcr" + "un" + " sim" + "ctl shutdown DEVICE")
 PY`,
+    `cat <<'DATA' | bash <<'CODE'
+xcrun simctl shutdown DEVICE
+DATA
+echo safe
+CODE`,
     `awk 'BEGIN { system("xcr" "un" " sim" "ctl shutdown DEVICE") }'`,
     'xcr$TAIL boot DEVICE',
     'sim$TAIL shutdown DEVICE',
