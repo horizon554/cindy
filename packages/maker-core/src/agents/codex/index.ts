@@ -7932,12 +7932,36 @@ export class CodexAgent extends BaseAgent {
       // 已经 return, 所以退避中的正常重投(死 turn 恒有墓碑)不会被误撤。
       revokeOverloadRetryOnTerminalSettle(`turn_${turn.status}`);
 
+      // A policy denial is authoritative for every terminal status, not just the
+      // abort-shaped one. Our `turn/interrupt` is asynchronous, so a trusted
+      // prohibited command can finish first and Codex then reports the turn as
+      // `completed`; consuming the reason only in the failure branch would emit a
+      // plain `done`, let the renderer clear the non-terminal warning
+      // (`recoverableError: isTurnComplete ? null : …`) and leave the user with a
+      // successful outcome even though the command ran and the policy fired.
+      const policyDenialReason = policyDeniedTurnReasons.get(turn.id);
+      if (policyDenialReason !== undefined) {
+        policyDeniedTurnReasons.delete(turn.id);
+        eventQueue.push({
+          type: 'error',
+          data: { message: policyDenialReason, isTerminal: true },
+          source: 'codex',
+        });
+      }
+
       if (turn.status === 'failed' || turn.status === 'interrupted') {
         // 失败 / 中断的 plan turn 不发审批 — 半截计划没有审批意义, 循环就此结束。
         proposedPlanText = null;
         planCycleActive = false;
         currentTurnPlanModeActive = false;
+<<<<<<< HEAD
         if (turn.error?.message) {
+=======
+        if (policyDenialReason !== undefined) {
+          // Already reported above as the authoritative terminal outcome; the
+          // interrupt-derived message must not overwrite it.
+        } else if (turn.error?.message) {
+>>>>>>> 503fb2240 (fix(ios-simulator): make the policy denial authoritative for every terminal status)
           eventQueue.push({
             type: 'error',
             data: { message: turn.error.message, isTerminal: true },
