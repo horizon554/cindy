@@ -3040,9 +3040,11 @@ export class CodexAgent extends BaseAgent {
     // statuses cannot look like a successful run. The interrupt-origin map above
     // remains authoritative for abort-shaped completions and explicit Stop.
     const policyDeniedTurnReasons = new Map<string, string>();
-    // Approval declines happen before execution and may recover into a normal
-    // completed turn, so this reason only owns failed/interrupted completions.
-    const approvalPolicyDeniedTurnReasons = new Map<string, string>();
+    // Approval can be declined before execution starts. Codex may still recover
+    // and complete the turn, so this reason only owns abort-shaped completions.
+    // Keep the declined item id too: app-server can still emit that item's
+    // completion after the decline, which is not evidence of recovery.
+    const approvalPolicyDeniedTurnReasons = new Map<string, { reason: string; itemId: string }>();
     // daemon 后端 retry-loop 的终局升级 (issue #677): 远端摸不到 Codex 后端时
     // daemon 无限 willRetry, turn 永不收口。同 turn 重试超阈值 → 合成终态错误,
     // 走与终态 error 完全相同的收口路径 (terminalErroredTurnIds + Done status)。
@@ -6247,7 +6249,10 @@ export class CodexAgent extends BaseAgent {
         // The decline is followed by an abort-shaped turn completion. Keep the
         // policy reason attached to this turn so completion cannot replace it
         // with a generic cancellation/error message.
-        approvalPolicyDeniedTurnReasons.set(params.turnId, hostPolicy.reason);
+        approvalPolicyDeniedTurnReasons.set(params.turnId, {
+          reason: hostPolicy.reason,
+          itemId: params.itemId,
+        });
         // Declining without ever showing the user why renders as a bare failed
         // command, which is indistinguishable from a cancellation. Surface the
         // product reason so the denial is attributed to the policy, not the user.
@@ -7963,7 +7968,7 @@ export class CodexAgent extends BaseAgent {
         interruptOrigin?.source === 'user-stop'
           ? undefined
           : policyDeniedTurnReasons.get(turn.id);
-      const approvalPolicyDenialReason = approvalPolicyDeniedTurnReasons.get(turn.id);
+      const approvalPolicyDenialReason = approvalPolicyDeniedTurnReasons.get(turn.id)?.reason;
       const policyDenialReason =
         startedPolicyDenialReason
         ?? ((turn.status === 'failed' || turn.status === 'interrupted')
@@ -8103,7 +8108,9 @@ export class CodexAgent extends BaseAgent {
     // causes. Once the same turn produces model work or starts a replacement
     // item, a later failure/interruption belongs to that continuation and must
     // not be reported as the stale Simulator-policy denial.
-    const clearApprovalPolicyDenialOnProgress = (turnId: string): void => {
+    const clearApprovalPolicyDenialOnProgress = (turnId: string, itemId?: string): void => {
+      const denial = approvalPolicyDeniedTurnReasons.get(turnId);
+      if (!denial || denial.itemId === itemId) return;
       approvalPolicyDeniedTurnReasons.delete(turnId);
     };
 
@@ -9080,7 +9087,7 @@ export class CodexAgent extends BaseAgent {
           return;
         }
         if (itemRepresentsModelWork(params.item)) {
-          clearApprovalPolicyDenialOnProgress(params.turnId);
+          clearApprovalPolicyDenialOnProgress(params.turnId, params.item.id);
         }
         const shellCommand = shellCommandFromCodexItem(params.item);
         if (shellCommand) {
@@ -9189,7 +9196,7 @@ export class CodexAgent extends BaseAgent {
           return;
         }
         if (itemRepresentsModelWork(params.item)) {
-          clearApprovalPolicyDenialOnProgress(params.turnId);
+          clearApprovalPolicyDenialOnProgress(params.turnId, params.item.id);
           producedOutputTurnIds.add(params.turnId);
         }
         noteActiveToolContext(params.item, params.turnId);
@@ -9243,7 +9250,7 @@ export class CodexAgent extends BaseAgent {
         }
         if (collabTerminalKey) handledCollabTerminalItemIds.add(collabTerminalKey);
         if (itemRepresentsModelWork(params.item)) {
-          clearApprovalPolicyDenialOnProgress(params.turnId);
+          clearApprovalPolicyDenialOnProgress(params.turnId, params.item.id);
           producedOutputTurnIds.add(params.turnId);
         }
         noteActiveToolContext(params.item, params.turnId);
@@ -9309,7 +9316,7 @@ export class CodexAgent extends BaseAgent {
           modelWork: true,
         })) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
-        clearApprovalPolicyDenialOnProgress(params.turnId);
+        clearApprovalPolicyDenialOnProgress(params.turnId, params.itemId);
         producedOutputTurnIds.add(params.turnId);
         translateAgentMessageDelta(params, eventQueue, { rt: translatorRt, log });
       },
@@ -9325,7 +9332,7 @@ export class CodexAgent extends BaseAgent {
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.reasoningSummaryTextDelta?.(params), { modelWork: true })) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
         // thinking 流也算产出：模型已经在这一轮里工作了，整体重放不再等价。
-        clearApprovalPolicyDenialOnProgress(params.turnId);
+        clearApprovalPolicyDenialOnProgress(params.turnId, params.itemId);
         producedOutputTurnIds.add(params.turnId);
         translateReasoningSummaryTextDelta(params, eventQueue, { rt: translatorRt, log });
       },
@@ -9333,7 +9340,7 @@ export class CodexAgent extends BaseAgent {
         // thinking 流同样算产出(与非缓冲路径一致)。
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.reasoningSummaryPartAdded?.(params), { modelWork: true })) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
-        clearApprovalPolicyDenialOnProgress(params.turnId);
+        clearApprovalPolicyDenialOnProgress(params.turnId, params.itemId);
         producedOutputTurnIds.add(params.turnId);
         translateReasoningSummaryPartAdded(params, eventQueue, { rt: translatorRt, log });
       },
@@ -9341,7 +9348,7 @@ export class CodexAgent extends BaseAgent {
         // thinking 流同样算产出(与非缓冲路径一致)。
         if (enqueueIfBufferedTurn(params.turnId, () => handlers.reasoningTextDelta?.(params), { modelWork: true })) return;
         if (shouldIgnoreStaleTurnEvent(params.turnId)) return;
-        clearApprovalPolicyDenialOnProgress(params.turnId);
+        clearApprovalPolicyDenialOnProgress(params.turnId, params.itemId);
         producedOutputTurnIds.add(params.turnId);
         translateReasoningTextDelta(params, eventQueue, { rt: translatorRt, log });
       },

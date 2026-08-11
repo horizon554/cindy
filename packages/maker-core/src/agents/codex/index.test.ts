@@ -13070,8 +13070,8 @@ describe('CodexAgent MCP thread context hooks', () => {
       permissionMode: 'bypassPermissions',
     });
     const handlers = host.getThreadHandlers();
-    if (!handlers?.commandExecutionApproval || !handlers.turnCompleted) {
-      throw new Error('expected commandExecutionApproval and turnCompleted handlers');
+    if (!handlers?.commandExecutionApproval || !handlers.itemCompleted || !handlers.turnCompleted) {
+      throw new Error('expected commandExecutionApproval, itemCompleted and turnCompleted handlers');
     }
     const events: AgentEvent[] = [];
     const collectEvents = (async () => {
@@ -13087,6 +13087,19 @@ describe('CodexAgent MCP thread context hooks', () => {
         cwd: '/repo',
       }),
     ).resolves.toEqual({ decision: 'decline' });
+    // A declined command may still emit its own completion before the
+    // abort-shaped turn completion. That is not recovery progress and must
+    // not clear the policy reason.
+    handlers.itemCompleted({
+      threadId: 'start-thread-id',
+      turnId: 'turn-approval-policy',
+      item: {
+        id: 'cmd-approval-policy',
+        type: 'commandExecution',
+        command: 'open -a Simulator',
+        cwd: '/repo',
+      },
+    });
     handlers.turnCompleted({
       threadId: 'start-thread-id',
       turn: {
