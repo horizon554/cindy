@@ -3035,11 +3035,6 @@ export class CodexAgent extends BaseAgent {
         }
       | { source: 'user-stop' }
     >();
-    // A started command can race the asynchronous interrupt and still report a
-    // completed/failed turn. Keep its policy reason separately so those terminal
-    // statuses cannot look like a successful run. The interrupt-origin map above
-    // remains authoritative for abort-shaped completions and explicit Stop.
-    const policyDeniedTurnReasons = new Map<string, string>();
     // Approval can be declined before execution starts. Codex may still recover
     // and complete the turn, so this reason only owns abort-shaped completions.
     // Keep every declined item id: app-server can emit several approval
@@ -7753,10 +7748,6 @@ export class CodexAgent extends BaseAgent {
           currentTurnPlanModeActive = false;
         }
         terminalErroredTurnIds.add(turn.id);
-        // This branch emits the authoritative policy error itself, then recurses
-        // through the normal completion bookkeeping. Do not let that recursive
-        // pass replay the race-preservation marker a second time.
-        policyDeniedTurnReasons.delete(turn.id);
         eventQueue.push({
           type: 'error',
           data: {
@@ -7964,28 +7955,11 @@ export class CodexAgent extends BaseAgent {
       // 已经 return, 所以退避中的正常重投(死 turn 恒有墓碑)不会被误撤。
       revokeOverloadRetryOnTerminalSettle(`turn_${turn.status}`);
 
-      // A policy denial is authoritative for every terminal status, not just the
-      // abort-shaped one. Our `turn/interrupt` is asynchronous, so a trusted
-      // prohibited command can finish first and Codex then reports the turn as
-      // `completed`; consuming the reason only in the failure branch would emit a
-      // plain `done`, let the renderer clear the non-terminal warning
-      // (`recoverableError: isTurnComplete ? null : …`) and leave the user with a
-      // successful outcome even though the command ran and the policy fired.
-      // A started command is authoritative for every terminal status because
-      // interrupt is asynchronous. An approval decline can recover into a
-      // normal completed turn, so it only owns abort-shaped completions. An
-      // explicit user Stop suppresses any stale policy attribution.
-      const startedPolicyDenialReason =
-        interruptOrigin?.source === 'user-stop'
-          ? undefined
-          : policyDeniedTurnReasons.get(turn.id);
       const approvalPolicyDenialReason = approvalPolicyDeniedTurnReasons.get(turn.id)?.reason;
       const policyDenialReason =
-        startedPolicyDenialReason
-        ?? ((turn.status === 'failed' || turn.status === 'interrupted')
+        (turn.status === 'failed' || turn.status === 'interrupted')
           ? approvalPolicyDenialReason
-          : undefined);
-      policyDeniedTurnReasons.delete(turn.id);
+          : undefined;
       approvalPolicyDeniedTurnReasons.delete(turn.id);
       if (policyDenialReason !== undefined) {
         eventQueue.push({
@@ -9124,7 +9098,6 @@ export class CodexAgent extends BaseAgent {
             ) {
               return;
             }
-            policyDeniedTurnReasons.set(params.turnId, hostPolicy.reason);
             log.warn('command execution interrupted by host policy', {
               turnId: params.turnId,
               reason: hostPolicy.reason,
