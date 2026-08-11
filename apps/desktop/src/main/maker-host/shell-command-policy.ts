@@ -719,6 +719,36 @@ function skipArithmeticExpression(line: string, start: number): number {
   return line.length;
 }
 
+/** Skip Bash's legacy `$[ ... ]` arithmetic expansion. */
+function skipLegacyArithmeticExpression(line: string, start: number): number {
+  let depth = 1;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  for (let index = start + 2; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      if (quote === char) quote = null;
+      else if (quote === null) quote = char;
+      continue;
+    }
+    if (quote) continue;
+    if (char === '[') {
+      depth += 1;
+      continue;
+    }
+    if (char === ']' && --depth === 0) return index + 1;
+  }
+  return line.length;
+}
+
 /** Heredoc markers on one shell line, excluding quoted text, comments and `<<<`. */
 function heredocRedirections(line: string): HeredocRedirection[] {
   const redirections: HeredocRedirection[] = [];
@@ -740,13 +770,17 @@ function heredocRedirections(line: string): HeredocRedirection[] {
       continue;
     }
     if (quote) continue;
-    // `<<` inside `$(( ... ))` / `(( ... ))` is arithmetic left shift, not a
-    // shell heredoc. Skip the complete expression before looking for markers.
+    // `<<` inside arithmetic syntax is left shift, not a shell heredoc. Skip
+    // both current `$(( ... ))` / `(( ... ))` and Bash's legacy `$[ ... ]`.
     if (
       (char === '$' && line[index + 1] === '(' && line[index + 2] === '(') ||
       (char === '(' && line[index + 1] === '(')
     ) {
       index = skipArithmeticExpression(line, index) - 1;
+      continue;
+    }
+    if (char === '$' && line[index + 1] === '[') {
+      index = skipLegacyArithmeticExpression(line, index) - 1;
       continue;
     }
     // In shell grammar `#` starts a comment when it begins a word. A marker in
@@ -1006,8 +1040,11 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
     if (containsSimulatorRecipe(nested, depth + 1)) return true;
   }
   const assignments = new Map<string, string[]>();
-  const referencedAssignmentContainsRecipe = (reference: string): boolean => {
-    for (const [name, values] of assignments) {
+  const referencedAssignmentContainsRecipe = (
+    reference: string,
+    visibleAssignments: Map<string, string[]> = assignments,
+  ): boolean => {
+    for (const [name, values] of visibleAssignments) {
       // The name matched `[A-Za-z_][A-Za-z0-9_]*`, so it carries no regex syntax.
       if (!new RegExp(`\\$\\{?${name}\\b`).test(reference)) continue;
       if (values.some((value) => containsSimulatorRecipe(value, depth + 1))) return true;
@@ -1016,6 +1053,7 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
   };
   for (const segment of shellSegments(executableCommand)) {
     const unwrapped = unwrapCommand(tokenizeShellSegment(segment.command));
+    const commandScopedAssignments = new Map<string, string[]>();
     // Shell assignments replace the previous value before the command in this
     // segment runs. A `;`/newline-separated assignment therefore supersedes the
     // previous value, while a conditional, pipeline or background edge can skip
@@ -1028,21 +1066,35 @@ function containsSimulatorRecipe(command: string, depth = 0): boolean {
         && unwrapped.nestedShell === null;
       if (persistentAssignment) {
         assignments.set(assignment.name, [assignment.value]);
+      } else if (unwrapped.tokens.length > 0 || unwrapped.nestedShell !== null) {
+        // A leading assignment shadows the exported value only for this
+        // command. Use its last value while classifying the child, then leave
+        // the parent-shell possibilities unchanged for later segments.
+        commandScopedAssignments.set(assignment.name, [assignment.value]);
       } else {
         const possibleValues = assignments.get(assignment.name) ?? [];
         possibleValues.push(assignment.value);
         assignments.set(assignment.name, possibleValues);
       }
     }
+    const visibleAssignments = new Map(assignments);
+    for (const [name, values] of commandScopedAssignments) {
+      visibleAssignments.set(name, values);
+    }
     if (unwrapped.nestedShell !== null) {
       // `eval "$CMD"` and `sh -c "$CMD"` run a variable this scan cannot resolve.
-      if (referencedAssignmentContainsRecipe(unwrapped.nestedShell)) return true;
+      if (referencedAssignmentContainsRecipe(unwrapped.nestedShell, visibleAssignments)) {
+        return true;
+      }
       if (containsSimulatorRecipe(unwrapped.nestedShell, depth + 1)) return true;
       continue;
     }
     // A variable in the command word position is run as the command itself.
     const commandWord = unwrapped.tokens[0];
-    if (commandWord?.includes('$') && referencedAssignmentContainsRecipe(commandWord)) return true;
+    if (
+      commandWord?.includes('$')
+      && referencedAssignmentContainsRecipe(commandWord, visibleAssignments)
+    ) return true;
     if (isSimulatorRecipeArgv(unwrapped.tokens)) return true;
     if (containsInterpreterSimulatorPayload(unwrapped.tokens)) return true;
   }

@@ -7732,10 +7732,18 @@ export class CodexAgent extends BaseAgent {
      * update_plan 工具行 (避免同一份计划在聊天里出现两次)。
      * 非计划模式不拦截; 普通 Codex turn 也可能产生原生 plan item。
      */
-    function interceptProposedPlanItem(item: unknown): boolean {
+    function interceptProposedPlanItem(turnId: string, item: unknown): boolean {
       if (!currentTurnPlanModeActive) return false;
-      const candidate = item as { type?: unknown; text?: unknown } | null | undefined;
+      const candidate = item as {
+        id?: unknown;
+        type?: unknown;
+        text?: unknown;
+      } | null | undefined;
       if (!candidate || candidate.type !== 'plan') return false;
+      noteObservedModelItem(turnId, candidate);
+      if (typeof candidate.id === 'string') {
+        clearApprovalPolicyDenialOnProgress(turnId, candidate.id);
+      }
       if (typeof candidate.text === 'string') proposedPlanText = candidate.text;
       return true;
     }
@@ -9113,7 +9121,7 @@ export class CodexAgent extends BaseAgent {
           discardPendingSpawnLineageIds(reservedChildThreadIds);
           return;
         }
-        if (interceptProposedPlanItem(params.item)) {
+        if (interceptProposedPlanItem(params.turnId, params.item)) {
           discardPendingSpawnLineageIds(reservedChildThreadIds);
           return;
         }
@@ -9222,7 +9230,7 @@ export class CodexAgent extends BaseAgent {
           discardPendingSpawnLineageIds(reservedChildThreadIds);
           return;
         }
-        if (interceptProposedPlanItem(params.item)) {
+        if (interceptProposedPlanItem(params.turnId, params.item)) {
           discardPendingSpawnLineageIds(reservedChildThreadIds);
           return;
         }
@@ -9276,7 +9284,7 @@ export class CodexAgent extends BaseAgent {
           }
           isLateCollabTerminal = true;
         }
-        if (interceptProposedPlanItem(params.item)) {
+        if (interceptProposedPlanItem(params.turnId, params.item)) {
           discardPendingSpawnLineageIds(reservedChildThreadIds);
           return;
         }

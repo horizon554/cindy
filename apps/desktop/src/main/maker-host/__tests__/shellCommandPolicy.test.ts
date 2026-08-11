@@ -93,6 +93,7 @@ describeMac('embedded iOS Simulator shell policy', () => {
     // it must not make the following command look like a body for delimiter 2.
     `echo $((1 << 2))\nxcrun simctl shutdown DEVICE`,
     `(( 1 << 2 ))\nxcrun simctl shutdown DEVICE`,
+    `echo $[1 << 2]\nxcrun simctl shutdown DEVICE`,
   ])('denies a literal recipe behind a documentation-style prefix: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });
@@ -161,6 +162,9 @@ eval "$CMD"`,
     // A lone background separator is complete before the newline, so the next
     // assignment is unconditional in the parent shell and replaces the value.
     `CMD='xcrun simctl shutdown DEVICE'; false &\nCMD='echo safe'; eval "$CMD"`,
+    // A command-scoped assignment shadows the exported parent value only for
+    // that child command.
+    `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' sh -c '$CMD'`,
   ])('allows a stored recipe that nothing executes: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toBeUndefined();
   });
@@ -172,6 +176,7 @@ eval "$CMD"`,
     // An assignment attached to another command only changes that command's
     // environment; it must not replace the shell-scoped value used by eval.
     `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' /usr/bin/true; eval "$CMD"`,
+    `CMD='echo safe'; CMD='xcrun simctl shutdown DEVICE' sh -c '$CMD'`,
     // The later text is not a guaranteed replacement when control flow can skip
     // it or keep it inside a child scope, so the earlier value stays possible.
     `CMD='xcrun simctl shutdown DEVICE'; false && CMD='echo safe'; eval "$CMD"`,
@@ -470,6 +475,7 @@ check()
     '(( $# > 0 )) && echo has-args',
     '(( $? == 0 )) && echo ok',
     'echo $((1 << 2))',
+    'echo $[1 << 2]',
     '(( 1 << 2 ))',
     'i=0; while (( i < 3 )); do echo "$i"; i=$((i+1)); done',
     'if (( count > 0 )); then echo ready; fi',

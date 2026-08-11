@@ -13313,6 +13313,79 @@ describe('CodexAgent MCP thread context hooks', () => {
     expect(JSON.stringify(terminal)).not.toContain('aborted by user');
   });
 
+  it('clears an approval denial when a new native plan item continues the turn', async () => {
+    const policy = vi.fn(({ command }: { command: string }) =>
+      command === 'open -a Simulator'
+        ? { decision: 'deny' as const, reason: 'use the embedded iOS Simulator' }
+        : undefined,
+    );
+    const agent = new CodexAgent(createDeps({}, { getShellCommandPolicy: policy }));
+    const host = installFakeHost(agent, (method) =>
+      method === Method.TurnStart ? { turn: { id: 'turn-plan-after-denial' } } : undefined,
+    );
+    const handle = await agent.startSession({
+      sessionId: 'session-command-approval-policy-plan-continuation',
+      model: 'gpt-5.4',
+      workingDir: '/repo',
+      permissionMode: 'bypassPermissions',
+      planMode: true,
+    });
+    const handlers = host.getThreadHandlers();
+    if (!handlers?.commandExecutionApproval || !handlers.itemStarted || !handlers.turnCompleted) {
+      throw new Error('expected approval, itemStarted and turnCompleted handlers');
+    }
+    const events: AgentEvent[] = [];
+    const collectEvents = (async () => {
+      for await (const event of handle.events()) events.push(event);
+    })();
+
+    const turnId = 'turn-plan-after-denial';
+    await handle.send({ type: 'user', content: 'make a plan' });
+    await expect(
+      handlers.commandExecutionApproval({
+        threadId: 'start-thread-id',
+        turnId,
+        itemId: 'cmd-denied-before-plan',
+        command: 'open -a Simulator',
+        cwd: '/repo',
+      }),
+    ).resolves.toEqual({ decision: 'decline' });
+    handlers.itemStarted({
+      threadId: 'start-thread-id',
+      turnId,
+      item: {
+        id: 'plan-after-denial',
+        type: 'plan',
+        text: '1. inspect\n2. edit',
+      },
+    } as never);
+    handlers.turnCompleted({
+      threadId: 'start-thread-id',
+      turn: {
+        id: turnId,
+        status: 'failed',
+        error: { message: 'plan continuation failed' },
+      },
+    } as never);
+
+    await handle.close();
+    await collectEvents;
+    const terminal = events.filter(
+      (event) =>
+        (event as { type?: string }).type === 'error'
+        && (event as { data?: { isTerminal?: boolean } }).data?.isTerminal === true,
+    );
+    expect(terminal).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          message: 'plan continuation failed',
+          isTerminal: true,
+        }),
+      }),
+    ]);
+    expect(JSON.stringify(terminal)).not.toContain('use the embedded iOS Simulator');
+  });
+
   it('lets an approval-path denial recover to a normal completed turn', async () => {
     const policy = vi.fn(() => ({
       decision: 'deny' as const,
