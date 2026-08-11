@@ -195,6 +195,9 @@ eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' | /usr/bin/cat; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; (CMD='echo safe'); eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; if false; then CMD='echo safe'; fi; eval "$CMD"`,
+    // `local` fails outside a function, and function bodies are intentionally
+    // outside this literal-recipe parser. It cannot prove a top-level override.
+    `CMD='xcrun simctl shutdown DEVICE'; local CMD='echo safe'; eval "$CMD"`,
   ])('denies the current stored recipe at its execution point: %s', (command) => {
     expect(getDesktopShellCommandPolicy(command)).toMatchObject({ decision: 'deny' });
   });

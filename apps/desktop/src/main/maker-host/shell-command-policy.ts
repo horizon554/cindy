@@ -410,7 +410,6 @@ interface UnwrappedCommand {
 const SHELL_ASSIGNMENT_BUILTINS = new Set([
   'declare',
   'export',
-  'local',
   'readonly',
   'typeset',
 ]);
