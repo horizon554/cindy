@@ -50,6 +50,8 @@ interface ShellSegment {
   command: string;
   /** The operator that ran before this command; null for the first segment. */
   precedingOperator: ';' | '&&' | '||' | '|' | '&' | null;
+  /** The operator that separates this command from the next segment, if any. */
+  followingOperator: ';' | '&&' | '||' | '|' | '&' | null;
 }
 
 /** Split command lists without treating separators inside quotes as boundaries. */
@@ -62,7 +64,11 @@ function shellSegments(command: string): ShellSegment[] {
 
   const flush = (nextOperator: Exclude<ShellSegment['precedingOperator'], null>): void => {
     if (current.trim()) {
-      segments.push({ command: current.trim(), precedingOperator });
+      segments.push({
+        command: current.trim(),
+        precedingOperator,
+        followingOperator: nextOperator,
+      });
     }
     current = '';
     precedingOperator = nextOperator;
@@ -120,13 +126,18 @@ function shellSegments(command: string): ShellSegment[] {
     }
     current += char;
   }
-  if (current.trim()) segments.push({ command: current.trim(), precedingOperator });
+  if (current.trim())
+    segments.push({ command: current.trim(), precedingOperator, followingOperator: null });
   return segments;
 }
 
 /** Whether a segment's assignments definitely replace values in the current scope. */
 function assignmentDefinitelyRunsInCurrentScope(segment: ShellSegment): boolean {
   if (segment.precedingOperator !== null && segment.precedingOperator !== ';') return false;
+  // Assignments in a pipeline or background segment execute in a child shell.
+  // They must not be treated as replacing the value in the parent scope that a
+  // later command (for example `eval "$CMD"`) will read.
+  if (segment.followingOperator === '|' || segment.followingOperator === '&') return false;
   let quote: "'" | '"' | null = null;
   let escaped = false;
   let unquoted = '';

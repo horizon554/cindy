@@ -174,6 +174,10 @@ eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; false &&\nCMD='echo safe'; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; true ||\nCMD='echo safe'; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; printf ignored |\nCMD='echo safe'; eval "$CMD"`,
+    // Assignments in a pipeline or background segment run in a child shell;
+    // they cannot replace the parent value consumed by the later eval.
+    `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' & eval "$CMD"`,
+    `CMD='xcrun simctl shutdown DEVICE'; CMD='echo safe' | /usr/bin/cat; eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; (CMD='echo safe'); eval "$CMD"`,
     `CMD='xcrun simctl shutdown DEVICE'; if false; then CMD='echo safe'; fi; eval "$CMD"`,
   ])('denies the current stored recipe at its execution point: %s', (command) => {
