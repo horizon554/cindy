@@ -218,6 +218,7 @@ import {
 import {
   deactivateIOSSimulatorHost,
   getIOSSimulatorPluginStatus,
+  isIOSSimulatorHostRuntimeActive,
 } from '../mcp-integrations/ios-simulator.js';
 import type { GhostTrustRegistry } from './ghostSignature.js';
 import { GhostNotifySlot, sanitizeGhostNoticeText } from './notifySlot.js';
@@ -729,8 +730,14 @@ function hasEnabledIOSSimulatorCapability(ghosts = getGhostManager().list()): bo
 async function releaseIOSSimulatorAfterCapabilityLoss(
   wasEnabled: boolean,
   options: { projectWorkingDirs?: readonly string[] } = {},
+  retryIfHostActive = false,
 ): Promise<void> {
-  if (!wasEnabled || hasEnabledIOSSimulatorCapability()) return;
+  if (
+    (!wasEnabled && !(retryIfHostActive && isIOSSimulatorHostRuntimeActive())) ||
+    hasEnabledIOSSimulatorCapability()
+  ) {
+    return;
+  }
   try {
     await deactivateIOSSimulatorHost(options);
   } catch (error) {
@@ -4183,7 +4190,12 @@ async function uninstallGhostAndCleanupLocked(
         ? null
         : (prepareGhostUninstallLedgerCompletion?.(id) ?? null);
     const manager = getGhostManager();
-    const hadEnabledIOSSimulatorCapability = hasEnabledIOSSimulatorCapability(manager.list());
+    const ghostsBeforeUninstall = manager.list();
+    const hadEnabledIOSSimulatorCapability = hasEnabledIOSSimulatorCapability(ghostsBeforeUninstall);
+    const removedIOSSimulatorCapability = ghostsBeforeUninstall.some(
+      (ghost) =>
+        ghost.manifest.id === id && ghost.manifest.slots.includes('ios-simulator'),
+    );
     const runtime = getGhostRuntime();
     runtime.stop(id);
     getGhostNodeRuntimeBroker().stop(id);
@@ -4248,7 +4260,11 @@ async function uninstallGhostAndCleanupLocked(
     // 卸载刚落地,manager.list() 就是当下的全部事实(哪怕是空表)——标权威,
     // 好让「卸掉最后一个插件」也能把账本里的孤儿记录一并清掉。
     broadcastGhostsChanged(manager.list(), true);
-    await releaseIOSSimulatorAfterCapabilityLoss(hadEnabledIOSSimulatorCapability);
+    await releaseIOSSimulatorAfterCapabilityLoss(
+      hadEnabledIOSSimulatorCapability,
+      {},
+      removedIOSSimulatorCapability,
+    );
     if (recentIds) broadcastGhostRecentUsageChanged(recentIds);
     try {
       await completeLedger?.();
