@@ -20,6 +20,7 @@ export type ProjectPluginPolicyRegistry = Pick<
 /** Host dependencies for project-level plugin policy IPC handlers. */
 export interface ProjectPluginPolicyHandlerDeps {
   getPluginRegistry(): ProjectPluginPolicyRegistry;
+  runPolicyMutation?<T>(id: string, mutation: () => Promise<T>): Promise<T>;
   onProjectPolicyChanged?(input: {
     workingDir: string;
     id: string;
@@ -32,6 +33,8 @@ export function registerProjectPluginPolicyHandlers(
   registry: IpcHandlerRegistry,
   deps: ProjectPluginPolicyHandlerDeps,
 ): void {
+  const runMutation = <T>(id: string, mutation: () => Promise<T>): Promise<T> =>
+    deps.runPolicyMutation?.(id, mutation) ?? mutation();
   registry.handle(
     MAKER_INVOKE.PLUGINS_SET_PROJECT_ENABLED,
     async (_event, workingDir, id, enabled) => {
@@ -45,11 +48,13 @@ export function registerProjectPluginPolicyHandlers(
           'workingDir (string) + id (string) + enabled (boolean) required',
         );
       }
-      const ok = await deps.getPluginRegistry().setProjectEnabled(id, workingDir, enabled);
-      if (!ok) {
-        throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
-      }
-      await deps.onProjectPolicyChanged?.({ workingDir, id, effectiveEnabled: enabled });
+      await runMutation(id, async () => {
+        const ok = await deps.getPluginRegistry().setProjectEnabled(id, workingDir, enabled);
+        if (!ok) {
+          throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
+        }
+        await deps.onProjectPolicyChanged?.({ workingDir, id, effectiveEnabled: enabled });
+      });
     },
   );
 
@@ -57,11 +62,13 @@ export function registerProjectPluginPolicyHandlers(
     if (typeof workingDir !== 'string' || typeof id !== 'string') {
       throwIpcError('INVALID_PARAMS', 'workingDir (string) + id (string) required');
     }
-    const ok = await deps.getPluginRegistry().clearProjectEnabled(id, workingDir);
-    if (!ok) {
-      throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
-    }
-    const effectiveEnabled = deps.getPluginRegistry().isEnabled(id, workingDir);
-    await deps.onProjectPolicyChanged?.({ workingDir, id, effectiveEnabled });
+    await runMutation(id, async () => {
+      const ok = await deps.getPluginRegistry().clearProjectEnabled(id, workingDir);
+      if (!ok) {
+        throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
+      }
+      const effectiveEnabled = deps.getPluginRegistry().isEnabled(id, workingDir);
+      await deps.onProjectPolicyChanged?.({ workingDir, id, effectiveEnabled });
+    });
   });
 }

@@ -16,9 +16,7 @@ describe('market Ghost session boundary', () => {
   ).replace(/\r\n/g, '\n');
 
   it('requires the pre-approval session generation when acquiring the mutation lease', () => {
-    const captureStart = source.indexOf(
-      'function captureGhostMutationOwner(): ActiveAppSession {',
-    );
+    const captureStart = source.indexOf('function captureGhostMutationOwner(): ActiveAppSession {');
     const captureEnd = source.indexOf('\n}\n', captureStart);
     const captureBody = source.slice(captureStart, captureEnd);
     expect(captureBody).toContain('isAppSessionBoundaryPending()');
@@ -36,22 +34,13 @@ describe('market Ghost session boundary', () => {
   });
 
   it('captures before async inspection but leases only after Node authorization', () => {
-    const installStart = source.indexOf(
-      'export async function installOrUpdateMarketGhostPackage(',
-    );
-    const installEnd = source.indexOf(
-      '\n}\n\ntype GhostUninstallLedgerCompletion',
-      installStart,
-    );
+    const installStart = source.indexOf('export async function installOrUpdateMarketGhostPackage(');
+    const installEnd = source.indexOf('\n}\n\ntype GhostUninstallLedgerCompletion', installStart);
     const body = source.slice(installStart, installEnd);
 
-    const captureIndex = body.indexOf(
-      'const mutationOwner = captureGhostMutationOwner();',
-    );
+    const captureIndex = body.indexOf('const mutationOwner = captureGhostMutationOwner();');
     const inspectIndex = body.indexOf('await manager.inspect(cindyFilePath)');
-    const leaseIndex = body.indexOf(
-      'releaseMutation = beginGhostMutation(mutationOwner);',
-    );
+    const leaseIndex = body.indexOf('releaseMutation = beginGhostMutation(mutationOwner);');
 
     expect(captureIndex).toBeGreaterThan(-1);
     expect(captureIndex).toBeLessThan(inspectIndex);
@@ -60,13 +49,8 @@ describe('market Ghost session boundary', () => {
   });
 
   it('allows explicit local replacement and detaches market routing before landing', () => {
-    const updateStart = source.indexOf(
-      "ipcMain.handle('ghosts:update'",
-    );
-    const updateEnd = source.indexOf(
-      "ipcMain.handle('ghosts:pick-file'",
-      updateStart,
-    );
+    const updateStart = source.indexOf("ipcMain.handle('ghosts:update'");
+    const updateEnd = source.indexOf("ipcMain.handle('ghosts:pick-file'", updateStart);
     const body = source.slice(updateStart, updateEnd);
 
     const ledgerReadIndex = body.indexOf(
@@ -105,28 +89,23 @@ describe('market Ghost session boundary', () => {
     expect(body).toContain('suppressed: marketRecordWasSuppressed');
     expect(body).toContain('onPackagePlaced: () => {');
     expect(body).toContain('packagePlaced = true;');
-    expect(body).toContain('if (!packagePlaced) {\n            restoreMarketRecord();');
+    expect(body).toMatch(/if \(!packagePlaced\) \{\s+restoreMarketRecord\(\);/);
     expect(body).toContain('releaseMutation();');
     expect(body).not.toContain('GHOST_SOURCE_CONFLICT');
   });
 
   it('runs the final market callback before both initial install and update placement', () => {
-    const installStart = source.indexOf(
-      'async function installOrUpdateMarketGhostPackageLocked(',
-    );
-    const installEnd = source.indexOf(
-      '\n}\n\ntype GhostUninstallLedgerCompletion',
-      installStart,
-    );
+    const installStart = source.indexOf('async function installOrUpdateMarketGhostPackageLocked(');
+    const installEnd = source.indexOf('\n}\n\ntype GhostUninstallLedgerCompletion', installStart);
     const body = source.slice(installStart, installEnd);
     const initialBranch = body.slice(
-      body.indexOf('if (!installed) {'),
+      body.indexOf('if (!installedAtMutation) {'),
       body.indexOf('const runtime = getGhostRuntime();'),
     );
 
     expect(initialBranch.indexOf('expected.beforeCommitInLock?.();')).toBeGreaterThan(-1);
     expect(initialBranch.indexOf('expected.beforeCommitInLock?.();')).toBeLessThan(
-      initialBranch.indexOf('return installAndDock('),
+      initialBranch.indexOf('return installAndDockLocked('),
     );
     expect(body.match(/expected\.beforeCommitInLock\?\.\(\);/g)).toHaveLength(2);
 
@@ -137,7 +116,7 @@ describe('market Ghost session boundary', () => {
 
     expect(waitIndex).toBeGreaterThan(-1);
     expect(waitIndex).toBeLessThan(updateIndex);
-    const restoreIndex = body.indexOf('spawnIfResident(installed);');
+    const restoreIndex = body.indexOf('spawnIfResident(installedAtMutation);');
     expect(restoreIndex).toBeGreaterThan(updateIndex);
   });
 
@@ -152,7 +131,7 @@ describe('market Ghost session boundary', () => {
     const tryIndex = body.indexOf('try {\n        runtime.stop(inspected.manifest.id);');
     const updateIndex = body.indexOf('result = await manager.update(lizFilePath');
     const restoreIndex = body.indexOf(
-      'if (previousGhost) spawnIfResident(previousGhost);',
+      'if (previousGhostAtMutation) spawnIfResident(previousGhostAtMutation);',
     );
 
     expect(tryIndex).toBeGreaterThan(-1);
@@ -160,8 +139,64 @@ describe('market Ghost session boundary', () => {
     expect(waitIndex).toBeGreaterThan(-1);
     expect(waitIndex).toBeLessThan(updateIndex);
     expect(restoreIndex).toBeGreaterThan(waitIndex);
-    expect(body).toContain('finally {\n        releaseMutation();');
-    expect(body).toContain("throwIpcError('INTERNAL', 'Unable to verify the installed Plugin source');");
-    expect(body).toContain("throwIpcError('INTERNAL', 'Unable to detach the installed Plugin source');");
+    expect(body).toMatch(/finally \{\s+releaseMutation\(\);/);
+    expect(body).toContain(
+      "throwIpcError('INTERNAL', 'Unable to verify the installed Plugin source');",
+    );
+    expect(body).toContain(
+      "throwIpcError('INTERNAL', 'Unable to detach the installed Plugin source');",
+    );
+  });
+
+  it('orders install locking before the iOS capability queue and the owner mutation lease', () => {
+    const installStart = source.indexOf('export async function installAndDock(');
+    const installEnd = source.indexOf('\n}\n\nasync function installAndDockLocked(', installStart);
+    const installBody = source.slice(installStart, installEnd);
+    const installLockIndex = installBody.indexOf('withGhostInstallLock(opts.ghostId');
+    const installCapabilityIndex = installBody.indexOf('runIOSSimulatorManifestMutation(');
+
+    expect(installLockIndex).toBeGreaterThan(-1);
+    expect(installCapabilityIndex).toBeGreaterThan(installLockIndex);
+    expect(installBody).toContain('opts.incomingManifest');
+
+    const marketStart = source.indexOf('async function installOrUpdateMarketGhostPackageLocked(');
+    const marketEnd = source.indexOf('\n}\n\ntype GhostUninstallLedgerCompletion', marketStart);
+    const marketBody = source.slice(marketStart, marketEnd);
+    const capabilityIndex = marketBody.indexOf(
+      'releaseIOSMutation = await acquireIOSSimulatorManifestMutation(',
+    );
+    const leaseIndex = marketBody.indexOf('releaseMutation = beginGhostMutation(mutationOwner);');
+
+    expect(capabilityIndex).toBeGreaterThan(-1);
+    expect(leaseIndex).toBeGreaterThan(capabilityIndex);
+    expect(marketBody).toMatch(
+      /acquireIOSSimulatorManifestMutation\(\s*\[\s*installed\?\.manifest,\s*inspected\.canonicalManifest,?\s*\]/,
+    );
+    expect(marketBody).toContain('const installedAtMutation =');
+    expect(marketBody).toMatch(
+      /finally \{\s+releaseMutation\?\.\(\);\s+releaseIOSMutation\?\.\(\);/,
+    );
+  });
+
+  it('serializes local updates that add or remove the iOS slot and refreshes rollback state', () => {
+    const updateStart = source.indexOf("ipcMain.handle('ghosts:update'");
+    const updateEnd = source.indexOf("ipcMain.handle('ghosts:pick-file'", updateStart);
+    const body = source.slice(updateStart, updateEnd);
+    const installLockIndex = body.indexOf('withGhostInstallLock(inspected.manifest.id');
+    const capabilityIndex = body.indexOf(
+      'const releaseIOSMutation = await acquireIOSSimulatorManifestMutation(',
+    );
+    const leaseIndex = body.indexOf('const releaseMutation = beginGhostMutation(mutationOwner);');
+
+    expect(installLockIndex).toBeGreaterThan(-1);
+    expect(capabilityIndex).toBeGreaterThan(installLockIndex);
+    expect(leaseIndex).toBeGreaterThan(capabilityIndex);
+    expect(body).toMatch(
+      /acquireIOSSimulatorManifestMutation\(\s*\[\s*previousGhost\?\.manifest,\s*inspected\.canonicalManifest,?\s*\]/,
+    );
+    expect(body).toContain('const previousGhostAtMutation =');
+    expect(body).toContain('spawnIfResident(previousGhostAtMutation)');
+    expect(body).toContain('await releaseIOSSimulatorAfterCapabilityLoss(');
+    expect(body).toMatch(/finally \{\s+releaseMutation\(\);\s+releaseIOSMutation\(\);/);
   });
 });

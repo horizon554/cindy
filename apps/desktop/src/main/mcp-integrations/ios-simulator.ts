@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { Dirent } from 'node:fs';
+import { realpathSync, type Dirent } from 'node:fs';
 import { readdir, realpath, rm, stat } from 'node:fs/promises';
 import { release as hostOsRelease } from 'node:os';
 import path from 'node:path';
@@ -260,7 +260,11 @@ export interface IOSSimulatorHost {
     sessionIds?: readonly string[];
     projectWorkingDirs?: readonly string[];
     shouldReleaseProject?: (workingDir: string) => boolean;
+    /** User-default shutdown must also retire profile-scoped interrupted-create evidence. */
+    reconcilePendingCreates?: boolean;
   }): Promise<{ hostCanBeReleased: boolean; cleanedInstanceCount: number }>;
+  /** Atomically close global admission only when no Host-owned work remains. */
+  tryBeginIdleRelease(): boolean;
   reconcileOwnership(): Promise<void>;
   describeTools(sessionId: string): Promise<IOSSimulatorToolAvailabilityReport>;
   getStatus(sessionId: string): Promise<IOSSimulatorSessionStatus>;
@@ -332,6 +336,28 @@ interface IOSSimulatorSessionRemovalBarrierOperation {
   admissionEpoch: number;
   settled: Promise<void>;
   finish(): void;
+}
+
+interface IOSSimulatorCapabilityDeactivationScope {
+  scoped: boolean;
+  matchesSession(
+    sessionId: string,
+    physicalWorkingDir: string | null | undefined,
+    policyWorkingDir?: string | null | undefined,
+  ): boolean;
+}
+
+function canonicalIOSSimulatorProjectWorkingDir(raw: string | null | undefined): string | null {
+  const normalized = normalizeWorkingDirForProjectSettings(raw);
+  if (normalized === null) return null;
+  try {
+    return normalizeWorkingDirForProjectSettings(realpathSync.native(normalized));
+  } catch {
+    // A retired worktree can disappear before capability cleanup reaches it.
+    // Keep the stable normalized spelling so persisted ownership can still be
+    // matched and retired without following a replacement symlink.
+    return normalized;
+  }
 }
 
 function sessionError(
@@ -1067,6 +1093,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
     Set<IOSSimulatorSessionRemovalBarrierOperation>
   >();
   const sessionRemovalCleanupPromises = new Map<string, Promise<void>>();
+  const pendingSessionRemovalBarrierResolutions = new Map<string, number>();
   const blockedBuildInstances = new Set<string>();
   const instanceLifecycleBarriers = new Map<string, { epoch: number; pendingTeardowns: number }>();
   const mediaCapture = options.mediaCapture ?? new IOSSimulatorMediaCapture();
@@ -1116,8 +1143,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
     }
   >();
   const getOwnerScopeKey = options.getOwnerScopeKey ?? activeOwnerScopeKey;
-  const isOwnerBoundaryPending =
-    options.isOwnerBoundaryPending ?? isAppSessionBoundaryPending;
+  const isOwnerBoundaryPending = options.isOwnerBoundaryPending ?? isAppSessionBoundaryPending;
   const pendingCreateEvidence = options.pendingCreateEvidence ?? null;
   let ownershipReconciledScopeKey: string | null = null;
   // Persisted `viewerState` can only be stale on the first sweep that actually
@@ -1131,7 +1157,8 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
   let pendingCreateReconcilePromise: Promise<unknown> | null = null;
   let startupPendingCreateRecoveryAttempted = false;
   let disposePromise: Promise<void> | null = null;
-  let deactivationInProgress = false;
+  let globalDeactivationInProgress = false;
+  const deactivationPromises = new Set<Promise<unknown>>();
   const inspectRuntime = (): Promise<IOSSimulatorEnvironmentReport> =>
     runtime.inspect(runtimeInspectionExitController.signal);
   const canReconcilePendingCreates = options.canReconcilePendingCreates ?? (() => true);
@@ -1631,7 +1658,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
     }
   }
   const assertHostActive = (): void => {
-    if (disposePromise || deactivationInProgress) throw new IOSSimulatorHostDisposedError();
+    if (disposePromise || globalDeactivationInProgress) throw new IOSSimulatorHostDisposedError();
   };
   let driverManager = options.driverManager;
   const getDriverManager = () => {
@@ -1839,33 +1866,59 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
     if (!normalizedSessionId) {
       return sessionError(null, 'SESSION_CONTEXT_REQUIRED', 'A Cindy session is required.');
     }
-    const removalAdmissionEpoch = sessionRemovalAdmissionEpochs.get(normalizedSessionId) ?? 0;
-    const session = await getSession(normalizedSessionId);
-    if (!session) {
-      return sessionError(
+    const registerRemovalBarrier = options.registerRemovalBarrier === true;
+    if (registerRemovalBarrier) {
+      pendingSessionRemovalBarrierResolutions.set(
         normalizedSessionId,
-        'SESSION_NOT_FOUND',
-        'The Cindy session no longer exists.',
+        (pendingSessionRemovalBarrierResolutions.get(normalizedSessionId) ?? 0) + 1,
       );
     }
-    if (session.status && session.status !== 'active') {
-      return sessionError(
-        normalizedSessionId,
-        'SESSION_NOT_FOUND',
-        'The Cindy session is no longer active.',
-      );
+    try {
+      const removalAdmissionEpoch = sessionRemovalAdmissionEpochs.get(normalizedSessionId) ?? 0;
+      const session = await getSession(normalizedSessionId);
+      if (sessionRemovalCleanupPromises.has(normalizedSessionId)) {
+        return sessionError(
+          normalizedSessionId,
+          'MUTATION_CANCELLED',
+          'The simulator binding is being removed because its project capability changed.',
+        );
+      }
+      if (!session) {
+        return sessionError(
+          normalizedSessionId,
+          'SESSION_NOT_FOUND',
+          'The Cindy session no longer exists.',
+        );
+      }
+      if (session.status && session.status !== 'active') {
+        return sessionError(
+          normalizedSessionId,
+          'SESSION_NOT_FOUND',
+          'The Cindy session is no longer active.',
+        );
+      }
+      if (session.remoteHostId) {
+        return sessionError(
+          normalizedSessionId,
+          'UNSUPPORTED_SESSION_KIND',
+          'SSH and remote sessions cannot access simulators on this Mac.',
+        );
+      }
+      const removalBarrierOperation = registerRemovalBarrier
+        ? beginSessionRemovalBarrierOperation(normalizedSessionId, removalAdmissionEpoch)
+        : undefined;
+      return { ok: true, sessionId: normalizedSessionId, session, removalBarrierOperation };
+    } finally {
+      if (registerRemovalBarrier) {
+        const remaining =
+          (pendingSessionRemovalBarrierResolutions.get(normalizedSessionId) ?? 1) - 1;
+        if (remaining > 0) {
+          pendingSessionRemovalBarrierResolutions.set(normalizedSessionId, remaining);
+        } else {
+          pendingSessionRemovalBarrierResolutions.delete(normalizedSessionId);
+        }
+      }
     }
-    if (session.remoteHostId) {
-      return sessionError(
-        normalizedSessionId,
-        'UNSUPPORTED_SESSION_KIND',
-        'SSH and remote sessions cannot access simulators on this Mac.',
-      );
-    }
-    const removalBarrierOperation = options.registerRemovalBarrier
-      ? beginSessionRemovalBarrierOperation(normalizedSessionId, removalAdmissionEpoch)
-      : undefined;
-    return { ok: true, sessionId: normalizedSessionId, session, removalBarrierOperation };
   }
 
   function currentOwnedInstance(instance: IOSSimulatorInstance): IOSSimulatorInstance {
@@ -2160,6 +2213,20 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
     return trackedCleanup;
   }
 
+  function canReleaseHostRuntime(): boolean {
+    return (
+      actor.listAll().length === 0 &&
+      !actor.hasPendingOperations() &&
+      activeBuilds.size === 0 &&
+      pendingSessionRemovalBarrierResolutions.size === 0 &&
+      activeSessionRemovalBarrierOperations.size === 0 &&
+      sessionRemovalCleanupPromises.size === 0 &&
+      pendingCreateReconcilePromise === null &&
+      ownershipReconcilePromise === null &&
+      pendingCreateEvidence?.isArmed() !== true
+    );
+  }
+
   async function reconcileLiveDevice(
     instance: IOSSimulatorInstance,
   ): Promise<IOSSimulatorInstance> {
@@ -2272,7 +2339,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
   }
 
   async function inspectForPlugin(sessionId: string): Promise<GhostIOSSimulatorStatusProbeResult> {
-    if (disposePromise || deactivationInProgress) {
+    if (disposePromise || globalDeactivationInProgress) {
       return {
         ok: false,
         errorCode: 'IOS_SIMULATOR_HOST_ERROR',
@@ -2290,7 +2357,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
     const resolved = await resolveSession(sessionId);
     if (
       disposePromise ||
-      deactivationInProgress ||
+      globalDeactivationInProgress ||
       isOwnerBoundaryPending() ||
       getOwnerScopeKey() !== ownerScopeKey
     ) {
@@ -2304,7 +2371,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
       return { ok: false, errorCode: resolved.errorCode, message: resolved.message };
     try {
       const environment = await readPluginEnvironment();
-      if (disposePromise || deactivationInProgress) {
+      if (disposePromise || globalDeactivationInProgress) {
         return {
           ok: false,
           errorCode: 'IOS_SIMULATOR_HOST_ERROR',
@@ -2365,16 +2432,20 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
   }
 
   async function inspectForSession(sessionId: string): Promise<IOSSimulatorSessionStatus> {
-    if (disposePromise || deactivationInProgress) return hostDisposedStatus(sessionId);
+    if (disposePromise || globalDeactivationInProgress) return hostDisposedStatus(sessionId);
     const resolved = await resolveSession(sessionId);
     if (!resolved.ok) return resolved;
-    if (disposePromise || deactivationInProgress) return hostDisposedStatus(resolved.sessionId);
+    if (disposePromise || globalDeactivationInProgress)
+      return hostDisposedStatus(resolved.sessionId);
     await reconcilePersistedOwnership();
-    if (disposePromise || deactivationInProgress) return hostDisposedStatus(resolved.sessionId);
+    if (disposePromise || globalDeactivationInProgress)
+      return hostDisposedStatus(resolved.sessionId);
     await reconcileLiveDevices(actor.list(resolved.sessionId));
-    if (disposePromise || deactivationInProgress) return hostDisposedStatus(resolved.sessionId);
+    if (disposePromise || globalDeactivationInProgress)
+      return hostDisposedStatus(resolved.sessionId);
     const environment = await inspectRuntime();
-    if (disposePromise || deactivationInProgress) return hostDisposedStatus(resolved.sessionId);
+    if (disposePromise || globalDeactivationInProgress)
+      return hostDisposedStatus(resolved.sessionId);
     const instances = actor
       .list(resolved.sessionId)
       .map((instance) => actor.heartbeatOwned(resolved.sessionId, instance.instanceId));
@@ -2505,8 +2576,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
 
   function isViewerStateNormalized(scopeKey: string, instanceId: string): boolean {
     return (
-      viewerStateNormalizedScopeKey === scopeKey &&
-      viewerStateNormalizedInstanceIds.has(instanceId)
+      viewerStateNormalizedScopeKey === scopeKey && viewerStateNormalizedInstanceIds.has(instanceId)
     );
   }
 
@@ -6062,10 +6132,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
           if (environment.ready && instances.length === 0) {
             // Advertised names only: a recommendation the model cannot find in
             // list_tools sends it back to the ambiguous superseded name.
-            recommendedActions.push(
-              'list_simulator_devices',
-              'create_instance_or_attach_device',
-            );
+            recommendedActions.push('list_simulator_devices', 'create_instance_or_attach_device');
           }
           if (instances.some((entry) => !entry.running)) recommendedActions.push('start_instance');
           if (
@@ -6231,7 +6298,11 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
           cleanedInstanceCount: 0,
         };
       }
-      if (deactivationInProgress) {
+      const scoped =
+        options.sessionIds !== undefined ||
+        options.projectWorkingDirs !== undefined ||
+        options.shouldReleaseProject !== undefined;
+      if (!scoped && globalDeactivationInProgress) {
         throw new IOSSimulatorInstanceError(
           'DEVICE_BUSY',
           'iOS Simulator cleanup is already in progress.',
@@ -6239,40 +6310,61 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
         );
       }
 
-      deactivationInProgress = true;
       const initialInstanceCount = actor.listAll().length;
-      try {
+      const cleanup = (async () => {
         const requestedSessionIds = new Set(
           (options.sessionIds ?? []).map((value) => value.trim()).filter(Boolean),
         );
         const requestedProjects = new Set(
           (options.projectWorkingDirs ?? [])
-            .map((value) => normalizeWorkingDirForProjectSettings(value))
+            .map((value) => canonicalIOSSimulatorProjectWorkingDir(value))
             .filter((value): value is string => value !== null),
         );
-        const scoped =
-          options.sessionIds !== undefined ||
-          options.projectWorkingDirs !== undefined ||
-          options.shouldReleaseProject !== undefined;
-        const matchesScope = (instance: IOSSimulatorInstance): boolean => {
-          if (!scoped) return true;
-          if (requestedSessionIds.has(instance.sessionId)) return true;
-          const project = normalizeWorkingDirForProjectSettings(instance.worktreeRoot);
-          return (
-            project !== null &&
-            (requestedProjects.has(project) || options.shouldReleaseProject?.(project) === true)
-          );
+        const scope: IOSSimulatorCapabilityDeactivationScope = {
+          scoped,
+          matchesSession(sessionId, physicalWorkingDir, policyWorkingDir = physicalWorkingDir) {
+            if (!scoped) return true;
+            if (requestedSessionIds.has(sessionId)) return true;
+            const project = canonicalIOSSimulatorProjectWorkingDir(physicalWorkingDir);
+            const policyProject = normalizeWorkingDirForProjectSettings(policyWorkingDir);
+            return (
+              (project !== null && requestedProjects.has(project)) ||
+              (policyProject !== null && options.shouldReleaseProject?.(policyProject) === true)
+            );
+          },
         };
+        const sessionPolicyWorkingDirs = new Map<string, string | null>();
+        const policyWorkingDirForSession = async (
+          sessionId: string,
+          fallback: string | null | undefined,
+        ): Promise<string | null> => {
+          if (sessionPolicyWorkingDirs.has(sessionId)) {
+            return sessionPolicyWorkingDirs.get(sessionId) ?? null;
+          }
+          const session = await getSession(sessionId);
+          const workingDir = normalizeWorkingDirForProjectSettings(session?.workDir ?? fallback);
+          sessionPolicyWorkingDirs.set(sessionId, workingDir);
+          return workingDir;
+        };
+        const matchesScope = async (instance: IOSSimulatorInstance): Promise<boolean> =>
+          scope.matchesSession(
+            instance.sessionId,
+            instance.worktreeRoot,
+            await policyWorkingDirForSession(instance.sessionId, instance.worktreeRoot),
+          );
 
         if (!scoped) {
+          globalDeactivationInProgress = true;
           // Close the actor queues before ownership reconciliation. This is the
           // point at which the shell guard's protection becomes stricter, so no
           // new boot/mutation can race the final sweep.
           await Promise.all([actor.cancelAllLifecycleStarts(), actor.cancelAllMutations()]);
         }
-
         const pendingCreateEvidenceArmed = pendingCreateEvidence?.isArmed() === true;
-        if (!scoped && (actor.listAll().length > 0 || pendingCreateEvidenceArmed)) {
+        if (
+          (!scoped || options.reconcilePendingCreates === true) &&
+          (actor.listAll().length > 0 || pendingCreateEvidenceArmed)
+        ) {
           // A create can cross `simctl create` before its binding is persisted.
           // Complete the pending-create sweep while admission is closed so a
           // hidden marker device cannot outlive the Host and its shell guard.
@@ -6288,9 +6380,10 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
         const failures = new Set<string>();
         const attemptedSessions = new Set<string>();
         while (true) {
-          const matchingSessions = new Set(
-            actor.listAll().filter(matchesScope).map((instance) => instance.sessionId),
-          );
+          const matchingSessions = new Set<string>();
+          for (const instance of actor.listAll()) {
+            if (await matchesScope(instance)) matchingSessions.add(instance.sessionId);
+          }
           // A create may have issued `simctl create` before its binding was
           // persisted. Include its session in the project-scoped sweep so
           // cancelling the session also settles the hidden create marker.
@@ -6300,12 +6393,22 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
               continue;
             }
             const session = await getSession(sessionId);
-            const project = normalizeWorkingDirForProjectSettings(session?.workDir);
-            if (
-              project !== null &&
-              (requestedProjects.has(project) || options.shouldReleaseProject?.(project) === true)
-            ) {
+            if (scope.matchesSession(sessionId, session?.workDir, session?.workDir)) {
               matchingSessions.add(sessionId);
+            }
+          }
+          if (scoped) {
+            for (const sessionId of pendingSessionRemovalBarrierResolutions.keys()) {
+              const session = await getSession(sessionId);
+              if (scope.matchesSession(sessionId, session?.workDir, session?.workDir)) {
+                matchingSessions.add(sessionId);
+              }
+            }
+            for (const sessionId of activeSessionRemovalBarrierOperations.keys()) {
+              const session = await getSession(sessionId);
+              if (scope.matchesSession(sessionId, session?.workDir, session?.workDir)) {
+                matchingSessions.add(sessionId);
+              }
             }
           }
           for (const sessionId of requestedSessionIds) matchingSessions.add(sessionId);
@@ -6325,13 +6428,15 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
             failures.add(pendingSessions[index]);
             logger.warn('iOS Simulator capability deactivation cleanup failed', {
               sessionId: pendingSessions[index],
-              error:
-                result.reason instanceof Error ? result.reason.message : String(result.reason),
+              error: result.reason instanceof Error ? result.reason.message : String(result.reason),
             });
           });
         }
 
-        const remainingMatchingInstances = actor.listAll().filter(matchesScope);
+        const remainingMatchingInstances: IOSSimulatorInstance[] = [];
+        for (const instance of actor.listAll()) {
+          if (await matchesScope(instance)) remainingMatchingInstances.push(instance);
+        }
         if (failures.size > 0 || remainingMatchingInstances.length > 0) {
           throw new IOSSimulatorInstanceError(
             'DEVICE_BUSY',
@@ -6343,15 +6448,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
           );
         }
 
-        const hostCanBeReleased =
-          actor.listAll().length === 0 &&
-          !actor.hasPendingOperations() &&
-          activeBuilds.size === 0 &&
-          activeSessionRemovalBarrierOperations.size === 0 &&
-          sessionRemovalCleanupPromises.size === 0 &&
-          pendingCreateReconcilePromise === null &&
-          ownershipReconcilePromise === null &&
-          pendingCreateEvidence?.isArmed() !== true;
+        const hostCanBeReleased = canReleaseHostRuntime();
         if (!scoped && !hostCanBeReleased) {
           throw new IOSSimulatorInstanceError(
             'DEVICE_BUSY',
@@ -6363,9 +6460,19 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
           hostCanBeReleased,
           cleanedInstanceCount: initialInstanceCount - actor.listAll().length,
         };
+      })();
+      deactivationPromises.add(cleanup);
+      try {
+        return await cleanup;
       } finally {
-        deactivationInProgress = false;
+        deactivationPromises.delete(cleanup);
+        if (!scoped) globalDeactivationInProgress = false;
       }
+    },
+    tryBeginIdleRelease() {
+      if (disposePromise || globalDeactivationInProgress || !canReleaseHostRuntime()) return false;
+      globalDeactivationInProgress = true;
+      return true;
     },
     abortOperationsForExit() {
       void abortPendingCreateReconciliation();
@@ -6405,6 +6512,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
     dispose() {
       if (disposePromise) return disposePromise;
       disposePromise = (async () => {
+        const pendingDeactivations = [...deactivationPromises];
         const pendingCreateReconciliation = abortPendingCreateReconciliation();
         runtimeInspectionExitController.abort();
         buildDiagnosticReadExitController.abort();
@@ -6422,6 +6530,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
           });
         });
         await Promise.all([
+          Promise.allSettled(pendingDeactivations).then(() => undefined),
           pendingCreateReconciliation,
           lifecycleStarts,
           mutations,
@@ -6491,7 +6600,8 @@ interface DefaultIOSSimulatorRuntime {
 let defaultIOSSimulatorRuntime: DefaultIOSSimulatorRuntime | null = null;
 let defaultIOSSimulatorRuntimeClosing = false;
 let defaultIOSSimulatorRuntimeDisposePromise: Promise<void> | null = null;
-let defaultIOSSimulatorRuntimeDeactivatePromise: Promise<IOSSimulatorDeactivateResult> | null = null;
+let defaultIOSSimulatorRuntimeDeactivatePromise: Promise<IOSSimulatorDeactivateResult> | null =
+  null;
 let passivePluginRuntime: IOSSimulatorRuntime | null = null;
 let passivePluginEnvironmentCache: {
   expiresAt: number;
@@ -6539,10 +6649,8 @@ async function readPassiveIOSSimulatorPluginStatus(
   }
   try {
     const getOwnerScopeKey = options.getOwnerScopeKey ?? activeOwnerScopeKey;
-    const isOwnerBoundaryPending =
-      options.isOwnerBoundaryPending ?? isAppSessionBoundaryPending;
-    const isHostClosing =
-      options.isHostClosing ?? (() => defaultIOSSimulatorRuntimeClosing);
+    const isOwnerBoundaryPending = options.isOwnerBoundaryPending ?? isAppSessionBoundaryPending;
+    const isHostClosing = options.isHostClosing ?? (() => defaultIOSSimulatorRuntimeClosing);
     if (isHostClosing() || isOwnerBoundaryPending()) {
       return {
         ok: false,
@@ -6562,11 +6670,7 @@ async function readPassiveIOSSimulatorPluginStatus(
         };
       });
     const session = await getSession(normalizedSessionId);
-    if (
-      isHostClosing() ||
-      isOwnerBoundaryPending() ||
-      getOwnerScopeKey() !== ownerScopeKey
-    ) {
+    if (isHostClosing() || isOwnerBoundaryPending() || getOwnerScopeKey() !== ownerScopeKey) {
       return {
         ok: false,
         errorCode: 'IOS_SIMULATOR_HOST_ERROR',
@@ -6590,11 +6694,7 @@ async function readPassiveIOSSimulatorPluginStatus(
     const environment = options.inspectEnvironment
       ? projectPluginEnvironment(await options.inspectEnvironment())
       : await readPassivePluginEnvironment();
-    if (
-      isHostClosing() ||
-      isOwnerBoundaryPending() ||
-      getOwnerScopeKey() !== ownerScopeKey
-    ) {
+    if (isHostClosing() || isOwnerBoundaryPending() || getOwnerScopeKey() !== ownerScopeKey) {
       return {
         ok: false,
         errorCode: 'IOS_SIMULATOR_HOST_ERROR',
@@ -6689,12 +6789,7 @@ export function initializeIOSSimulatorHost(): IOSSimulatorHost {
   const pendingCreateEvidence = createDefaultPendingCreateEvidence(registry);
   const lifecycle = createProfileScopedIOSSimulatorLifecycle(registry, pendingCreateEvidence);
   const persistedActor = createDefaultActor(lifecycle, registry);
-  return installDefaultIOSSimulatorHost(
-    lifecycle,
-    persistedActor,
-    registry,
-    pendingCreateEvidence,
-  );
+  return installDefaultIOSSimulatorHost(lifecycle, persistedActor, registry, pendingCreateEvidence);
 }
 
 function currentIOSSimulatorHost(): IOSSimulatorHost | null {
@@ -6717,6 +6812,12 @@ export interface IOSSimulatorDeactivateOptions {
   sessionIds?: readonly string[];
   projectWorkingDirs?: readonly string[];
   shouldReleaseProject?: (workingDir: string) => boolean;
+  /** User-default shutdown must also retire profile-scoped interrupted-create evidence. */
+  reconcilePendingCreates?: boolean;
+  /** Scoped cleanup never releases the process singleton unless the caller proves no provider remains. */
+  allowHostRelease?: boolean;
+  /** Live provider check immediately before releasing the process singleton. */
+  shouldReleaseHost?: () => boolean;
 }
 
 export interface IOSSimulatorDeactivateResult {
@@ -6728,9 +6829,11 @@ export interface IOSSimulatorDeactivateResult {
  * Release Simulator ownership when the capability is switched off while
  * keeping the Host lazy and re-initializable for a later enable.
  *
- * Cleanup failures deliberately leave the singleton and writer lease installed.
- * Releasing either before ownership is empty would abandon Cindy-owned cleanup
- * without a process that can safely retry it.
+ * Cleanup failures before the Host proves itself idle deliberately leave the
+ * singleton and writer lease installed. After idle release is reserved, the
+ * first registry flush has already persisted an empty ownership set; final
+ * teardown failures are logged but must not strand a permanently closing
+ * singleton.
  */
 export function deactivateIOSSimulatorHost(
   options: IOSSimulatorDeactivateOptions = {},
@@ -6750,29 +6853,59 @@ export function deactivateIOSSimulatorHost(
     return Promise.resolve({ hostReleased: true, cleanedInstanceCount: 0 });
   }
 
-  defaultIOSSimulatorRuntimeClosing = true;
+  const scoped =
+    options.sessionIds !== undefined ||
+    options.projectWorkingDirs !== undefined ||
+    options.shouldReleaseProject !== undefined;
+  const allowHostRelease = !scoped || options.allowHostRelease === true;
+  if (!scoped) defaultIOSSimulatorRuntimeClosing = true;
   let deactivation!: Promise<IOSSimulatorDeactivateResult>;
   deactivation = (async () => {
     try {
-      const scoped =
-        options.sessionIds !== undefined ||
-        options.projectWorkingDirs !== undefined ||
-        options.shouldReleaseProject !== undefined;
       if (!scoped) clearIOSSimulatorRendererAccess();
       const result = await runtime.host.deactivate(options);
       await runtime.flushRegistry();
-      if (!result.hostCanBeReleased || defaultIOSSimulatorRuntime !== runtime) {
+      const idleReleaseStarted =
+        allowHostRelease &&
+        result.hostCanBeReleased &&
+        options.shouldReleaseHost?.() !== false &&
+        defaultIOSSimulatorRuntime === runtime &&
+        (scoped ? runtime.host.tryBeginIdleRelease() : true);
+      if (!idleReleaseStarted) {
         return {
           hostReleased: false,
           cleanedInstanceCount: result.cleanedInstanceCount,
         };
       }
-      await runtime.host.dispose();
-      await runtime.flushRegistry();
-      configureIOSSimulatorRendererAccessRevocationObserver(null);
-      runtime.releaseExitAbortHandler();
-      runtime.releaseRegistry();
-      defaultIOSSimulatorRuntime = null;
+      try {
+        await runtime.host.dispose();
+      } catch (error) {
+        logger.warn('Idle iOS Simulator Host dispose failed after release was reserved', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      try {
+        await runtime.flushRegistry();
+      } catch (error) {
+        logger.warn('Final iOS Simulator ownership flush failed after idle release', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      try {
+        configureIOSSimulatorRendererAccessRevocationObserver(null);
+      } finally {
+        try {
+          runtime.releaseExitAbortHandler();
+        } finally {
+          try {
+            runtime.releaseRegistry();
+          } finally {
+            if (defaultIOSSimulatorRuntime === runtime) {
+              defaultIOSSimulatorRuntime = null;
+            }
+          }
+        }
+      }
       return {
         hostReleased: true,
         cleanedInstanceCount: result.cleanedInstanceCount,
@@ -6781,7 +6914,7 @@ export function deactivateIOSSimulatorHost(
       if (defaultIOSSimulatorRuntimeDeactivatePromise === deactivation) {
         defaultIOSSimulatorRuntimeDeactivatePromise = null;
       }
-      if (!defaultIOSSimulatorRuntimeDisposePromise) {
+      if (!scoped && !defaultIOSSimulatorRuntimeDisposePromise) {
         defaultIOSSimulatorRuntimeClosing = false;
       }
     }
@@ -7065,9 +7198,7 @@ export function getIOSSimulatorMcpDeps(
   options: IOSSimulatorMcpDepsOptions = {},
 ): IOSSimulatorMcpDeps {
   const getHost = (): IOSSimulatorHost => options.host ?? initializeIOSSimulatorHost();
-  const resolveAccess = (
-    context?: IOSSimulatorMcpCallContext,
-  ): IOSSimulatorMcpAccessDecision => {
+  const resolveAccess = (context?: IOSSimulatorMcpCallContext): IOSSimulatorMcpAccessDecision => {
     const decision = options.resolveAccess?.(context);
     if (decision) return decision;
     if (options.isIOSSimulatorEnabled && !options.isIOSSimulatorEnabled(context)) {

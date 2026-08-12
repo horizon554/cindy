@@ -92,6 +92,7 @@ import {
   getGhostSetupAssessment,
   getIOSSimulatorPluginAccessDecision,
   isGhostAvailableForActiveSession,
+  runIOSSimulatorCapabilityMutation,
 } from '../cindy-brain/index.js';
 import {
   assertTrustedAppRendererEvent,
@@ -13244,6 +13245,20 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
 
   // ── Plugin system (Phase 1) ──────────────────────────────────────────────
+  const hasActiveIOSSimulatorProvider = (): boolean => {
+    const registry = getPluginRegistry();
+    return maker.listActiveSessions().some((session) => {
+      if (!maker.isSessionAlive(session.id) || session.remoteHostId) return false;
+      const workingDir = session.workDir;
+      return (
+        getIOSSimulatorPluginAccessDecision(workingDir).allowed &&
+        registry.isEnabled('ios-simulator', workingDir)
+      );
+    });
+  };
+  const runBuiltinToolMutation = <T>(id: string, mutation: () => Promise<T>): Promise<T> =>
+    id === 'ios-simulator' ? runIOSSimulatorCapabilityMutation(mutation) : mutation();
+
   ipcMain.handle(MAKER_INVOKE.PLUGINS_LIST, async (_e, workingDir: unknown) => {
     const wd = typeof workingDir === 'string' ? workingDir : undefined;
     return getPluginRegistry().listPlugins(wd);
@@ -13289,34 +13304,37 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (typeof id !== 'string' || typeof enabled !== 'boolean') {
       throwIpcError('INVALID_PARAMS', 'id (string) + enabled (boolean) required');
     }
-    const ok = await getPluginRegistry().setEnabled(id, enabled);
-    if (!ok) {
-      throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
-    }
-    if (id === 'ios-simulator' && enabled === false) {
-      const registry = getPluginRegistry();
-      await deactivateIOSSimulatorForBuiltinToolDefault({
-        // A project-level explicit enable outranks the user default. Keep its
-        // active bindings while retiring projects that now resolve disabled.
-        shouldReleaseProject: (workingDir) => !registry.isEnabled(id, workingDir),
+    return runBuiltinToolMutation(id, async () => {
+      const ok = await getPluginRegistry().setEnabled(id, enabled);
+      if (!ok) {
+        throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
+      }
+      if (id === 'ios-simulator' && enabled === false) {
+        const registry = getPluginRegistry();
+        await deactivateIOSSimulatorForBuiltinToolDefault({
+          // A project-level explicit enable outranks the user default. Keep its
+          // active bindings while retiring projects that now resolve disabled.
+          shouldReleaseProject: (workingDir) => !registry.isEnabled(id, workingDir),
+          shouldReleaseHost: () => !hasActiveIOSSimulatorProvider(),
+        });
+      }
+      // Ordinary plugins are user defaults: existing sessions keep their frozen
+      // policy and only new sessions observe changes, so no shared environment
+      // refresh is needed.
+      if (!GLOBAL_PLUGIN_IDS.has(id) && id !== 'browser') {
+        return { codexMcpRefreshed: true };
+      }
+      // Machine-wide tools keep their existing lifecycle. The preference is
+      // already durable at this point, so refresh best-effort; a busy turn must
+      // keep using the existing bridge and must not turn a successful save into
+      // an IPC failure. Renderer surfaces the deferred state explicitly.
+      return refreshCodexMcpEnvironment({
+        restartCodex: restartCodexAfterAuthModeChange,
+        shutdownCodexEnvironment,
+        onDeferred: () =>
+          deferredCodexRestartHolder?.schedule('Codex Browser capability routing changed'),
+        logger: log,
       });
-    }
-    // Ordinary plugins are user defaults: existing sessions keep their frozen
-    // policy and only new sessions observe changes, so no shared environment
-    // refresh is needed.
-    if (!GLOBAL_PLUGIN_IDS.has(id) && id !== 'browser') {
-      return { codexMcpRefreshed: true };
-    }
-    // Machine-wide tools keep their existing lifecycle. The preference is
-    // already durable at this point, so refresh best-effort; a busy turn must
-    // keep using the existing bridge and must not turn a successful save into
-    // an IPC failure. Renderer surfaces the deferred state explicitly.
-    return refreshCodexMcpEnvironment({
-      restartCodex: restartCodexAfterAuthModeChange,
-      shutdownCodexEnvironment,
-      onDeferred: () =>
-        deferredCodexRestartHolder?.schedule('Codex Browser capability routing changed'),
-      logger: log,
     });
   });
 
@@ -13324,33 +13342,41 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (typeof id !== 'string') {
       throwIpcError('INVALID_PARAMS', 'id (string) required');
     }
-    const ok = await getPluginRegistry().clearEnabled(id);
-    if (!ok) {
-      throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
-    }
-    if (id === 'ios-simulator' && !getPluginRegistry().isEnabled(id)) {
-      const registry = getPluginRegistry();
-      await deactivateIOSSimulatorForBuiltinToolDefault({
-        shouldReleaseProject: (workingDir) => !registry.isEnabled(id, workingDir),
+    return runBuiltinToolMutation(id, async () => {
+      const ok = await getPluginRegistry().clearEnabled(id);
+      if (!ok) {
+        throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
+      }
+      if (id === 'ios-simulator' && !getPluginRegistry().isEnabled(id)) {
+        const registry = getPluginRegistry();
+        await deactivateIOSSimulatorForBuiltinToolDefault({
+          shouldReleaseProject: (workingDir) => !registry.isEnabled(id, workingDir),
+          shouldReleaseHost: () => !hasActiveIOSSimulatorProvider(),
+        });
+      }
+      if (!GLOBAL_PLUGIN_IDS.has(id) && id !== 'browser') {
+        return { codexMcpRefreshed: true };
+      }
+      return refreshCodexMcpEnvironment({
+        restartCodex: restartCodexAfterAuthModeChange,
+        shutdownCodexEnvironment,
+        onDeferred: () =>
+          deferredCodexRestartHolder?.schedule('Codex Browser capability routing changed'),
+        logger: log,
       });
-    }
-    if (!GLOBAL_PLUGIN_IDS.has(id) && id !== 'browser') {
-      return { codexMcpRefreshed: true };
-    }
-    return refreshCodexMcpEnvironment({
-      restartCodex: restartCodexAfterAuthModeChange,
-      shutdownCodexEnvironment,
-      onDeferred: () =>
-        deferredCodexRestartHolder?.schedule('Codex Browser capability routing changed'),
-      logger: log,
     });
   });
 
   registerProjectPluginPolicyHandlers(createElectronIpcHandlerRegistry(), {
     getPluginRegistry,
+    runPolicyMutation: (id, mutation) => runBuiltinToolMutation(id, mutation),
     onProjectPolicyChanged: async ({ workingDir, id, effectiveEnabled }) => {
       if (id === 'ios-simulator' && !effectiveEnabled) {
-        await deactivateIOSSimulatorForBuiltinToolProject(workingDir);
+        const registry = getPluginRegistry();
+        await deactivateIOSSimulatorForBuiltinToolProject(
+          workingDir,
+          () => !hasActiveIOSSimulatorProvider(),
+        );
       }
     },
   });
@@ -13359,19 +13385,15 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   registerAndroidAutomationHandlers(createElectronIpcHandlerRegistry());
 
   // ── iOS Simulator pane / Agent discovery ────────────────────────────────
-  registerIOSSimulatorHandlers(
-    createElectronIpcHandlerRegistry(),
-    {
-      isPluginAvailable: (workingDir) =>
-        getIOSSimulatorPluginAccessDecision(workingDir).allowed,
-      getSessionContext: async (sessionId) => {
-        const liveSession = maker.getSession(sessionId);
-        if (liveSession) return { workingDir: liveSession.workDir };
-        const snapshot = await getSessionRowSnapshotStrict(sessionId);
-        return snapshot ? { workingDir: snapshot.workingDir } : null;
-      },
+  registerIOSSimulatorHandlers(createElectronIpcHandlerRegistry(), {
+    isPluginAvailable: (workingDir) => getIOSSimulatorPluginAccessDecision(workingDir).allowed,
+    getSessionContext: async (sessionId) => {
+      const liveSession = maker.getSession(sessionId);
+      if (liveSession) return { workingDir: liveSession.workDir };
+      const snapshot = await getSessionRowSnapshotStrict(sessionId);
+      return snapshot ? { workingDir: snapshot.workingDir } : null;
     },
-  );
+  });
 
   // ── Browser automation (Settings →「电脑使用」) ───────────────────────────
   // Probe local browser detection. Drives the detection status + download
