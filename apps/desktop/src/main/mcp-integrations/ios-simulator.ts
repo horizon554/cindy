@@ -1745,10 +1745,13 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
     } else if (!running) {
       input = {
         adapter: null,
-        state: 'detecting',
+        // A ready binding without a live WDA driver is not probing Native
+        // capability.  Treat it as unavailable so the renderer can settle on
+        // a stable state instead of showing an endless "detecting" spinner.
+        state: 'unavailable',
         continuous: false,
         multiTouch: false,
-        reasonCode: 'native-probe-pending',
+        reasonCode: 'route-error',
       };
     } else if (!report) {
       input = {

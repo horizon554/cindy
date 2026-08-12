@@ -995,6 +995,18 @@ describe('iOS Simulator host', () => {
           healthState: 'healthy',
         },
       ],
+      routeStatuses: [
+        {
+          instanceId: attached.instanceId,
+          input: {
+            adapter: null,
+            state: 'unavailable',
+            continuous: false,
+            multiTouch: false,
+            reasonCode: 'route-error',
+          },
+        },
+      ],
     });
     await expect(
       host.callTool('list_instances', {}, { sessionId: 'session-a' }),
@@ -4660,6 +4672,87 @@ describe('iOS Simulator host', () => {
     expect(driverManager.recoverNativeSidecar).toHaveBeenLastCalledWith(started.instanceId, {
       rearm: true,
     });
+  });
+
+  it('reports input detection only while Native is actually awaiting its capability probe', async () => {
+    const lifecycle: IOSSimulatorSimctlLifecycle = {
+      findExact: vi.fn(),
+      bootExact: vi.fn(),
+      shutdownExact: vi.fn(),
+      createExact: vi.fn(),
+      deleteExact: vi.fn(),
+    };
+    const actor = new IOSSimulatorInstanceActor({
+      store: new IOSSimulatorOwnershipStore(),
+      lifecycle,
+    });
+    const attached = actor.attach({
+      sessionId: 'session-a',
+      worktreeRoot: '/tmp/session-a',
+      sourceFingerprint: 'fingerprint-a',
+      device: READY_REPORT.devices[0]!,
+    });
+    const started = await actor.start({
+      sessionId: 'session-a',
+      instanceId: attached.instanceId,
+      generation: attached.generation,
+      leaseId: attached.lease.id,
+    });
+    const nativeAdmission = evaluateIOSSimulatorNativeCapabilityAdmission({
+      policy: createIOSSimulatorNativeDevelopmentAdmissionPolicy({
+        enableContinuousInput: true,
+      }),
+      processState: 'idle',
+      now: () => new Date('2026-08-12T00:00:00.000Z'),
+    });
+    const running = {
+      instanceId: started.instanceId,
+      simulatorUdid: started.simulatorUdid,
+      pid: 42,
+      driver: {},
+      driverRouter: {
+        capabilityReport: vi.fn(() => ({
+          nativeSidecar: { available: false, admission: nativeAdmission },
+          routes: {
+            continuousInput: {
+              selected: 'wda',
+              fallback: true,
+              reason: 'Native capability is awaiting the sidecar handshake.',
+            },
+            stream: {},
+          },
+        })),
+      },
+      driverSessionId: 'wda-session',
+    } as unknown as WdaRunningInstance;
+    const host = createIOSSimulatorHost({
+      actor,
+      lifecycle,
+      driverManager: {
+        get: vi.fn(() => running),
+        start: vi.fn(),
+        stop: vi.fn(async () => undefined),
+      },
+      runtime: { inspect: vi.fn(async () => READY_REPORT) },
+      getSession: vi.fn(async (id) => localSession(id)),
+    });
+
+    const status = await host.getStatus('session-a');
+    expect(status).toMatchObject({
+      ok: true,
+      routeStatuses: [
+        {
+          instanceId: started.instanceId,
+          input: {
+            adapter: 'wda',
+            state: 'detecting',
+            continuous: false,
+            reasonCode: 'native-probe-pending',
+          },
+        },
+      ],
+    });
+    await host.dispose();
   });
 
   it('stops the embedded viewer when the exact external simulator is shut down', async () => {
