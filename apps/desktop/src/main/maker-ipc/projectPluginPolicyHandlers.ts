@@ -14,12 +14,17 @@ import type { IpcHandlerRegistry } from './ipcHandlerRegistry.js';
 /** Minimal plugin registry surface required by project policy handlers. */
 export type ProjectPluginPolicyRegistry = Pick<
   PluginRegistry,
-  'setProjectEnabled' | 'clearProjectEnabled'
+  'setProjectEnabled' | 'clearProjectEnabled' | 'isEnabled'
 >;
 
 /** Host dependencies for project-level plugin policy IPC handlers. */
 export interface ProjectPluginPolicyHandlerDeps {
   getPluginRegistry(): ProjectPluginPolicyRegistry;
+  onProjectPolicyChanged?(input: {
+    workingDir: string;
+    id: string;
+    effectiveEnabled: boolean;
+  }): void | Promise<void>;
 }
 
 /** Register project policy writes without coupling them to active runtimes. */
@@ -44,6 +49,7 @@ export function registerProjectPluginPolicyHandlers(
       if (!ok) {
         throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
       }
+      await deps.onProjectPolicyChanged?.({ workingDir, id, effectiveEnabled: enabled });
     },
   );
 
@@ -55,5 +61,7 @@ export function registerProjectPluginPolicyHandlers(
     if (!ok) {
       throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
     }
+    const effectiveEnabled = deps.getPluginRegistry().isEnabled(id, workingDir);
+    await deps.onProjectPolicyChanged?.({ workingDir, id, effectiveEnabled });
   });
 }

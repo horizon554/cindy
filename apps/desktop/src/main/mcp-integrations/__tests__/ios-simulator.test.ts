@@ -2700,6 +2700,102 @@ describe('iOS Simulator host', () => {
     expect(inspect).not.toHaveBeenCalled();
   });
 
+  it('deactivates only bindings in the requested project and preserves other projects', async () => {
+    const lifecycle: IOSSimulatorSimctlLifecycle = {
+      findExact: vi.fn(async (udid) =>
+        READY_REPORT.devices.find((device) => device.udid === udid) ?? null,
+      ),
+      bootExact: vi.fn(),
+      shutdownExact: vi.fn(),
+      createExact: vi.fn(),
+      deleteExact: vi.fn(),
+    };
+    const actor = new IOSSimulatorInstanceActor({
+      store: new IOSSimulatorOwnershipStore({ createId: () => crypto.randomUUID() }),
+      lifecycle,
+    });
+    actor.attach({
+      sessionId: 'project-a-session',
+      worktreeRoot: '/repo/.cindy-worktrees/task-a',
+      sourceFingerprint: 'fingerprint-a',
+      device: READY_REPORT.devices[0]!,
+      bootProvenance: 'preexisting',
+    });
+    actor.attach({
+      sessionId: 'project-b-session',
+      worktreeRoot: '/other/project',
+      sourceFingerprint: 'fingerprint-b',
+      device: { ...READY_REPORT.devices[0]!, udid: '9A9D41E0-E031-4AD0-A8B5-847480802E8E' },
+      bootProvenance: 'preexisting',
+    });
+    const host = createIOSSimulatorHost({
+      actor,
+      lifecycle,
+      runtime: { inspect: vi.fn(async () => READY_REPORT) },
+      driverManager: {
+        get: vi.fn(() => null),
+        start: vi.fn(),
+        stop: vi.fn(async () => undefined),
+      },
+      getSession: vi.fn(async (id) => localSession(id)),
+      mediaCapture: {
+        discardInstance: vi.fn(async () => undefined),
+        discardSession: vi.fn(async () => undefined),
+      } as unknown as IOSSimulatorMediaCaptureAdapter,
+    });
+
+    await expect(
+      host.deactivate({ projectWorkingDirs: ['/repo'] }),
+    ).resolves.toEqual({ hostCanBeReleased: false, cleanedInstanceCount: 1 });
+    expect(actor.listAll().map((instance) => instance.sessionId)).toEqual([
+      'project-b-session',
+    ]);
+  });
+
+  it('keeps ownership when capability deactivation cleanup fails', async () => {
+    const lifecycle: IOSSimulatorSimctlLifecycle = {
+      findExact: vi.fn(async () => READY_REPORT.devices[0]!),
+      bootExact: vi.fn(),
+      shutdownExact: vi.fn(),
+      createExact: vi.fn(),
+      deleteExact: vi.fn(),
+    };
+    const actor = new IOSSimulatorInstanceActor({
+      store: new IOSSimulatorOwnershipStore({ createId: () => crypto.randomUUID() }),
+      lifecycle,
+    });
+    actor.attach({
+      sessionId: 'cleanup-failure-session',
+      worktreeRoot: '/tmp/cleanup-failure',
+      sourceFingerprint: 'fingerprint-a',
+      device: READY_REPORT.devices[0]!,
+      bootProvenance: 'preexisting',
+    });
+    const host = createIOSSimulatorHost({
+      actor,
+      lifecycle,
+      runtime: { inspect: vi.fn(async () => READY_REPORT) },
+      driverManager: {
+        get: vi.fn(() => null),
+        start: vi.fn(),
+        stop: vi.fn(async () => {
+          throw new Error('driver cleanup failed');
+        }),
+      },
+      getSession: vi.fn(async (id) => localSession(id)),
+      mediaCapture: {
+        discardInstance: vi.fn(async () => undefined),
+        discardSession: vi.fn(async () => undefined),
+      } as unknown as IOSSimulatorMediaCaptureAdapter,
+    });
+
+    await expect(host.deactivate()).rejects.toMatchObject({ code: 'DEVICE_BUSY' });
+    expect(actor.listAll()).toHaveLength(1);
+    await expect(
+      host.callTool('list_instances', {}, { sessionId: 'cleanup-failure-session' }),
+    ).resolves.toMatchObject({ ok: true });
+  });
+
   it('disposes WDA and recording resources on host shutdown without changing ownership', async () => {
     const lifecycle: IOSSimulatorSimctlLifecycle = {
       findExact: vi.fn(),

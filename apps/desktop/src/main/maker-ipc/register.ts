@@ -84,6 +84,8 @@ import { toolNotFoundMessage } from '../cindy-brain/pipeDispatcher.js';
 import { getGhostSetupChangeBus } from '../cindy-brain/ghostSetupChangeBus.js';
 import { isGhostDisabledForWorkdir } from '../cindy-brain/ghostWorkdirPrefs.js';
 import {
+  deactivateIOSSimulatorForBuiltinToolDefault,
+  deactivateIOSSimulatorForBuiltinToolProject,
   executeGhostSetupAction,
   executeGhostSetupInlineAction,
   getGhostManager,
@@ -13291,6 +13293,14 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (!ok) {
       throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
     }
+    if (id === 'ios-simulator' && enabled === false) {
+      const registry = getPluginRegistry();
+      await deactivateIOSSimulatorForBuiltinToolDefault({
+        // A project-level explicit enable outranks the user default. Keep its
+        // active bindings while retiring projects that now resolve disabled.
+        shouldReleaseProject: (workingDir) => !registry.isEnabled(id, workingDir),
+      });
+    }
     // Ordinary plugins are user defaults: existing sessions keep their frozen
     // policy and only new sessions observe changes, so no shared environment
     // refresh is needed.
@@ -13318,6 +13328,12 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     if (!ok) {
       throwIpcError('PERMISSION_DENIED', `Cannot modify essential plugin: ${id}`);
     }
+    if (id === 'ios-simulator' && !getPluginRegistry().isEnabled(id)) {
+      const registry = getPluginRegistry();
+      await deactivateIOSSimulatorForBuiltinToolDefault({
+        shouldReleaseProject: (workingDir) => !registry.isEnabled(id, workingDir),
+      });
+    }
     if (!GLOBAL_PLUGIN_IDS.has(id) && id !== 'browser') {
       return { codexMcpRefreshed: true };
     }
@@ -13332,6 +13348,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   registerProjectPluginPolicyHandlers(createElectronIpcHandlerRegistry(), {
     getPluginRegistry,
+    onProjectPolicyChanged: async ({ workingDir, id, effectiveEnabled }) => {
+      if (id === 'ios-simulator' && !effectiveEnabled) {
+        await deactivateIOSSimulatorForBuiltinToolProject(workingDir);
+      }
+    },
   });
 
   // ── Android automation (Settings →「电脑使用」) ──────────────────────────

@@ -215,7 +215,10 @@ import {
   requestIOSSimulatorRendererSessionAccess,
   revokeIOSSimulatorRendererAccessForSessionChange,
 } from '../mcp-integrations/ios-simulator-renderer-access.js';
-import { getIOSSimulatorPluginStatus } from '../mcp-integrations/ios-simulator.js';
+import {
+  deactivateIOSSimulatorHost,
+  getIOSSimulatorPluginStatus,
+} from '../mcp-integrations/ios-simulator.js';
 import type { GhostTrustRegistry } from './ghostSignature.js';
 import { GhostNotifySlot, sanitizeGhostNoticeText } from './notifySlot.js';
 import { GhostBadgeSlot } from './badgeSlot.js';
@@ -712,6 +715,62 @@ export function waitForGhostMutations(): Promise<void> {
 /** Account-managed built-ins are unavailable outside a verified cloud session. */
 export function isGhostAvailableForActiveSession(id: string): boolean {
   return !isCindyAccountGhostId(id) || getAppCapabilities().canUseCindyAccountServices;
+}
+
+function hasEnabledIOSSimulatorCapability(ghosts = getGhostManager().list()): boolean {
+  return ghosts.some(
+    (ghost) =>
+      ghost.enabled === true &&
+      ghost.manifest.slots.includes('ios-simulator') &&
+      isGhostAvailableForActiveSession(ghost.manifest.id),
+  );
+}
+
+async function releaseIOSSimulatorAfterCapabilityLoss(
+  wasEnabled: boolean,
+  options: { projectWorkingDirs?: readonly string[] } = {},
+): Promise<void> {
+  if (!wasEnabled || hasEnabledIOSSimulatorCapability()) return;
+  try {
+    await deactivateIOSSimulatorHost(options);
+  } catch (error) {
+    // The durable preference has already changed. Keep the Host and shell
+    // guard fail-closed until ownership cleanup can be retried safely.
+    log.warn('iOS Simulator Host cleanup remains pending after capability loss', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Settings → 内置工具 user-default disable has no project scope, so it
+ * retires every current binding. This is exported to keep the settings IPC
+ * adapter independent from Ghost filesystem internals.
+ */
+export async function deactivateIOSSimulatorForBuiltinToolDefault(options: {
+  shouldReleaseProject?: (workingDir: string) => boolean;
+} = {}): Promise<void> {
+  try {
+    await deactivateIOSSimulatorHost(options);
+  } catch (error) {
+    log.warn('iOS Simulator Host cleanup remains pending after built-in tool disable', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** Project-scoped built-in-tool disable only retires bindings in that project. */
+export async function deactivateIOSSimulatorForBuiltinToolProject(
+  workingDir: string,
+): Promise<void> {
+  try {
+    await deactivateIOSSimulatorHost({ projectWorkingDirs: [workingDir] });
+  } catch (error) {
+    log.warn('iOS Simulator project cleanup remains pending after built-in tool disable', {
+      workingDir,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /** Live Host capability gate shared by Agent transports and Renderer IPC. */
@@ -4124,6 +4183,7 @@ async function uninstallGhostAndCleanupLocked(
         ? null
         : (prepareGhostUninstallLedgerCompletion?.(id) ?? null);
     const manager = getGhostManager();
+    const hadEnabledIOSSimulatorCapability = hasEnabledIOSSimulatorCapability(manager.list());
     const runtime = getGhostRuntime();
     runtime.stop(id);
     getGhostNodeRuntimeBroker().stop(id);
@@ -4188,6 +4248,7 @@ async function uninstallGhostAndCleanupLocked(
     // 卸载刚落地,manager.list() 就是当下的全部事实(哪怕是空表)——标权威,
     // 好让「卸掉最后一个插件」也能把账本里的孤儿记录一并清掉。
     broadcastGhostsChanged(manager.list(), true);
+    await releaseIOSSimulatorAfterCapabilityLoss(hadEnabledIOSSimulatorCapability);
     if (recentIds) broadcastGhostRecentUsageChanged(recentIds);
     try {
       await completeLedger?.();
@@ -5621,6 +5682,7 @@ export function registerGhostIpc(): void {
     if (typeof enabled !== 'boolean') {
       throwIpcError('INVALID_PARAMS', 'enabled must be a boolean');
     }
+    const hadEnabledIOSSimulatorCapability = hasEnabledIOSSimulatorCapability(manager.list());
     if (!enabled) {
       runtime.stop(id); // 沉睡立即熄灯
       getGhostNodeRuntimeBroker().stop(id); // 随包 Node 也立即关闭
@@ -5642,6 +5704,7 @@ export function registerGhostIpc(): void {
       // (要等插件再次上报或重启)。熄灯类操作(runtime/node/订阅)放在前面是既有
       // 行为且幂等,唯独这条会留下用户可见的错状态(copilot + codex review)。
       suspendGhostUnreadProjection(id);
+      await releaseIOSSimulatorAfterCapabilityLoss(hadEnabledIOSSimulatorCapability);
     }
     return { ok: true };
   });

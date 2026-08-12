@@ -71,6 +71,41 @@ describe('project plugin policy handlers', () => {
     });
   });
 
+  it('notifies the host lifecycle after a project override changes', async () => {
+    workingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cindy-ios-policy-callback-'));
+    const pluginRegistry = new PluginRegistry({
+      settingsReader: new SettingsReader({
+        userDataPath: workingDir,
+        logger: { warn: () => undefined },
+      }),
+    });
+    const changed: Array<{ workingDir: string; id: string; effectiveEnabled: boolean }> = [];
+    const harness = new IpcHarness();
+    registerProjectPluginPolicyHandlers(harness, {
+      getPluginRegistry: () => pluginRegistry,
+      onProjectPolicyChanged: (input) => {
+        changed.push(input);
+      },
+    });
+
+    await harness.invoke(
+      MAKER_INVOKE.PLUGINS_SET_PROJECT_ENABLED,
+      workingDir,
+      'ios-simulator',
+      false,
+    );
+    await harness.invoke(
+      MAKER_INVOKE.PLUGINS_CLEAR_PROJECT_ENABLED,
+      workingDir,
+      'ios-simulator',
+    );
+
+    expect(changed).toEqual([
+      { workingDir, id: 'ios-simulator', effectiveEnabled: false },
+      { workingDir, id: 'ios-simulator', effectiveEnabled: true },
+    ]);
+  });
+
   function createTestDbClient(): DbClient {
     const dbHandle = new Database(':memory:');
     rawDb = dbHandle;
