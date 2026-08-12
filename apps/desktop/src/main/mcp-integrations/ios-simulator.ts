@@ -2272,7 +2272,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
   }
 
   async function inspectForPlugin(sessionId: string): Promise<GhostIOSSimulatorStatusProbeResult> {
-    if (disposePromise) {
+    if (disposePromise || deactivationInProgress) {
       return {
         ok: false,
         errorCode: 'IOS_SIMULATOR_HOST_ERROR',
@@ -2288,7 +2288,12 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
     }
     const ownerScopeKey = getOwnerScopeKey();
     const resolved = await resolveSession(sessionId);
-    if (isOwnerBoundaryPending() || getOwnerScopeKey() !== ownerScopeKey) {
+    if (
+      disposePromise ||
+      deactivationInProgress ||
+      isOwnerBoundaryPending() ||
+      getOwnerScopeKey() !== ownerScopeKey
+    ) {
       return {
         ok: false,
         errorCode: 'IOS_SIMULATOR_HOST_ERROR',
@@ -2299,7 +2304,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
       return { ok: false, errorCode: resolved.errorCode, message: resolved.message };
     try {
       const environment = await readPluginEnvironment();
-      if (disposePromise) {
+      if (disposePromise || deactivationInProgress) {
         return {
           ok: false,
           errorCode: 'IOS_SIMULATOR_HOST_ERROR',
@@ -2360,16 +2365,16 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
   }
 
   async function inspectForSession(sessionId: string): Promise<IOSSimulatorSessionStatus> {
-    if (disposePromise) return hostDisposedStatus(sessionId);
+    if (disposePromise || deactivationInProgress) return hostDisposedStatus(sessionId);
     const resolved = await resolveSession(sessionId);
     if (!resolved.ok) return resolved;
-    if (disposePromise) return hostDisposedStatus(resolved.sessionId);
+    if (disposePromise || deactivationInProgress) return hostDisposedStatus(resolved.sessionId);
     await reconcilePersistedOwnership();
-    if (disposePromise) return hostDisposedStatus(resolved.sessionId);
+    if (disposePromise || deactivationInProgress) return hostDisposedStatus(resolved.sessionId);
     await reconcileLiveDevices(actor.list(resolved.sessionId));
-    if (disposePromise) return hostDisposedStatus(resolved.sessionId);
+    if (disposePromise || deactivationInProgress) return hostDisposedStatus(resolved.sessionId);
     const environment = await inspectRuntime();
-    if (disposePromise) return hostDisposedStatus(resolved.sessionId);
+    if (disposePromise || deactivationInProgress) return hostDisposedStatus(resolved.sessionId);
     const instances = actor
       .list(resolved.sessionId)
       .map((instance) => actor.heartbeatOwned(resolved.sessionId, instance.instanceId));
