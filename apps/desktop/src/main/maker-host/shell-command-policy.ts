@@ -19,6 +19,14 @@
  * message containing a Markdown backtick were all rejected with no Simulator
  * executor anywhere in the command. This matcher denies only what it can read
  * directly and lets everything else reach the normal shell permission flow.
+ * "Directly" means that the executor occupies a command-word position this
+ * policy already understands: a direct segment, one of the plain documentation
+ * prefixes below, or a supported shell/interpreter payload. It does not scan
+ * arbitrary argv for a command another program might execute. Opaque wrappers
+ * such as `launchctl`, `sandbox-exec`, `doas`, `script`, `watch`, `parallel`,
+ * `coproc` and `repeat` remain outside this boundary even when their argv holds
+ * a complete literal recipe, because locating the executed operand requires a
+ * per-wrapper execution contract rather than shell syntax.
  *
  * Heredocs need one narrow boundary: their bodies are stdin data unless the
  * receiving command executes stdin as a program. Data bodies are omitted from
