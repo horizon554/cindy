@@ -4585,7 +4585,9 @@ export class CodexAgent extends BaseAgent {
       );
     }
 
-    function currentThreadWorkspaceConfig(): Pick<
+    function currentThreadWorkspaceConfig(
+      codeModeOnly?: boolean,
+    ): Pick<
       ThreadStartParams,
       | 'approvalPolicy'
       | 'approvalsReviewer'
@@ -4610,6 +4612,9 @@ export class CodexAgent extends BaseAgent {
             }
           : {}),
         ...(reviewMode ? {} : host.getSessionMcpConfig(opts.sessionInstanceId)),
+        ...(codeModeOnly === undefined
+          ? {}
+          : { 'features.code_mode_only': codeModeOnly }),
       };
       const shared = {
         approvalPolicy,
@@ -4754,6 +4759,31 @@ export class CodexAgent extends BaseAgent {
     };
 
     const hostUsesCodexProxy = host.isCodexProxyActive();
+
+    /** Resolve CodeModeOnly from the final Codex route, not the provider kind. */
+    const resolveRequiresCodeModeOnly = async (): Promise<boolean | undefined> => {
+      // Remote daemons own their own route configuration. The Desktop catalog
+      // capability only applies to the local loopback proxy.
+      if (reviewMode || opts.remoteHostId) return undefined;
+      try {
+        return (await this.deps.resolveCodexRouteCapabilities?.({
+          sessionId: sid,
+          providerId: mutableProviderId,
+          model: mutableModel,
+          credentialMode: sessionCredentialMode,
+        }))?.requiresCodeModeOnly === true;
+      } catch (error) {
+        log.warn('failed to resolve Codex route capabilities; disabling CodeModeOnly', {
+          providerId: mutableProviderId ?? null,
+          model: mutableModel,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    };
+    // Thread config is frozen for this handle. Desktop rebuilds the session
+    // when a runtime route change crosses this capability boundary.
+    const routeRequiresCodeModeOnly = await resolveRequiresCodeModeOnly();
 
     // ── OpenAI 远端压缩身份(thread 级,start/resume 冻结)────────────────────
     // 仅当 ① host 是 oauth spawn 且下发了 OpenAI 身份 provider(见
@@ -4937,7 +4967,9 @@ export class CodexAgent extends BaseAgent {
         threadId: opts.resumeSessionId,
         ...(resumeExcludeTurnsSupported ? { excludeTurns: true } : {}),
         cwd: opts.workingDir,
-        ...currentThreadWorkspaceConfig(),
+        // Older builds set CodeModeOnly at spawn scope. Explicit false clears
+        // that legacy value when a cold recovery targets any other route.
+        ...currentThreadWorkspaceConfig(routeRequiresCodeModeOnly),
         ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
         ...(mutableModel && mutableModel !== 'gpt-5' ? { model: mutableModel } : {}),
         ...(mutableServiceTier !== undefined ? { serviceTier: mutableServiceTier } : {}),
@@ -5010,7 +5042,7 @@ export class CodexAgent extends BaseAgent {
       // 内容为空时不发送 developerInstructions 字段。
       const params: ThreadStartParams = {
         cwd: opts.workingDir,
-        ...currentThreadWorkspaceConfig(),
+        ...currentThreadWorkspaceConfig(routeRequiresCodeModeOnly || undefined),
         ...(sessionDynamicTools.length > 0 ? { dynamicTools: sessionDynamicTools } : {}),
         ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
         ...(mutableModel && mutableModel !== 'gpt-5' ? { model: mutableModel } : {}),
@@ -5146,7 +5178,7 @@ export class CodexAgent extends BaseAgent {
           signal,
           request: () => host.request<ThreadStartResponse>(Method.ThreadStart, {
             cwd: opts.workingDir,
-            ...currentThreadWorkspaceConfig(),
+            ...currentThreadWorkspaceConfig(routeRequiresCodeModeOnly || undefined),
             ...(sessionDynamicTools.length > 0 ? { dynamicTools: sessionDynamicTools } : {}),
             ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
             ...(mutableModel && mutableModel !== 'gpt-5' ? { model: mutableModel } : {}),
@@ -5246,7 +5278,9 @@ export class CodexAgent extends BaseAgent {
           await replaceUnusedThreadWithCurrentProfile(signal);
           return;
         }
-        const resumeThreadWorkspaceConfig = currentThreadWorkspaceConfig();
+        const resumeThreadWorkspaceConfig = currentThreadWorkspaceConfig(
+          routeRequiresCodeModeOnly || undefined,
+        );
         const resumeServiceTierGeneration = serviceTierMutationGeneration;
         assertCurrentHost('read-only reference profile refresh');
         let resp: ThreadResumeResponse;
@@ -10009,7 +10043,9 @@ export class CodexAgent extends BaseAgent {
           // A stale-daemon retry must hydrate the exact thread-level profile
           // that matches this turn, not mutable settings changed while the
           // original turn/start RPC was pending.
-          turnThreadWorkspaceConfig = currentThreadWorkspaceConfig();
+          // This recovery may cold-load a thread persisted by a build that set
+          // CodeModeOnly at spawn scope, so false must be explicit here.
+          turnThreadWorkspaceConfig = currentThreadWorkspaceConfig(routeRequiresCodeModeOnly);
         } catch (e) {
           isTurnStartPending = false;
           endPlanCycleAfterPreStartFailure('read-only reference profile refresh failed');

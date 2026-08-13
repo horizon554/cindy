@@ -22,6 +22,10 @@ function rememberSession(sessionId: string): string {
 }
 
 describe('applyRuntimeSetModelChange', () => {
+  const gatewayCodeModeCapability = async ({ providerId }: { providerId?: string | null }) => ({
+    requiresCodeModeOnly: providerId === 'xd',
+  });
+
   it('rolls back provider route when live setModel rejects', async () => {
     const sessionId = rememberSession('runtime-set-model-rollback');
     setSessionProvider(sessionId, 'xd');
@@ -273,6 +277,196 @@ describe('applyRuntimeSetModelChange', () => {
     expect(closeSession).not.toHaveBeenCalled();
     expect(setModel).toHaveBeenCalledWith('xai/grok-4.3', { providerId: 'xai' });
     expect(getSessionProvider(sessionId)).toBe('xai');
+  });
+
+  it('rebuilds an idle local Codex session when the final route changes CodeModeOnly', async () => {
+    const sessionId = rememberSession('runtime-set-model-codemode-rebuild');
+    setSessionProvider(sessionId, 'xd');
+    const setModel = vi.fn(async () => {});
+    const closeSession = vi.fn(async () => {});
+    const maker: RuntimeSetModelMaker = {
+      getSession: () => ({
+        agentKind: 'codex',
+        remoteHostId: null,
+        codexProxyActive: true,
+        model: 'shared-model',
+        setModel,
+      }),
+      listActiveSessions: () => [{
+        id: sessionId,
+        agentKind: 'codex',
+        remoteHostId: null,
+        isTurnRunning: () => false,
+      }],
+      closeSession,
+    };
+
+    const result = await applyRuntimeSetModelChange({
+      maker,
+      sessionId,
+      model: 'shared-model',
+      providerId: 'deepseek',
+      codexAuthInjection: 'env-key',
+      resolveCodexRouteCapabilitiesForSwitch: gatewayCodeModeCapability,
+    });
+
+    expect(result).toEqual({ status: 'applied' });
+    expect(closeSession).toHaveBeenCalledWith(sessionId);
+    expect(setModel).not.toHaveBeenCalled();
+    expect(getSessionProvider(sessionId)).toBe('deepseek');
+  });
+
+  it('defers a busy CodeModeOnly route change until the turn boundary', async () => {
+    const sessionId = rememberSession('runtime-set-model-codemode-defer');
+    setSessionProvider(sessionId, 'deepseek');
+    const setModel = vi.fn(async () => {});
+    const registerPendingCredentialSwitch = vi.fn();
+    const maker: RuntimeSetModelMaker = {
+      getSession: () => ({
+        agentKind: 'codex',
+        remoteHostId: null,
+        codexProxyActive: true,
+        model: 'shared-model',
+        setModel,
+      }),
+      listActiveSessions: () => [{
+        id: sessionId,
+        agentKind: 'codex',
+        remoteHostId: null,
+        isTurnRunning: () => true,
+      }],
+      closeSession: vi.fn(async () => {}),
+    };
+
+    const result = await applyRuntimeSetModelChange({
+      maker,
+      sessionId,
+      model: 'shared-model',
+      providerId: 'xd',
+      registerPendingCredentialSwitch,
+      codexAuthInjection: 'provider-oauth',
+      resolveCodexRouteCapabilitiesForSwitch: gatewayCodeModeCapability,
+    });
+
+    expect(result).toEqual({ status: 'deferred' });
+    expect(registerPendingCredentialSwitch).toHaveBeenCalledWith(sessionId, {
+      model: 'shared-model',
+      providerId: 'xd',
+    });
+    expect(setModel).not.toHaveBeenCalled();
+    expect(getSessionProvider(sessionId)).toBe('deepseek');
+  });
+
+  it('keeps an idle Codex session live when the route capability does not change', async () => {
+    const sessionId = rememberSession('runtime-set-model-codemode-same');
+    setSessionProvider(sessionId, 'xd');
+    const setModel = vi.fn(async () => {});
+    const closeSession = vi.fn(async () => {});
+    const maker: RuntimeSetModelMaker = {
+      getSession: () => ({
+        agentKind: 'codex',
+        remoteHostId: null,
+        codexProxyActive: true,
+        model: 'codex/gpt-5.5',
+        setModel,
+      }),
+      listActiveSessions: () => [{
+        id: sessionId,
+        agentKind: 'codex',
+        remoteHostId: null,
+        isTurnRunning: () => false,
+      }],
+      closeSession,
+    };
+
+    await applyRuntimeSetModelChange({
+      maker,
+      sessionId,
+      model: 'codex/gpt-5.6-sol',
+      providerId: 'xd',
+      resolveCodexRouteCapabilitiesForSwitch: gatewayCodeModeCapability,
+    });
+
+    expect(closeSession).not.toHaveBeenCalled();
+    expect(setModel).toHaveBeenCalledWith('codex/gpt-5.6-sol', { providerId: 'xd' });
+  });
+
+  it('rebuilds on a model-only switch when the implicit final route crosses CodeModeOnly', async () => {
+    const sessionId = rememberSession('runtime-set-model-codemode-model-only');
+    const setModel = vi.fn(async () => {});
+    const closeSession = vi.fn(async () => {});
+    const maker: RuntimeSetModelMaker = {
+      getSession: () => ({
+        agentKind: 'codex',
+        remoteHostId: null,
+        codexProxyActive: true,
+        model: 'deepseek-v4-pro',
+        setModel,
+      }),
+      listActiveSessions: () => [{
+        id: sessionId,
+        agentKind: 'codex',
+        remoteHostId: null,
+        isTurnRunning: () => false,
+      }],
+      closeSession,
+    };
+
+    await applyRuntimeSetModelChange({
+      maker,
+      sessionId,
+      model: 'codex/gpt-5.6-sol',
+      codexAuthInjection: 'env-key',
+      resolveCodexRouteCapabilitiesForSwitch: async ({ model }) => ({
+        requiresCodeModeOnly: model.startsWith('codex/'),
+      }),
+    });
+
+    expect(closeSession).toHaveBeenCalledWith(sessionId);
+    expect(setModel).not.toHaveBeenCalled();
+    expect(getSessionProvider(sessionId)).toBeNull();
+  });
+
+  it('rebuilds conservatively when route capability resolution fails', async () => {
+    const sessionId = rememberSession('runtime-set-model-codemode-resolver-failure');
+    setSessionProvider(sessionId, 'xd');
+    const setModel = vi.fn(async () => {});
+    const closeSession = vi.fn(async () => {});
+    const logger = { debug: vi.fn(), info: vi.fn() };
+    const maker: RuntimeSetModelMaker = {
+      getSession: () => ({
+        agentKind: 'codex',
+        remoteHostId: null,
+        codexProxyActive: true,
+        model: 'codex/gpt-5.5',
+        setModel,
+      }),
+      listActiveSessions: () => [{
+        id: sessionId,
+        agentKind: 'codex',
+        remoteHostId: null,
+        isTurnRunning: () => false,
+      }],
+      closeSession,
+    };
+
+    await applyRuntimeSetModelChange({
+      maker,
+      sessionId,
+      model: 'codex/gpt-5.6-sol',
+      providerId: 'xd',
+      resolveCodexRouteCapabilitiesForSwitch: () => {
+        throw new Error('catalog unavailable');
+      },
+      logger,
+    });
+
+    expect(closeSession).toHaveBeenCalledWith(sessionId);
+    expect(setModel).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      'set-model: failed to compare CodeModeOnly route capabilities',
+      expect.objectContaining({ error: 'catalog unavailable' }),
+    );
   });
 
   it('defers a running proxy-active Codex provider switch until the turn boundary', async () => {

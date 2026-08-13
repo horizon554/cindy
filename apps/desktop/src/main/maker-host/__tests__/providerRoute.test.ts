@@ -31,6 +31,7 @@ import {
   setProviderOAuthTokenReader,
   setProviderViewsReader,
   resolveImplicitProviderOAuthRouteDecision,
+  resolveCodexRouteCapabilities,
   resolveVisionBackendRoute,
   rewriteImplicitModelIdForRoute,
   rewriteSessionModelIdForRoute,
@@ -81,6 +82,7 @@ afterEach(() => {
   clearSessionProvider('s-xd-model-wire');
   setXdGatewayModels([]);
   setAnthropicDiscoveredModels([]);
+  setCustomProviders([]);
   setProviderViewsReader(async () => []);
 });
 
@@ -118,6 +120,104 @@ describe('local mode Cindy gateway gate', () => {
     expect(inferProviderIdForModel('gpt-local-gate', 'codex')).toBeNull();
 
     clearSessionProvider('s-local-xd');
+  });
+});
+
+describe('Codex CodeModeOnly route capability', () => {
+  it('follows the final catalog route and not the provider id', async () => {
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'xd',
+      model: 'codex/gpt-5.5',
+      credentialMode: 'gateway-key',
+    })).resolves.toEqual({ requiresCodeModeOnly: true });
+
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'openai',
+      model: 'gpt-5.5',
+      credentialMode: 'oauth-bearer',
+    })).resolves.toEqual({ requiresCodeModeOnly: false });
+
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'xai',
+      model: 'xai/grok-4.3',
+      credentialMode: 'provider-oauth',
+    })).resolves.toEqual({ requiresCodeModeOnly: false });
+  });
+
+  it('uses the fallback route when an explicit provider does not serve the model', async () => {
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'xai',
+      model: 'codex/gpt-5.5',
+      credentialMode: 'gateway-key',
+    })).resolves.toEqual({ requiresCodeModeOnly: true });
+  });
+
+  it.each([
+    ['deepseek', 'deepseek-v4-pro'],
+    ['zhipu-glm', 'glm-5.2'],
+  ])('uses the connected implicit %s Chat bridge instead of the spawn fallback', async (
+    providerId,
+    model,
+  ) => {
+    setCustomProviders([
+      buildUserProvider({
+        id: providerId,
+        name: providerId,
+        runtimes: {
+          codex: {
+            baseUrl: `https://${providerId}.example.com`,
+            wireProtocol: 'openai-chat',
+            models: [{ id: model, name: model }],
+          },
+        },
+      }),
+    ]);
+    setProviderViewsReader(async () =>
+      buildRegistry(getActiveCatalog(), { [providerId]: true, xd: true }, {}),
+    );
+
+    await expect(resolveCodexRouteCapabilities({
+      providerId: null,
+      model,
+      credentialMode: 'gateway-key',
+    })).resolves.toEqual({ requiresCodeModeOnly: false });
+  });
+
+  it('uses the connected implicit Anthropic Messages bridge instead of the spawn fallback', async () => {
+    setAnthropicDiscoveredModels([{
+      id: 'claude-sonnet-route-capability',
+      name: 'Claude Sonnet Route Capability',
+      contextWindow: 200_000,
+      efforts: [],
+      defaultEffort: null,
+      status: 'active',
+    }]);
+    setProviderViewsReader(async () =>
+      buildRegistry(getActiveCatalog(), { anthropic: true, xd: true }, {}),
+    );
+
+    await expect(resolveCodexRouteCapabilities({
+      providerId: null,
+      model: 'claude-sonnet-route-capability',
+      credentialMode: 'gateway-key',
+    })).resolves.toEqual({ requiresCodeModeOnly: false });
+  });
+
+  it('keeps an implicit native xAI Responses route out of CodeModeOnly', async () => {
+    await expect(resolveCodexRouteCapabilities({
+      providerId: null,
+      model: 'xai/grok-4.3',
+      credentialMode: 'provider-oauth',
+    })).resolves.toEqual({ requiresCodeModeOnly: false });
+  });
+
+  it('does not claim the gateway capability when the gateway is unavailable', async () => {
+    mockGetAppCapabilities.mockReturnValue({ canUseCindyGateway: false });
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'xd',
+      model: 'codex/gpt-5.5',
+      credentialMode: 'gateway-key',
+    })).resolves.toBeUndefined();
   });
 });
 

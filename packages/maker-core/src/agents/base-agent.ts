@@ -621,6 +621,25 @@ export interface AgentDeps {
   ) => number | null;
 
   /**
+   * Resolve whether the Codex thread's final route requires CodeModeOnly.
+   *
+   * The host owns provider catalogs and default/bridge routing; maker-core only
+   * carries the resulting route capability into thread/start and thread/resume.
+   * Missing or throwing resolution is fail-safe and treats the route as not
+   * requiring CodeModeOnly.
+   */
+  resolveCodexRouteCapabilities?: (ctx: {
+    sessionId?: string;
+    providerId?: string | null;
+    model: string;
+    credentialMode?: AgentCredentialMode;
+    remoteHostId?: string | null;
+  }) =>
+    | { requiresCodeModeOnly?: boolean }
+    | undefined
+    | Promise<{ requiresCodeModeOnly?: boolean } | undefined>;
+
+  /**
    * Agent 起 session 时追加到 system prompt 末尾的字符串（host 注入）。
    * **本轮一阶段不消费**，仅占位。后续接通后 desktop 可以传项目级 prompt。
    */

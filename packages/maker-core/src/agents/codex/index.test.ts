@@ -3416,6 +3416,68 @@ describe('CodexAgent.startSession developerInstructions', () => {
     await xaiHandle.close();
   });
 
+  it('scopes CodeModeOnly to Cindy Gateway threads, not native Responses providers', async () => {
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexRouteCapabilities: async ({ providerId }) => ({
+        requiresCodeModeOnly: providerId === 'xd',
+      }),
+    }));
+    const host = installFakeHost(agent);
+
+    const nativeHandle = await agent.startSession({
+      sessionId: 'session-native-responses',
+      model: 'xai/grok-4.3',
+      providerId: 'xai',
+      workingDir: '/repo',
+    });
+    const nativeParams = host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1] as {
+      config?: Record<string, unknown>;
+    };
+    expect(nativeParams.config?.['features.code_mode_only']).toBeUndefined();
+    await nativeHandle.close();
+
+    host.request.mock.calls.length = 0;
+    const gatewayHandle = await agent.startSession({
+      sessionId: 'session-cindy-gateway-codemode',
+      model: 'codex/gpt-5.5',
+      providerId: 'xd',
+      workingDir: '/repo',
+    });
+    const gatewayParams = host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1] as {
+      config?: Record<string, unknown>;
+    };
+    expect(gatewayParams.config?.['features.code_mode_only']).toBe(true);
+    await gatewayHandle.close();
+
+    host.request.mock.calls.length = 0;
+    const resumedNativeHandle = await agent.startSession({
+      sessionId: 'session-native-responses-resume',
+      model: 'xai/grok-4.3',
+      providerId: 'xai',
+      workingDir: '/repo',
+      resumeSessionId: '123e4567-e89b-12d3-a456-426614174000',
+    });
+    const resumedNativeParams = host.request.mock.calls.find(([method]) => method === Method.ThreadResume)?.[1] as {
+      config?: Record<string, unknown>;
+    };
+    expect(resumedNativeParams.config?.['features.code_mode_only']).toBe(false);
+    await resumedNativeHandle.close();
+
+    host.request.mock.calls.length = 0;
+    const remoteGatewayHandle = await agent.startSession({
+      sessionId: 'session-remote-cindy-gateway-model',
+      model: 'codex/gpt-5.5',
+      providerId: 'xd',
+      workingDir: '/remote/repo',
+      remoteHostId: 'remote-1',
+    });
+    const remoteGatewayParams = host.request.mock.calls.find(([method]) => method === Method.ThreadStart)?.[1] as {
+      config?: Record<string, unknown>;
+    };
+    expect(remoteGatewayParams.config?.['features.code_mode_only']).toBeUndefined();
+    await remoteGatewayHandle.close();
+  });
+
   it('passes the OpenAI compaction provider for implicit-source sessions on an oauth-effective host', async () => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, undefined, {

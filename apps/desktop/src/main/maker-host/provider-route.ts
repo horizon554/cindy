@@ -511,6 +511,72 @@ export function providerRoutingServesWireModel(
 }
 
 /**
+ * Resolve route capabilities for a Codex thread from the same final-route
+ * inputs used by the proxy.  This deliberately returns a capability rather
+ * than inferring from provider ids: an explicit provider can decline a model
+ * via modelPrefixes, in which case the request falls back to the spawn
+ * default route.
+ */
+export async function resolveCodexRouteCapabilities(args: {
+  providerId?: string | null;
+  model: string;
+  credentialMode?: 'gateway-key' | 'oauth-bearer' | 'provider-oauth';
+}): Promise<{ requiresCodeModeOnly?: boolean } | undefined> {
+  const model = args.model.trim();
+  const providerId = args.providerId?.trim() || null;
+  let explicitRouteWasOutOfScope = false;
+
+  if (providerId) {
+    const provider = getActiveCatalog().providers.find((candidate) => candidate.id === providerId);
+    if (providerId === 'xd' && !getAppCapabilities().canUseCindyGateway) return undefined;
+    const routing = provider?.routing.codex;
+    if (isProviderRouteMutationInProgress(providerId)) return undefined;
+    if (routing?.disabled) return { requiresCodeModeOnly: false };
+    if (routing && routingServesWireModel(routing, model || undefined)) {
+      return { requiresCodeModeOnly: routing.requiresCodeModeOnly === true };
+    }
+    explicitRouteWasOutOfScope = routing !== null && routing !== undefined;
+  }
+
+  // The proxy resolves implicit Chat / Anthropic Messages routes from the
+  // connected ProviderView snapshot, not from catalog membership alone. Keep
+  // the capability decision on that same source so an implicit DeepSeek, GLM,
+  // or Anthropic bridge never inherits the spawn host's Gateway capability.
+  if (!providerId && model && hasImplicitLocalBridgeCandidate(model, 'codex')) {
+    const provider = await connectedDefaultProviderForModel(model.replace(/\[1m\]$/, ''), 'codex');
+    const routing = provider
+      ? providerRoutingForModel(provider, 'codex', model)
+      : null;
+    if (
+      routing?.wireProtocol === 'openai-chat'
+      || routing?.wireProtocol === 'anthropic-messages'
+    ) {
+      return { requiresCodeModeOnly: false };
+    }
+  }
+
+  // xAI and future uniquely namespaced provider-OAuth routes are handled
+  // before the default Gateway/ChatGPT branch even without a session provider.
+  const implicitProviderOAuth = uniqueProviderForModel(model, 'codex')?.routing.codex;
+  if (implicitProviderOAuth?.authStrategy === 'provider-oauth-header') {
+    return { requiresCodeModeOnly: implicitProviderOAuth.requiresCodeModeOnly === true };
+  }
+
+  // An explicit route that does not serve this model follows the same default
+  // route as codex-proxy-host: codex/* and gateway-key requests use Cindy
+  // Gateway; an out-of-scope provider-OAuth route also falls back there.
+  const usesCindyGateway = getAppCapabilities().canUseCindyGateway && (
+    args.credentialMode === 'gateway-key'
+    || model.startsWith('codex/')
+    || (explicitRouteWasOutOfScope && args.credentialMode === 'provider-oauth')
+  );
+  if (!usesCindyGateway) return undefined;
+  const gatewayRoute = getActiveCatalog().providers.find((p) => p.id === 'xd')?.routing.codex;
+  if (!gatewayRoute || gatewayRoute.disabled) return undefined;
+  return { requiresCodeModeOnly: gatewayRoute.requiresCodeModeOnly === true };
+}
+
+/**
  * 据某会话**显式选定的供应商**解析本次请求的路由决策。
  * 返回 null = 该会话未显式选供应商(或该供应商对此 agent 无路由,或本次请求的 wire model
  * 不在该路由声明的服务范围内)→ 调用方回落 decideXxxRoute / spawn 默认(no-break)。

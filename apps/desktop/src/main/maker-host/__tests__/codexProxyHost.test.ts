@@ -313,12 +313,12 @@ describe('withCodexUpstreamRecording', () => {
 });
 
 describe('codex gateway config', () => {
-  it('所有认证模式都让缺少 model metadata 的 Codex 模型使用 CodeModeOnly', async () => {
+  it('不在 spawn 层全局注入 CodeModeOnly', async () => {
     const { buildCodexProxySpawnArgs } = await import('../codex-gateway-config.js');
 
     for (const mode of ['oauth-bearer', 'env-key', 'provider-oauth'] as const) {
       const args = buildCodexProxySpawnArgs('http://127.0.0.1:12345', mode);
-      expect(args).toContain('features.code_mode_only=true');
+      expect(args).not.toContain('features.code_mode_only=true');
     }
   });
 

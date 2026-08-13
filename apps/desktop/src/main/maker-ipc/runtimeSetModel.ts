@@ -1,4 +1,9 @@
-import type { AgentKind, Effort } from '@cindy/maker-core';
+import {
+  resolveAgentCredentialMode,
+  type AgentCredentialMode,
+  type AgentKind,
+  type Effort,
+} from '@cindy/maker-core';
 
 import {
   getSessionProvider,
@@ -8,6 +13,7 @@ import {
 } from '../maker-host/session-provider-store.js';
 // type-only import:编译期擦除,不会把 codex-proxy-host 的运行时依赖拖进本模块/单测。
 import type { CodexProxyAuthInjection } from '../maker-host/codex-proxy-host.js';
+import { resolveCodexRouteCapabilities } from '../maker-host/provider-route.js';
 import {
   CredentialModeSwitchBusyError,
   isCredentialModeSwitchBusyError,
@@ -41,6 +47,13 @@ interface RuntimeSetModelLogger {
   debug: (message: string, meta?: Record<string, unknown>) => void;
   info: (message: string, meta?: Record<string, unknown>) => void;
 }
+
+type CodexRouteCapabilitiesResolver = (args: Parameters<
+  typeof resolveCodexRouteCapabilities
+>[0]) =>
+  | { requiresCodeModeOnly?: boolean }
+  | undefined
+  | Promise<{ requiresCodeModeOnly?: boolean } | undefined>;
 
 export interface ApplyRuntimeSetModelChangeInput {
   maker: RuntimeSetModelMaker;
@@ -85,6 +98,8 @@ export interface ApplyRuntimeSetModelChangeInput {
    * 是否跨「远端压缩身份」边界;不传时该判定按未知保守处理(倾向关会话重建)。
    */
   codexAuthInjection?: CodexProxyAuthInjection | null;
+  /** Test seam for the final-route capability resolver. Production uses the active catalog. */
+  resolveCodexRouteCapabilitiesForSwitch?: CodexRouteCapabilitiesResolver;
   logger?: RuntimeSetModelLogger;
 }
 
@@ -93,6 +108,56 @@ export type ApplyRuntimeSetModelChangeResult =
   | { status: 'applied' }
   /** 凭证形态要换但会话自己在跑:已登记 pending,turn 结束后自动生效。 */
   | { status: 'deferred' };
+
+function credentialModeForCodexRoute(
+  providerId: string | null,
+  model: string,
+  authInjection: CodexProxyAuthInjection | null | undefined,
+): AgentCredentialMode | undefined {
+  const explicit = resolveAgentCredentialMode({
+    agentKind: 'codex',
+    providerId,
+    model,
+  });
+  if (explicit) return explicit;
+  if (authInjection === 'oauth-bearer') return 'oauth-bearer';
+  if (authInjection === 'env-key') return 'gateway-key';
+  if (authInjection === 'provider-oauth') return 'provider-oauth';
+  return undefined;
+}
+
+async function crossesCodexCodeModeOnlyBoundary(args: {
+  currentProviderId: string | null;
+  nextProviderId: string | null;
+  currentModel: string;
+  nextModel: string;
+  codexAuthInjection?: CodexProxyAuthInjection | null;
+  resolver: CodexRouteCapabilitiesResolver;
+}): Promise<boolean> {
+  const [currentCapability, nextCapability] = await Promise.all([
+    args.resolver({
+      providerId: args.currentProviderId,
+      model: args.currentModel,
+      credentialMode: credentialModeForCodexRoute(
+        args.currentProviderId,
+        args.currentModel,
+        args.codexAuthInjection,
+      ),
+    }),
+    args.resolver({
+      providerId: args.nextProviderId,
+      model: args.nextModel,
+      credentialMode: credentialModeForCodexRoute(
+        args.nextProviderId,
+        args.nextModel,
+        args.codexAuthInjection,
+      ),
+    }),
+  ]);
+  const current = currentCapability?.requiresCodeModeOnly === true;
+  const next = nextCapability?.requiresCodeModeOnly === true;
+  return current !== next;
+}
 
 /**
  * 应用本地运行时 model/provider 切换。
@@ -130,7 +195,7 @@ export async function applyRuntimeSetModelChange(
       : pendingTarget !== undefined
         ? pendingTarget.providerId
         : currentProviderId;
-  const shouldCloseSession = sess
+  const shouldCloseSessionForCredentials = sess
     ? shouldCloseSessionForCredentialSwitch({
         agentKind: sess.agentKind,
         remoteHostId: sess.remoteHostId,
@@ -142,6 +207,30 @@ export async function applyRuntimeSetModelChange(
         codexAuthInjection: input.codexAuthInjection,
       })
     : false;
+  let shouldCloseSessionForCodeModeOnly = false;
+  if (sess?.agentKind === 'codex' && !sess.remoteHostId) {
+    try {
+      shouldCloseSessionForCodeModeOnly = await crossesCodexCodeModeOnlyBoundary({
+        currentProviderId,
+        nextProviderId,
+        currentModel: sess.model,
+        nextModel: model,
+        codexAuthInjection: input.codexAuthInjection,
+        resolver: input.resolveCodexRouteCapabilitiesForSwitch ?? resolveCodexRouteCapabilities,
+      });
+    } catch (error) {
+      // A live thread keeps its previous thread-level value. If the final
+      // route cannot be compared, rebuild this session instead of hot-switching
+      // into a potentially incompatible sticky CodeModeOnly state.
+      shouldCloseSessionForCodeModeOnly = true;
+      logger?.debug('set-model: failed to compare CodeModeOnly route capabilities', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const shouldCloseSession =
+    shouldCloseSessionForCredentials || shouldCloseSessionForCodeModeOnly;
   let selfBusyMemo: boolean | undefined;
   const isSelfBusy = (): boolean => {
     if (selfBusyMemo !== undefined) return selfBusyMemo;
