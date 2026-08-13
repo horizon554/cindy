@@ -29,6 +29,7 @@ import {
 } from '@cindy/ios-simulator-runtime';
 import { IOSSimulatorToolRegistry, registerIOSSimulatorTools } from '@cindy/mcps';
 import type { IOSSimulatorPublicRouteStatus } from '../../../shared/iosSimulatorIpc';
+import { normalizeWorkingDirForProjectSettings } from '../../../shared/workingDir';
 import {
   cancelIOSSimulatorSessionOperations,
   cleanupIOSSimulatorRemovedSession,
@@ -2850,7 +2851,10 @@ describe('iOS Simulator host', () => {
       device: READY_REPORT.devices[0]!,
       bootProvenance: 'preexisting',
     });
-    const shouldReleaseProject = vi.fn((workingDir: string) => workingDir !== linkedProject);
+    const logicalProjectForPolicy = normalizeWorkingDirForProjectSettings(linkedProject)!;
+    const shouldReleaseProject = vi.fn(
+      (workingDir: string) => workingDir !== logicalProjectForPolicy,
+    );
     const host = createIOSSimulatorHost({
       actor,
       lifecycle,
@@ -2862,7 +2866,7 @@ describe('iOS Simulator host', () => {
         hostCanBeReleased: false,
         cleanedInstanceCount: 0,
       });
-      expect(shouldReleaseProject).toHaveBeenCalledWith(linkedProject);
+      expect(shouldReleaseProject).toHaveBeenCalledWith(logicalProjectForPolicy);
       expect(actor.list('symlink-policy-session')).toHaveLength(1);
     } finally {
       await host.dispose();
