@@ -207,7 +207,10 @@ import { GhostPreviewSlot } from './previewSlot.js';
 import { GhostScheduleSlot, isMainShellWindowUrl } from './scheduleSlot.js';
 import { GhostWorkspaceSlot, type WorkspaceSessionService } from './workspaceSlot.js';
 import { GhostIOSSimulatorSlot, type IOSSimulatorSlotFocusContext } from './iosSimulatorSlot.js';
-import { resolveIOSSimulatorPluginAccess } from './iosSimulatorPluginGate.js';
+import {
+  resolveIOSSimulatorCapabilityLossCleanupScope,
+  resolveIOSSimulatorPluginAccess,
+} from './iosSimulatorPluginGate.js';
 import {
   acquireIOSSimulatorManifestMutation,
   runIOSSimulatorCapabilityMutation,
@@ -733,22 +736,63 @@ function hasEnabledIOSSimulatorCapability(ghosts = getGhostManager().list()): bo
   );
 }
 
+function hasEnabledIOSSimulatorCapabilityForProject(
+  workingDir: string,
+  ghosts = getGhostManager().list(),
+): boolean {
+  return resolveIOSSimulatorPluginAccess(ghosts, workingDir, {
+    isAvailableForActiveSession: isGhostAvailableForActiveSession,
+    isDisabledForWorkdir: isGhostDisabledForWorkdir,
+  }).allowed;
+}
+
+interface IOSSimulatorActiveProviderResolver {
+  hasActiveProvider(): boolean;
+  isEnabledForProject(workingDir: string): boolean;
+}
+
+let iosSimulatorActiveProviderResolver: IOSSimulatorActiveProviderResolver | null = null;
+
+/** Inject the Maker project-policy half without making cindy-brain import Maker. */
+export function configureIOSSimulatorActiveProviderResolver(
+  resolver: IOSSimulatorActiveProviderResolver,
+): void {
+  iosSimulatorActiveProviderResolver = resolver;
+}
+
+function isIOSSimulatorProviderEnabledForProject(workingDir: string): boolean {
+  return (
+    iosSimulatorActiveProviderResolver?.isEnabledForProject(workingDir) ??
+    hasEnabledIOSSimulatorCapabilityForProject(workingDir)
+  );
+}
+
+function hasActiveIOSSimulatorProvider(): boolean {
+  return (
+    iosSimulatorActiveProviderResolver?.hasActiveProvider() ??
+    hasEnabledIOSSimulatorCapability()
+  );
+}
+
 async function releaseIOSSimulatorAfterCapabilityLoss(
   wasEnabled: boolean,
   options: { projectWorkingDirs?: readonly string[] } = {},
   retryIfHostActive = false,
 ): Promise<void> {
-  if (
-    (!wasEnabled && !(retryIfHostActive && isIOSSimulatorHostRuntimeActive())) ||
-    hasEnabledIOSSimulatorCapability()
-  ) {
-    return;
-  }
+  const scope = resolveIOSSimulatorCapabilityLossCleanupScope({
+    wasEnabled,
+    retryIfHostActive,
+    hostRuntimeActive: isIOSSimulatorHostRuntimeActive(),
+    hasActiveProvider: hasActiveIOSSimulatorProvider(),
+    projectWorkingDirs: options.projectWorkingDirs,
+    hasEnabledProviderForProject: isIOSSimulatorProviderEnabledForProject,
+  });
+  if (!scope) return;
   try {
     await deactivateIOSSimulatorHost({
-      ...options,
+      ...scope,
       allowHostRelease: true,
-      shouldReleaseHost: () => !hasEnabledIOSSimulatorCapability(),
+      shouldReleaseHost: () => !hasActiveIOSSimulatorProvider(),
     });
   } catch (error) {
     // The durable preference has already changed. Keep the Host and shell
@@ -5309,7 +5353,8 @@ export function registerGhostIpc(): void {
   });
   ipcMain.handle(
     'ghosts:workdir-prefs:set',
-    (_event, workdir: unknown, ghostId: unknown, disabled: unknown) => {
+    async (event, workdir: unknown, ghostId: unknown, disabled: unknown) => {
+      assertTrustedAppRendererEvent(event);
       if (typeof workdir !== 'string' || workdir.trim().length === 0) {
         throwIpcError('INVALID_PARAMS', 'workdir must be a non-empty string');
       }
@@ -5319,18 +5364,38 @@ export function registerGhostIpc(): void {
       if (typeof disabled !== 'boolean') {
         throwIpcError('INVALID_PARAMS', 'disabled must be a boolean');
       }
-      const wasDisabled = isGhostDisabledForWorkdir(ghostId, workdir);
-      const next = setGhostDisabledForWorkdir(workdir, ghostId, disabled);
-      // A setup card may already be waiting for this plugin in the affected
-      // project. Wake all waiters for the plugin; each one revalidates its own
-      // captured workdir and only the matching scope is rejected.
-      if (wasDisabled !== disabled) {
-        getGhostSetupChangeBus().emit(ghostId, { source: 'workdir_policy' });
-      }
-      // 生效面变了(新会话花名册 / $ 菜单),借 ghosts:changed 通知所有窗口
-      // 重拉——载荷仍是完整已装清单,消费方按需再 sendSync 取目录级清单。
-      broadcastGhostsChanged(manager.list());
-      return { disabled: next };
+      const changesIOSSimulatorCapability = manager
+        .list()
+        .some(
+          (ghost) =>
+            ghost.manifest.id === ghostId && ghost.manifest.slots.includes('ios-simulator'),
+        );
+      const mutate = async () => {
+        const hadEnabledIOSSimulatorCapability =
+          hasEnabledIOSSimulatorCapabilityForProject(workdir);
+        const wasDisabled = isGhostDisabledForWorkdir(ghostId, workdir);
+        const next = setGhostDisabledForWorkdir(workdir, ghostId, disabled);
+        // A setup card may already be waiting for this plugin in the affected
+        // project. Wake all waiters for the plugin; each one revalidates its own
+        // captured workdir and only the matching scope is rejected.
+        if (wasDisabled !== disabled) {
+          getGhostSetupChangeBus().emit(ghostId, { source: 'workdir_policy' });
+        }
+        // 生效面变了(新会话花名册 / $ 菜单),借 ghosts:changed 通知所有窗口
+        // 重拉——载荷仍是完整已装清单,消费方按需再 sendSync 取目录级清单。
+        broadcastGhostsChanged(manager.list());
+        if (disabled && changesIOSSimulatorCapability) {
+          await releaseIOSSimulatorAfterCapabilityLoss(
+            hadEnabledIOSSimulatorCapability,
+            { projectWorkingDirs: [workdir] },
+            true,
+          );
+        }
+        return { disabled: next };
+      };
+      return changesIOSSimulatorCapability
+        ? runIOSSimulatorCapabilityMutation(mutate)
+        : mutate();
     },
   );
 
@@ -5801,7 +5866,11 @@ export function registerGhostIpc(): void {
         // (要等插件再次上报或重启)。熄灯类操作(runtime/node/订阅)放在前面是既有
         // 行为且幂等,唯独这条会留下用户可见的错状态(copilot + codex review)。
         suspendGhostUnreadProjection(id);
-        await releaseIOSSimulatorAfterCapabilityLoss(hadEnabledIOSSimulatorCapability);
+        await releaseIOSSimulatorAfterCapabilityLoss(
+          hadEnabledIOSSimulatorCapability,
+          {},
+          true,
+        );
       }
       return { ok: true };
     };

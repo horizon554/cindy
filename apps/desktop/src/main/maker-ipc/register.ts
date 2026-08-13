@@ -84,6 +84,7 @@ import { toolNotFoundMessage } from '../cindy-brain/pipeDispatcher.js';
 import { getGhostSetupChangeBus } from '../cindy-brain/ghostSetupChangeBus.js';
 import { isGhostDisabledForWorkdir } from '../cindy-brain/ghostWorkdirPrefs.js';
 import {
+  configureIOSSimulatorActiveProviderResolver,
   deactivateIOSSimulatorForBuiltinToolDefault,
   deactivateIOSSimulatorForBuiltinToolProject,
   executeGhostSetupAction,
@@ -13245,17 +13246,23 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
   });
 
   // ── Plugin system (Phase 1) ──────────────────────────────────────────────
-  const hasActiveIOSSimulatorProvider = (): boolean => {
+  const isIOSSimulatorProviderEnabledForProject = (workingDir: string): boolean => {
     const registry = getPluginRegistry();
+    return (
+      getIOSSimulatorPluginAccessDecision(workingDir).allowed &&
+      registry.isEnabled('ios-simulator', workingDir)
+    );
+  };
+  const hasActiveIOSSimulatorProvider = (): boolean => {
     return maker.listActiveSessions().some((session) => {
       if (!maker.isSessionAlive(session.id) || session.remoteHostId) return false;
-      const workingDir = session.workDir;
-      return (
-        getIOSSimulatorPluginAccessDecision(workingDir).allowed &&
-        registry.isEnabled('ios-simulator', workingDir)
-      );
+      return isIOSSimulatorProviderEnabledForProject(session.workDir);
     });
   };
+  configureIOSSimulatorActiveProviderResolver({
+    hasActiveProvider: hasActiveIOSSimulatorProvider,
+    isEnabledForProject: isIOSSimulatorProviderEnabledForProject,
+  });
   const runBuiltinToolMutation = <T>(id: string, mutation: () => Promise<T>): Promise<T> =>
     id === 'ios-simulator' ? runIOSSimulatorCapabilityMutation(mutation) : mutation();
 
