@@ -813,9 +813,15 @@ export async function deactivateIOSSimulatorForBuiltinToolDefault(options: {
   shouldReleaseHost?: () => boolean;
 } = {}): Promise<void> {
   try {
+    // Pending-create evidence is profile-scoped. Sweeping it while an explicit
+    // project override still provides the capability could delete that
+    // retained project's marker between `simctl create` and binding persist.
+    // If the last provider disappears later, the armed evidence keeps the Host
+    // fail-closed and a later teardown retry performs the full sweep.
+    const reconcilePendingCreates = options.shouldReleaseHost?.() !== false;
     await deactivateIOSSimulatorHost({
       ...options,
-      reconcilePendingCreates: true,
+      reconcilePendingCreates,
       allowHostRelease: true,
     });
   } catch (error) {

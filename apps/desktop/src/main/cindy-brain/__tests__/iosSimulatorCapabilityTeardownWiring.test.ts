@@ -50,4 +50,20 @@ describe('iOS Simulator capability teardown wiring', () => {
       'isEnabledForProject: isIOSSimulatorProviderEnabledForProject',
     );
   });
+
+  it('does not sweep profile pending-create markers while another project is retained', () => {
+    const start = brainSource.indexOf(
+      'export async function deactivateIOSSimulatorForBuiltinToolDefault',
+    );
+    const end = brainSource.indexOf(
+      'export async function deactivateIOSSimulatorForBuiltinToolProject',
+      start,
+    );
+    const helper = brainSource.slice(start, end);
+
+    expect(helper).toContain(
+      'const reconcilePendingCreates = options.shouldReleaseHost?.() !== false;',
+    );
+    expect(helper).toContain('reconcilePendingCreates,');
+  });
 });
