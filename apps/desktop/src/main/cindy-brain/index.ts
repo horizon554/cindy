@@ -795,8 +795,8 @@ async function releaseIOSSimulatorAfterCapabilityLoss(
       shouldReleaseHost: () => !hasActiveIOSSimulatorProvider(),
     });
   } catch (error) {
-    // The durable preference has already changed. Keep the Host and shell
-    // guard fail-closed until ownership cleanup can be retried safely.
+    // The durable preference has already changed. Keep the Host singleton and
+    // ownership writer lease until cleanup can be retried safely.
     log.warn('iOS Simulator Host cleanup remains pending after capability loss', {
       error: error instanceof Error ? error.message : String(error),
     });
@@ -817,7 +817,7 @@ export async function deactivateIOSSimulatorForBuiltinToolDefault(options: {
     // project override still provides the capability could delete that
     // retained project's marker between `simctl create` and binding persist.
     // If the last provider disappears later, the armed evidence keeps the Host
-    // fail-closed and a later teardown retry performs the full sweep.
+    // responsible for cleanup and a later teardown retry performs the full sweep.
     const reconcilePendingCreates = options.shouldReleaseHost?.() !== false;
     await deactivateIOSSimulatorHost({
       ...options,
@@ -4196,7 +4196,7 @@ async function installOrUpdateMarketGhostPackageLocked(
         ...(trustOverride ? { trustOverride } : {}),
         beforePackageCommit: () => {
           getGhostOauthAccountManager().expireAccountsForChangedClients(
-            withRuntimeFiloGoogleClient(installed.manifest),
+            withRuntimeFiloGoogleClient(installedAtMutation.manifest),
             withRuntimeFiloGoogleClient(inspected.canonicalManifest),
           );
         },
@@ -5533,14 +5533,16 @@ export function registerGhostIpc(): void {
       const releaseIOSMutation = await acquireIOSSimulatorManifestMutation(
         [previousGhost?.manifest, inspected.canonicalManifest],
       );
-      const releaseMutation = beginGhostMutation(mutationOwner);
-      const previousGhostAtMutation =
-        manager.list().find((ghost) => ghost.manifest.id === inspected.manifest.id) ?? previousGhost;
-      const hadEnabledIOSSimulatorCapability = hasEnabledIOSSimulatorCapability(manager.list());
-      const removedIOSSimulatorCapability =
-        previousGhostAtMutation?.manifest.slots.includes('ios-simulator') === true &&
-        !inspected.canonicalManifest.slots.includes('ios-simulator');
+      let releaseMutation: (() => void) | null = null;
       try {
+        releaseMutation = beginGhostMutation(mutationOwner);
+        const previousGhostAtMutation =
+          manager.list().find((ghost) => ghost.manifest.id === inspected.manifest.id) ??
+          previousGhost;
+        const hadEnabledIOSSimulatorCapability = hasEnabledIOSSimulatorCapability(manager.list());
+        const removedIOSSimulatorCapability =
+          previousGhostAtMutation?.manifest.slots.includes('ios-simulator') === true &&
+          !inspected.canonicalManifest.slots.includes('ios-simulator');
         runtime.stop(inspected.manifest.id);
         // 等待失败表示旧进程仍可能存活；此时不能恢复 resident，否则会产生
         // 两份后台进程。仅在确认退出后的更新阶段失败时恢复旧版本。
@@ -5673,7 +5675,7 @@ export function registerGhostIpc(): void {
         );
         return { ghost: result.ghost };
       } finally {
-        releaseMutation();
+        releaseMutation?.();
         releaseIOSMutation();
       }
     });

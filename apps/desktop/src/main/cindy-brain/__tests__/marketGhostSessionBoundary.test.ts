@@ -59,7 +59,10 @@ describe('market Ghost session boundary', () => {
     const captureIndex = body.indexOf('const mutationOwner = captureGhostMutationOwner();');
     const ledgerBindIndex = body.indexOf('const marketLedger = getPluginMarketLedger().bind(');
     const inspectIndex = body.indexOf('await manager.inspect(lizFilePath)');
-    const leaseIndex = body.indexOf('const releaseMutation = beginGhostMutation(mutationOwner);');
+    const tryIndex = body.indexOf(
+      'try {\n        releaseMutation = beginGhostMutation(mutationOwner);',
+    );
+    const leaseIndex = body.indexOf('releaseMutation = beginGhostMutation(mutationOwner);');
     const detachDecisionIndex = body.indexOf(
       'const detachMarketRecord = Boolean(marketRecord?.installed)',
     );
@@ -75,7 +78,9 @@ describe('market Ghost session boundary', () => {
     expect(captureIndex).toBeGreaterThan(-1);
     expect(ledgerBindIndex).toBeGreaterThan(captureIndex);
     expect(ledgerBindIndex).toBeLessThan(inspectIndex);
+    expect(tryIndex).toBeGreaterThan(inspectIndex);
     expect(leaseIndex).toBeGreaterThan(inspectIndex);
+    expect(leaseIndex).toBeGreaterThan(tryIndex);
     expect(ledgerReadIndex).toBeGreaterThan(leaseIndex);
     expect(detachDecisionIndex).toBeGreaterThan(ledgerReadIndex);
     expect(runtimeStopIndex).toBeGreaterThan(leaseIndex);
@@ -90,7 +95,7 @@ describe('market Ghost session boundary', () => {
     expect(body).toContain('onPackagePlaced: () => {');
     expect(body).toContain('packagePlaced = true;');
     expect(body).toMatch(/if \(!packagePlaced\) \{\s+restoreMarketRecord\(\);/);
-    expect(body).toContain('releaseMutation();');
+    expect(body).toContain('releaseMutation?.();');
     expect(body).not.toContain('GHOST_SOURCE_CONFLICT');
   });
 
@@ -128,7 +133,9 @@ describe('market Ghost session boundary', () => {
     const waitIndex = body.indexOf(
       'await getGhostNodeRuntimeBroker().stopAndWait(inspected.manifest.id);',
     );
-    const tryIndex = body.indexOf('try {\n        runtime.stop(inspected.manifest.id);');
+    const tryIndex = body.indexOf(
+      'try {\n        releaseMutation = beginGhostMutation(mutationOwner);',
+    );
     const updateIndex = body.indexOf('result = await manager.update(lizFilePath');
     const restoreIndex = body.indexOf(
       'if (previousGhostAtMutation) spawnIfResident(previousGhostAtMutation);',
@@ -139,7 +146,7 @@ describe('market Ghost session boundary', () => {
     expect(waitIndex).toBeGreaterThan(-1);
     expect(waitIndex).toBeLessThan(updateIndex);
     expect(restoreIndex).toBeGreaterThan(waitIndex);
-    expect(body).toMatch(/finally \{\s+releaseMutation\(\);/);
+    expect(body).toMatch(/finally \{\s+releaseMutation\?\.\(\);\s+releaseIOSMutation\(\);/);
     expect(body).toContain(
       "throwIpcError('INTERNAL', 'Unable to verify the installed Plugin source');",
     );
@@ -186,17 +193,24 @@ describe('market Ghost session boundary', () => {
     const capabilityIndex = body.indexOf(
       'const releaseIOSMutation = await acquireIOSSimulatorManifestMutation(',
     );
-    const leaseIndex = body.indexOf('const releaseMutation = beginGhostMutation(mutationOwner);');
+    const tryIndex = body.indexOf(
+      'try {\n        releaseMutation = beginGhostMutation(mutationOwner);',
+    );
+    const leaseIndex = body.indexOf('releaseMutation = beginGhostMutation(mutationOwner);');
 
     expect(installLockIndex).toBeGreaterThan(-1);
     expect(capabilityIndex).toBeGreaterThan(installLockIndex);
+    expect(tryIndex).toBeGreaterThan(capabilityIndex);
     expect(leaseIndex).toBeGreaterThan(capabilityIndex);
+    expect(leaseIndex).toBeGreaterThan(tryIndex);
     expect(body).toMatch(
       /acquireIOSSimulatorManifestMutation\(\s*\[\s*previousGhost\?\.manifest,\s*inspected\.canonicalManifest,?\s*\]/,
     );
     expect(body).toContain('const previousGhostAtMutation =');
     expect(body).toContain('spawnIfResident(previousGhostAtMutation)');
     expect(body).toContain('await releaseIOSSimulatorAfterCapabilityLoss(');
-    expect(body).toMatch(/finally \{\s+releaseMutation\(\);\s+releaseIOSMutation\(\);/);
+    expect(body).toMatch(
+      /finally \{\s+releaseMutation\?\.\(\);\s+releaseIOSMutation\(\);/,
+    );
   });
 });

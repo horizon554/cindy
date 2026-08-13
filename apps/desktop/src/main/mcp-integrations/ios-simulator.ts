@@ -6355,9 +6355,8 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
 
         if (!scoped) {
           globalDeactivationInProgress = true;
-          // Close the actor queues before ownership reconciliation. This is the
-          // point at which the shell guard's protection becomes stricter, so no
-          // new boot/mutation can race the final sweep.
+          // Close the actor queues before ownership reconciliation so no new
+          // Host boot or mutation can race the final sweep.
           await Promise.all([actor.cancelAllLifecycleStarts(), actor.cancelAllMutations()]);
         }
         const pendingCreateEvidenceArmed = pendingCreateEvidence?.isArmed() === true;
@@ -6367,7 +6366,7 @@ export function createIOSSimulatorHost(options: IOSSimulatorHostOptions = {}): I
         ) {
           // A create can cross `simctl create` before its binding is persisted.
           // Complete the pending-create sweep while admission is closed so a
-          // hidden marker device cannot outlive the Host and its shell guard.
+          // hidden marker device cannot outlive the Host and writer lease.
           // Force a fresh ownership pass after an earlier successful reconcile:
           // capability shutdown must also sweep a marker armed after that pass.
           if (pendingCreateEvidenceArmed) startupPendingCreateRecoveryAttempted = false;
