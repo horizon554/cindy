@@ -535,7 +535,10 @@ import {
   shouldRecycleHandoffWorktreeOnFailure,
 } from './handoffWorktree.js';
 import { validateHandoffWorkingDir } from './handoffWorkingDir.js';
-import { registerProjectPluginPolicyHandlers } from './projectPluginPolicyHandlers.js';
+import {
+  registerProjectPluginPolicyHandlers,
+  resolveMainOwnedIOSSimulatorProject,
+} from './projectPluginPolicyHandlers.js';
 import {
   TURN_CHANGE_SET_DETAIL_ID_LIMIT,
   TurnChangeSetActionError,
@@ -13307,10 +13310,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     },
   );
 
-  ipcMain.handle(MAKER_INVOKE.PLUGINS_SET_ENABLED, async (_e, id: unknown, enabled: unknown) => {
+  ipcMain.handle(MAKER_INVOKE.PLUGINS_SET_ENABLED, async (event, id: unknown, enabled: unknown) => {
     if (typeof id !== 'string' || typeof enabled !== 'boolean') {
       throwIpcError('INVALID_PARAMS', 'id (string) + enabled (boolean) required');
     }
+    if (id === 'ios-simulator') assertTrustedAppRendererEvent(event);
     return runBuiltinToolMutation(id, async () => {
       const ok = await getPluginRegistry().setEnabled(id, enabled);
       if (!ok) {
@@ -13345,10 +13349,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     });
   });
 
-  ipcMain.handle(MAKER_INVOKE.PLUGINS_CLEAR_ENABLED, async (_e, id: unknown) => {
+  ipcMain.handle(MAKER_INVOKE.PLUGINS_CLEAR_ENABLED, async (event, id: unknown) => {
     if (typeof id !== 'string') {
       throwIpcError('INVALID_PARAMS', 'id (string) required');
     }
+    if (id === 'ios-simulator') assertTrustedAppRendererEvent(event);
     return runBuiltinToolMutation(id, async () => {
       const ok = await getPluginRegistry().clearEnabled(id);
       if (!ok) {
@@ -13376,6 +13381,16 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   registerProjectPluginPolicyHandlers(createElectronIpcHandlerRegistry(), {
     getPluginRegistry,
+    assertTrustedSender: (event) =>
+      assertTrustedAppRendererEvent(event as Parameters<typeof assertTrustedAppRendererEvent>[0]),
+    resolveIOSSimulatorProjectWorkingDir: async (requestedWorkingDir) => {
+      const activeSessions = maker.listActiveSessions();
+      const persistedSessions = await maker.listAllMeta().catch(() => []);
+      return resolveMainOwnedIOSSimulatorProject(requestedWorkingDir, [
+        ...activeSessions,
+        ...persistedSessions,
+      ]);
+    },
     runPolicyMutation: (id, mutation) => runBuiltinToolMutation(id, mutation),
     onProjectPolicyChanged: async ({ workingDir, id, effectiveEnabled }) => {
       if (id === 'ios-simulator' && !effectiveEnabled) {

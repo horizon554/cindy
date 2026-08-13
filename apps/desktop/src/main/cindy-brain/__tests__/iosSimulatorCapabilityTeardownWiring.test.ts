@@ -66,4 +66,32 @@ describe('iOS Simulator capability teardown wiring', () => {
     );
     expect(helper).toContain('reconcilePendingCreates,');
   });
+
+  it('guards built-in-tool cleanup mutations at the trusted Main IPC boundary', () => {
+    const setStart = makerIpcSource.indexOf('ipcMain.handle(MAKER_INVOKE.PLUGINS_SET_ENABLED');
+    const clearStart = makerIpcSource.indexOf(
+      'ipcMain.handle(MAKER_INVOKE.PLUGINS_CLEAR_ENABLED',
+      setStart,
+    );
+    const projectStart = makerIpcSource.indexOf('registerProjectPluginPolicyHandlers', clearStart);
+    const setHandler = makerIpcSource.slice(setStart, clearStart);
+    const clearHandler = makerIpcSource.slice(clearStart, projectStart);
+    const projectWiring = makerIpcSource.slice(
+      projectStart,
+      makerIpcSource.indexOf('// ── Android automation', projectStart),
+    );
+
+    for (const handler of [setHandler, clearHandler]) {
+      expect(handler).toContain(
+        "if (id === 'ios-simulator') assertTrustedAppRendererEvent(event);",
+      );
+      expect(
+        handler.indexOf("if (id === 'ios-simulator') assertTrustedAppRendererEvent(event);"),
+      ).toBeLessThan(handler.indexOf('runBuiltinToolMutation'));
+    }
+    expect(projectWiring).toContain('assertTrustedSender: (event) =>');
+    expect(projectWiring).toContain('resolveIOSSimulatorProjectWorkingDir: async');
+    expect(projectWiring).toContain('maker.listAllMeta().catch(() => [])');
+    expect(projectWiring).toContain('resolveMainOwnedIOSSimulatorProject(requestedWorkingDir');
+  });
 });
