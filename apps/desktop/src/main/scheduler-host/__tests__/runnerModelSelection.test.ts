@@ -204,6 +204,12 @@ function createRunnerHarness(
     resolveDefaultModelRoute?: ConstructorParameters<
       typeof MakerScheduleRunner
     >[0]['resolveDefaultModelRoute'];
+    resolveCodexRouteCapabilities?: ConstructorParameters<
+      typeof MakerScheduleRunner
+    >[0]['resolveCodexRouteCapabilities'];
+    getCodexAuthInjection?: ConstructorParameters<
+      typeof MakerScheduleRunner
+    >[0]['getCodexAuthInjection'];
   } = {},
 ): RunnerHarness {
   const createSession = vi.fn(async () => h.session);
@@ -229,6 +235,8 @@ function createRunnerHarness(
     checkModelRoute: opts.checkModelRoute,
     resolveRouteCopyCapabilities: opts.resolveRouteCopyCapabilities,
     resolveDefaultModelRoute: opts.resolveDefaultModelRoute,
+    resolveCodexRouteCapabilities: opts.resolveCodexRouteCapabilities,
+    getCodexAuthInjection: opts.getCodexAuthInjection,
   });
   return { runner, createSession, closeSession };
 }
@@ -1253,6 +1261,56 @@ describe('MakerScheduleRunner model selection', () => {
         'scheduler-session',
         expect.objectContaining({ model: 'gpt-5.4', providerId: 'openai' }),
         expect.anything(),
+      );
+    });
+
+    it('heartbeat 复用本地 Codex 且仅跨 CodeModeOnly 能力 → 关闭后按新来源重建', async () => {
+      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active', providerId: 'xd' });
+      const h = createSessionHarness();
+      Object.defineProperty(h.session, 'agentKind', { value: 'codex' });
+      Object.defineProperty(h.session, 'model', { value: 'shared-model' });
+      Object.defineProperty(h.session, 'codexProxyActive', { value: true });
+      const otherBusyCodexSession = {
+        id: 'other-busy-codex-session',
+        agentKind: 'codex',
+        remoteHostId: null,
+        isTurnRunning: () => true,
+      } as unknown as Session;
+      const harness = createRunnerHarness(
+        h,
+        {
+          model: 'shared-model',
+          workDir: '/work',
+          sdkSessionId: 'sdk-codemode-1',
+        },
+        {
+          sessionAlive: true,
+          activeSessions: [h.session, otherBusyCodexSession],
+          getCodexAuthInjection: () => 'env-key',
+          resolveCodexRouteCapabilities: async ({ providerId }) => ({
+            requiresCodeModeOnly: providerId === 'xd',
+          }),
+        },
+      );
+
+      await fireToCompletion(
+        harness,
+        h,
+        baseSchedule({
+          agentKind: 'codex',
+          model: 'shared-model',
+          providerId: 'deepseek',
+          targetSessionId: 'scheduler-session',
+        }),
+      );
+
+      expect(harness.closeSession).toHaveBeenCalledWith('scheduler-session');
+      expect(harness.closeSession).not.toHaveBeenCalledWith('other-busy-codex-session');
+      expect(harness.closeSession.mock.invocationCallOrder[0]).toBeLessThan(
+        harness.createSession.mock.invocationCallOrder[0],
+      );
+      expect(harness.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: 'deepseek', model: 'shared-model' }),
       );
     });
 

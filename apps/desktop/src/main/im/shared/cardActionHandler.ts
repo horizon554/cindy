@@ -27,6 +27,7 @@ import {
 
 import { createLogger } from '../../logger';
 import { getMaker } from '../../maker-host';
+import { getCodexProxyAuthInjectionState } from '../../maker-host/codex-proxy-host';
 import { resolveLenientSessionRoute } from '../../maker-host/model-route-guard-live';
 import {
   getSessionProvider,
@@ -384,6 +385,7 @@ export function createCardActionHandler(
           clearPendingCredentialSwitch: clearPendingCredentialSwitchForSession,
           wakeSessionInputQueue: wakeSessionInputAfterCredentialSwitch,
           getPendingCredentialSwitch: getPendingCredentialSwitchTarget,
+          codexAuthInjection: getCodexProxyAuthInjectionState(),
           logger: log,
         });
 

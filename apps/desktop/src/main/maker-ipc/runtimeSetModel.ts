@@ -48,7 +48,7 @@ interface RuntimeSetModelLogger {
   info: (message: string, meta?: Record<string, unknown>) => void;
 }
 
-type CodexRouteCapabilitiesResolver = (args: Parameters<
+export type CodexRouteCapabilitiesResolver = (args: Parameters<
   typeof resolveCodexRouteCapabilities
 >[0]) =>
   | { requiresCodeModeOnly?: boolean }
@@ -126,16 +126,17 @@ function credentialModeForCodexRoute(
   return undefined;
 }
 
-async function crossesCodexCodeModeOnlyBoundary(args: {
+export async function crossesCodexCodeModeOnlyBoundary(args: {
   currentProviderId: string | null;
   nextProviderId: string | null;
   currentModel: string;
   nextModel: string;
   codexAuthInjection?: CodexProxyAuthInjection | null;
-  resolver: CodexRouteCapabilitiesResolver;
+  resolver?: CodexRouteCapabilitiesResolver;
 }): Promise<boolean> {
+  const resolver = args.resolver ?? resolveCodexRouteCapabilities;
   const [currentCapability, nextCapability] = await Promise.all([
-    args.resolver({
+    resolver({
       providerId: args.currentProviderId,
       model: args.currentModel,
       credentialMode: credentialModeForCodexRoute(
@@ -144,7 +145,7 @@ async function crossesCodexCodeModeOnlyBoundary(args: {
         args.codexAuthInjection,
       ),
     }),
-    args.resolver({
+    resolver({
       providerId: args.nextProviderId,
       model: args.nextModel,
       credentialMode: credentialModeForCodexRoute(

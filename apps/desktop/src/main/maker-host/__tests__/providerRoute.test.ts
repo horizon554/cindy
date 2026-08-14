@@ -159,11 +159,13 @@ describe('Codex CodeModeOnly route capability', () => {
   });
 
   it.each([
-    ['deepseek', 'deepseek-v4-pro'],
-    ['zhipu-glm', 'glm-5.2'],
+    ['deepseek', 'deepseek-v4-pro', 'deepseek-v4-pro'],
+    ['zhipu-glm', 'glm-5.2', 'glm-5.2'],
+    ['zhipu-glm', 'glm-5.2', 'glm-5.2[1m]'],
   ])('uses the connected implicit %s Chat bridge instead of the spawn fallback', async (
     providerId,
-    model,
+    catalogModel,
+    wireModel,
   ) => {
     setCustomProviders([
       buildUserProvider({
@@ -173,7 +175,7 @@ describe('Codex CodeModeOnly route capability', () => {
           codex: {
             baseUrl: `https://${providerId}.example.com`,
             wireProtocol: 'openai-chat',
-            models: [{ id: model, name: model }],
+            models: [{ id: catalogModel, name: catalogModel }],
           },
         },
       }),
@@ -184,7 +186,7 @@ describe('Codex CodeModeOnly route capability', () => {
 
     await expect(resolveCodexRouteCapabilities({
       providerId: null,
-      model,
+      model: wireModel,
       credentialMode: 'gateway-key',
     })).resolves.toEqual({ requiresCodeModeOnly: false });
   });

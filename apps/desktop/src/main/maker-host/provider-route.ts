@@ -561,8 +561,9 @@ export async function resolveCodexRouteCapabilities(args: {
   // connected ProviderView snapshot, not from catalog membership alone. Keep
   // the capability decision on that same source so an implicit DeepSeek, GLM,
   // or Anthropic bridge never inherits the spawn host's Gateway capability.
-  if (!providerId && model && hasImplicitLocalBridgeCandidate(model, 'codex')) {
-    const provider = await connectedDefaultProviderForModel(model.replace(/\[1m\]$/, ''), 'codex');
+  const catalogModel = model.replace(/\[1m\]$/, '');
+  if (!providerId && catalogModel && hasImplicitLocalBridgeCandidate(catalogModel, 'codex')) {
+    const provider = await connectedDefaultProviderForModel(catalogModel, 'codex');
     const routing = provider
       ? providerRoutingForModel(provider, 'codex', model)
       : null;

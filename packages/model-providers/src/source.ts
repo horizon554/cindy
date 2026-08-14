@@ -263,6 +263,9 @@ function backfillCodexRouteCapabilities(primary: Provider, bundled: Provider): P
     !primaryCodex
     || bundledCodex?.requiresCodeModeOnly === undefined
     || primaryCodex.requiresCodeModeOnly !== undefined
+    || primaryCodex.authStrategy !== bundledCodex.authStrategy
+    || (primaryCodex.wireProtocol ?? 'openai-responses')
+      !== (bundledCodex.wireProtocol ?? 'openai-responses')
   ) {
     return primary;
   }

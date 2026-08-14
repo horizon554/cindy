@@ -298,6 +298,39 @@ describe('mergeWithBundled', () => {
     });
     expect(explicitlyDisabled.providers.find((p) => p.id === 'xd')?.routing.codex?.requiresCodeModeOnly)
       .toBe(false);
+
+    const directResponsesXd = mergeWithBundled({
+      version: '2',
+      providers: [{
+        ...oldRemoteXd,
+        routing: {
+          ...oldRemoteXd.routing,
+          codex: {
+            ...oldRemoteXd.routing.codex!,
+            authStrategy: 'api-key-header',
+            wireProtocol: 'openai-responses',
+          },
+        },
+      }],
+    });
+    expect(directResponsesXd.providers.find((p) => p.id === 'xd')?.routing.codex?.requiresCodeModeOnly)
+      .toBeUndefined();
+
+    const chatBridgeXd = mergeWithBundled({
+      version: '2',
+      providers: [{
+        ...oldRemoteXd,
+        routing: {
+          ...oldRemoteXd.routing,
+          codex: {
+            ...oldRemoteXd.routing.codex!,
+            wireProtocol: 'openai-chat',
+          },
+        },
+      }],
+    });
+    expect(chatBridgeXd.providers.find((p) => p.id === 'xd')?.routing.codex?.requiresCodeModeOnly)
+      .toBeUndefined();
   });
 
   it('旧远端改变鉴权或路由形状时不继承 bundled 图像能力', () => {
