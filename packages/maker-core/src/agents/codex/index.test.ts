@@ -3422,7 +3422,10 @@ describe('CodexAgent.startSession developerInstructions', () => {
         requiresCodeModeOnly: providerId === 'xd',
       }),
     }));
-    const host = installFakeHost(agent);
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.ExperimentalFeatureEnablementSet) return {};
+      return undefined;
+    }, { userAgent: 'mock-codex/0.145.0' });
 
     const nativeHandle = await agent.startSession({
       sessionId: 'session-native-responses',
@@ -3448,6 +3451,24 @@ describe('CodexAgent.startSession developerInstructions', () => {
     };
     expect(gatewayParams.config?.['features.code_mode_only']).toBe(true);
     await gatewayHandle.close();
+
+    host.request.mock.calls.length = 0;
+    const reviewDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-review-codemode-'));
+    tempRoots.push(reviewDir);
+    const reviewGatewayHandle = await agent.startSession({
+      sessionId: 'session-cindy-gateway-review-codemode',
+      model: 'codex/gpt-5.5',
+      providerId: 'xd',
+      workingDir: reviewDir,
+      reviewMode: true,
+    });
+    const reviewGatewayParams = host.request.mock.calls.find(
+      ([method]) => method === Method.ThreadStart,
+    )?.[1] as {
+      config?: Record<string, unknown>;
+    };
+    expect(reviewGatewayParams.config?.['features.code_mode_only']).toBe(true);
+    await reviewGatewayHandle.close();
 
     host.request.mock.calls.length = 0;
     const resumedNativeHandle = await agent.startSession({

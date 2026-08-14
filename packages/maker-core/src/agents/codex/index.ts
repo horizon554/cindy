@@ -4764,7 +4764,7 @@ export class CodexAgent extends BaseAgent {
     const resolveRequiresCodeModeOnly = async (): Promise<boolean | undefined> => {
       // Remote daemons own their own route configuration. The Desktop catalog
       // capability only applies to the local loopback proxy.
-      if (reviewMode || opts.remoteHostId) return undefined;
+      if (opts.remoteHostId) return undefined;
       try {
         return (await this.deps.resolveCodexRouteCapabilities?.({
           sessionId: sid,
