@@ -5,7 +5,11 @@ import {
   getSessionProvider,
   setSessionProvider,
 } from '../../maker-host/session-provider-store.js';
-import { applyRuntimeSetModelChange, type RuntimeSetModelMaker } from '../runtimeSetModel.js';
+import {
+  applyRuntimeSetModelChange,
+  crossesCodexCodeModeOnlyBoundary,
+  type RuntimeSetModelMaker,
+} from '../runtimeSetModel.js';
 
 const touchedSessions = new Set<string>();
 
@@ -314,6 +318,36 @@ describe('applyRuntimeSetModelChange', () => {
     expect(closeSession).toHaveBeenCalledWith(sessionId);
     expect(setModel).not.toHaveBeenCalled();
     expect(getSessionProvider(sessionId)).toBe('deepseek');
+  });
+
+  it('prefers the active proxy auth shape over an explicit provider-derived mode', async () => {
+    const resolver = vi.fn(async ({
+      providerId,
+      credentialMode,
+    }: {
+      providerId?: string | null;
+      credentialMode?: string;
+    }) => ({
+      requiresCodeModeOnly: providerId === 'openai' && credentialMode === 'gateway-key',
+    }));
+
+    await expect(crossesCodexCodeModeOnlyBoundary({
+      currentProviderId: 'openai',
+      nextProviderId: 'deepseek',
+      currentModel: 'gpt-5.4',
+      nextModel: 'deepseek-v4-pro',
+      codexAuthInjection: 'env-key',
+      resolver,
+    })).resolves.toBe(true);
+
+    expect(resolver).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      providerId: 'openai',
+      credentialMode: 'gateway-key',
+    }));
+    expect(resolver).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      providerId: 'deepseek',
+      credentialMode: 'gateway-key',
+    }));
   });
 
   it('defers a busy CodeModeOnly route change until the turn boundary', async () => {

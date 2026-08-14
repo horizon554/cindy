@@ -114,16 +114,17 @@ function credentialModeForCodexRoute(
   model: string,
   authInjection: CodexProxyAuthInjection | null | undefined,
 ): AgentCredentialMode | undefined {
-  const explicit = resolveAgentCredentialMode({
+  // The already-spawned proxy shape is authoritative. An explicit builtin
+  // provider may remain on the session even when env-key/provider-oauth makes
+  // the proxy ignore that per-session route and use its actual default route.
+  if (authInjection === 'oauth-bearer') return 'oauth-bearer';
+  if (authInjection === 'env-key') return 'gateway-key';
+  if (authInjection === 'provider-oauth') return 'provider-oauth';
+  return resolveAgentCredentialMode({
     agentKind: 'codex',
     providerId,
     model,
   });
-  if (explicit) return explicit;
-  if (authInjection === 'oauth-bearer') return 'oauth-bearer';
-  if (authInjection === 'env-key') return 'gateway-key';
-  if (authInjection === 'provider-oauth') return 'provider-oauth';
-  return undefined;
 }
 
 export async function crossesCodexCodeModeOnlyBoundary(args: {
