@@ -21,12 +21,20 @@ import {
   prepareLocalSessionCredentialModeSwitch,
   shouldCloseSessionForCredentialSwitch,
 } from '../maker-host/codex-credential-switch.js';
+import {
+  codexThreadRotationSnapshotFromSession,
+  type CodexThreadRotationSnapshot,
+  type PrepareCodexThreadRotation,
+} from './codexThreadRotation.js';
 
 interface RuntimeSetModelSession {
+  id?: string;
   agentKind: AgentKind;
   remoteHostId?: string | null;
   codexProxyActive?: boolean | null;
   model: string;
+  sdkSessionId?: string | null;
+  workDir?: string | null;
   setModel: (model: string, opts?: { providerId?: string | null; effort?: Effort }) => Promise<void>;
 }
 
@@ -68,7 +76,11 @@ export interface ApplyRuntimeSetModelChangeInput {
    */
   registerPendingCredentialSwitch?: (
     sessionId: string,
-    target: { model: string; providerId: string | null },
+    target: {
+      model: string;
+      providerId: string | null;
+      codexThreadRotation?: CodexThreadRotationSnapshot;
+    },
   ) => void | Promise<void>;
   /**
    * 「无需切换」分支清掉旧 pending(后选覆盖先选)。典型场景:deferred 登记后
@@ -100,6 +112,8 @@ export interface ApplyRuntimeSetModelChangeInput {
   codexAuthInjection?: CodexProxyAuthInjection | null;
   /** Test seam for the final-route capability resolver. Production uses the active catalog. */
   resolveCodexRouteCapabilitiesForSwitch?: CodexRouteCapabilitiesResolver;
+  /** Fork and atomically rebind a Codex thread before crossing CodeModeOnly. */
+  prepareCodexThreadRotation?: PrepareCodexThreadRotation;
   logger?: RuntimeSetModelLogger;
 }
 
@@ -247,6 +261,19 @@ export async function applyRuntimeSetModelChange(
   }
   const shouldCloseSession =
     shouldCloseSessionForCredentials || shouldCloseSessionForCodeModeOnly;
+  const codexThreadRotation = shouldCloseSessionForCodeModeOnly && sess
+    ? codexThreadRotationSnapshotFromSession(
+        {
+          id: sessionId,
+          agentKind: sess.agentKind,
+          remoteHostId: sess.remoteHostId,
+          sdkSessionId: sess.sdkSessionId,
+          model: sess.model,
+          workDir: sess.workDir,
+        },
+        currentProviderId,
+      )
+    : null;
   let selfBusyMemo: boolean | undefined;
   const isSelfBusy = (): boolean => {
     if (selfBusyMemo !== undefined) return selfBusyMemo;
@@ -275,6 +302,7 @@ export async function applyRuntimeSetModelChange(
       await input.registerPendingCredentialSwitch(sessionId, {
         model,
         providerId: nextProviderId,
+        ...(codexThreadRotation ? { codexThreadRotation } : {}),
       });
       logger?.info('set-model: Codex provider route switch deferred until turn end', {
         sessionId,
@@ -296,6 +324,7 @@ export async function applyRuntimeSetModelChange(
       await input.registerPendingCredentialSwitch(sessionId, {
         model,
         providerId: nextProviderId,
+        ...(codexThreadRotation ? { codexThreadRotation } : {}),
       });
       logger?.info('set-model: credential switch deferred until turn end', {
         sessionId,
@@ -316,7 +345,16 @@ export async function applyRuntimeSetModelChange(
     // (Greptile review #1035)。
     const clearedPending = input.getPendingCredentialSwitch?.(sessionId);
     input.clearPendingCredentialSwitch?.(sessionId, { wake: false });
+    let preparedRotation: Awaited<ReturnType<PrepareCodexThreadRotation>> | undefined;
     try {
+      if (shouldCloseSessionForCodeModeOnly) {
+        if (codexThreadRotation && !input.prepareCodexThreadRotation) {
+          throw new Error('Codex CodeModeOnly boundary requires thread rotation');
+        }
+        if (codexThreadRotation) {
+          preparedRotation = await input.prepareCodexThreadRotation!(codexThreadRotation);
+        }
+      }
       await prepareLocalSessionCredentialModeSwitch({
         maker,
         sessionId,
@@ -326,9 +364,11 @@ export async function applyRuntimeSetModelChange(
       // 空闲判定与 close 之间的竞态(恰好起了新 turn):有 pending 通道就转延迟,
       // 没有(老调用方)保持抛 busy 的旧语义。
       if (isCredentialModeSwitchBusyError(err) && input.registerPendingCredentialSwitch) {
+        await preparedRotation?.rollback();
         input.registerPendingCredentialSwitch(sessionId, {
           model,
           providerId: nextProviderId,
+          ...(codexThreadRotation ? { codexThreadRotation } : {}),
         });
         logger?.info('set-model: credential switch deferred after busy race', {
           sessionId,
@@ -340,6 +380,7 @@ export async function applyRuntimeSetModelChange(
       if (clearedPending && input.registerPendingCredentialSwitch) {
         input.registerPendingCredentialSwitch(sessionId, clearedPending);
       }
+      await preparedRotation?.rollback();
       throw err;
     }
     if (providerId !== undefined) setSessionProvider(sessionId, nextProviderId);

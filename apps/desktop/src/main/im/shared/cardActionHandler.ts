@@ -39,6 +39,7 @@ import {
   clearPendingCredentialSwitchForSession,
   getPendingCredentialSwitchTarget,
   isSessionInTurn,
+  prepareCodexThreadRotationForSession,
   registerPendingCredentialSwitchForSession,
   withSendToSessionLock,
   wakeSessionInputAfterCredentialSwitch,
@@ -386,6 +387,7 @@ export function createCardActionHandler(
           wakeSessionInputQueue: wakeSessionInputAfterCredentialSwitch,
           getPendingCredentialSwitch: getPendingCredentialSwitchTarget,
           codexAuthInjection: getCodexProxyAuthInjectionState(),
+          prepareCodexThreadRotation: prepareCodexThreadRotationForSession,
           logger: log,
         });
 

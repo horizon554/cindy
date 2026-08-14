@@ -450,4 +450,12 @@ describe('register.ts 真实接线经由共享工厂(源码断言,#2506)', () =>
       "cleanupPendingInteractionsForSession(sessionId, 'session_aborted')",
     );
   });
+
+  it('owner boundary 同时清理逐会话凭证切换和 catalog rebuild 登记', () => {
+    const boundaryBlock = registerSource.slice(
+      registerSource.indexOf('export async function clearDeferredCodexRestartForOwnerBoundary'),
+    );
+    expect(boundaryBlock.slice(0, 400)).toContain('pendingCredentialSwitchHolder?.clearAll()');
+    expect(boundaryBlock.slice(0, 400)).toContain('codexRouteRebuildHolder?.clearAsync()');
+  });
 });

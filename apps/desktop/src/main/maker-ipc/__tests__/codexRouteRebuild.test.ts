@@ -60,6 +60,9 @@ function localCodex(
     agentKind: 'codex',
     remoteHostId: null,
     model: 'codex/gpt-5.5',
+    sdkSessionId: `thread-${id}`,
+    workDir: '/work',
+    providerId: 'xd',
     codexRouteRequiresCodeModeOnly: frozen,
     isTurnRunning,
   };
@@ -87,6 +90,35 @@ describe('CodexRouteRebuildService', () => {
     expect(h.closeSession).toHaveBeenCalledWith('idle');
     expect(h.service.has('idle')).toBe(false);
     expect(h.onApplied).toHaveBeenCalledWith('idle');
+  });
+
+  it('rotates the native thread before an idle catalog rebuild', async () => {
+    const sessions = [localCodex('rotate', false)];
+    const closeSession = vi.fn(async () => {
+      sessions.splice(0, 1);
+    });
+    const prepareCodexThreadRotation = vi.fn(async () => ({
+      newSdkSessionId: 'thread-rotate-new',
+      rollback: vi.fn(async () => undefined),
+    }));
+    const service = new CodexRouteRebuildService({
+      maker: { listActiveSessions: () => sessions, closeSession },
+      abortSession: vi.fn(async () => undefined),
+      resolveRequiresCodeModeOnly: async () => true,
+      prepareCodexThreadRotation,
+      retryDelayMs: 60_000,
+    });
+
+    await service.reconcile(2);
+
+    expect(prepareCodexThreadRotation).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'rotate',
+      sourceSdkSessionId: 'thread-rotate',
+      sourceProviderId: 'xd',
+    }));
+    expect(prepareCodexThreadRotation.mock.invocationCallOrder[0]).toBeLessThan(
+      closeSession.mock.invocationCallOrder[0],
+    );
   });
 
   it('interrupts a busy turn once, then closes after the terminal boundary', async () => {
@@ -142,6 +174,40 @@ describe('CodexRouteRebuildService', () => {
     expect(abortSession).toHaveBeenCalledWith('busy-fast');
     running = false;
     await service.onTurnSettled('busy-fast');
+  });
+
+  it('does not rotate when an unrelated close races an unchanged catalog comparison', async () => {
+    const sessions = [localCodex('close-before-compare', false)];
+    const lookup = deferred<boolean>();
+    const prepareCodexThreadRotation = vi.fn(async () => ({
+      newSdkSessionId: 'thread-close-before-compare-new',
+      rollback: vi.fn(async () => undefined),
+    }));
+    const onApplied = vi.fn();
+    const service = new CodexRouteRebuildService({
+      maker: {
+        listActiveSessions: () => sessions,
+        closeSession: vi.fn(async () => undefined),
+      },
+      abortSession: vi.fn(async () => undefined),
+      resolveRequiresCodeModeOnly: () => lookup.promise,
+      prepareCodexThreadRotation,
+      onApplied,
+      retryDelayMs: 60_000,
+    });
+
+    const reconcile = service.reconcile(4);
+    await vi.waitFor(() => expect(service.has('close-before-compare')).toBe(true));
+    sessions.splice(0, 1);
+    service.onSessionClosed('close-before-compare');
+
+    expect(prepareCodexThreadRotation).not.toHaveBeenCalled();
+    lookup.resolve(false);
+    await reconcile;
+
+    expect(prepareCodexThreadRotation).not.toHaveBeenCalled();
+    expect(service.has('close-before-compare')).toBe(false);
+    expect(onApplied).toHaveBeenCalledWith('close-before-compare');
   });
 
   it('keeps the queue gated if the terminal signal arrives before abort settles', async () => {

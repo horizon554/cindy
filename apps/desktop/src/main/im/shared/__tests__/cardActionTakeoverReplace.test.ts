@@ -28,6 +28,10 @@ const mocks = vi.hoisted(() => ({
   clearPendingCredentialSwitchForSession: vi.fn(),
   wakeSessionInputAfterCredentialSwitch: vi.fn(),
   getPendingCredentialSwitchTarget: vi.fn(() => undefined),
+  prepareCodexThreadRotationForSession: vi.fn(async () => ({
+    newSdkSessionId: 'thread-new',
+    rollback: vi.fn(async () => undefined),
+  })),
   readModelRouteSnapshot: vi.fn(
     async (): Promise<{ model: string; effort: string; providerId: string | null } | null> => null,
   ),
@@ -105,6 +109,7 @@ vi.mock('../../../maker-ipc/register', () => ({
   clearPendingCredentialSwitchForSession: mocks.clearPendingCredentialSwitchForSession,
   wakeSessionInputAfterCredentialSwitch: mocks.wakeSessionInputAfterCredentialSwitch,
   getPendingCredentialSwitchTarget: mocks.getPendingCredentialSwitchTarget,
+  prepareCodexThreadRotationForSession: mocks.prepareCodexThreadRotationForSession,
   withSendToSessionLock: mocks.withSendToSessionLock,
 }));
 vi.mock('../pendingInteractions', () => ({

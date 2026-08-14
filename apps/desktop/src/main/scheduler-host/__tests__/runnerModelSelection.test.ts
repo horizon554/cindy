@@ -210,6 +210,9 @@ function createRunnerHarness(
     getCodexAuthInjection?: ConstructorParameters<
       typeof MakerScheduleRunner
     >[0]['getCodexAuthInjection'];
+    prepareCodexThreadRotation?: ConstructorParameters<
+      typeof MakerScheduleRunner
+    >[0]['prepareCodexThreadRotation'];
   } = {},
 ): RunnerHarness {
   const createSession = vi.fn(async () => h.session);
@@ -237,6 +240,7 @@ function createRunnerHarness(
     resolveDefaultModelRoute: opts.resolveDefaultModelRoute,
     resolveCodexRouteCapabilities: opts.resolveCodexRouteCapabilities,
     getCodexAuthInjection: opts.getCodexAuthInjection,
+    prepareCodexThreadRotation: opts.prepareCodexThreadRotation,
   });
   return { runner, createSession, closeSession };
 }
@@ -1290,6 +1294,10 @@ describe('MakerScheduleRunner model selection', () => {
           resolveCodexRouteCapabilities: async ({ providerId }) => ({
             requiresCodeModeOnly: providerId === 'xd',
           }),
+          prepareCodexThreadRotation: async () => ({
+            newSdkSessionId: 'sdk-codemode-forked',
+            rollback: vi.fn(async () => undefined),
+          }),
         },
       );
 
@@ -1310,7 +1318,11 @@ describe('MakerScheduleRunner model selection', () => {
         harness.createSession.mock.invocationCallOrder[0],
       );
       expect(harness.createSession).toHaveBeenCalledWith(
-        expect.objectContaining({ providerId: 'deepseek', model: 'shared-model' }),
+        expect.objectContaining({
+          providerId: 'deepseek',
+          model: 'shared-model',
+          resumeSessionId: 'sdk-codemode-forked',
+        }),
       );
     });
 

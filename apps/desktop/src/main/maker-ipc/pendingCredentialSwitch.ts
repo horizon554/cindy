@@ -6,6 +6,11 @@ import {
   prepareLocalSessionCredentialModeSwitch,
 } from '../maker-host/codex-credential-switch.js';
 import { setSessionProvider } from '../maker-host/session-provider-store.js';
+import type {
+  CodexThreadRotationSnapshot,
+  PrepareCodexThreadRotation,
+  PreparedCodexThreadRotation,
+} from './codexThreadRotation.js';
 
 /**
  * PendingCredentialSwitchService —— 会话凭证形态切换的「延迟生效」登记表。
@@ -47,6 +52,10 @@ export interface PendingCredentialSwitch {
    * 缺席 = 无从回滚,退化为只清显式来源。
    */
   previousRoute?: { model: string; providerId: string | null; effort?: string; fastMode?: boolean };
+  /** CodeModeOnly is sticky to a native Codex thread; rotate it before closing. */
+  codexThreadRotation?: CodexThreadRotationSnapshot;
+  /** The DB binding already points at the fork. Do not fork again on retry. */
+  preparedCodexThreadRotation?: PreparedCodexThreadRotation;
   requestedAt: number;
 }
 
@@ -102,6 +111,7 @@ export interface PendingCredentialSwitchDeps {
     sessionId: string,
     route: { providerId: string | null; model?: string; effort?: string; fastMode?: boolean },
   ) => Promise<void>;
+  prepareCodexThreadRotation?: PrepareCodexThreadRotation;
   /** 自愈兜底重试间隔覆写(测试用)。 */
   retryDelayMs?: number;
   logger?: {
@@ -115,6 +125,7 @@ export class PendingCredentialSwitchService {
   private readonly pending = new Map<string, PendingCredentialSwitch>();
   /** 同一会话的 apply 串行化:turn done/error 双事件可能背靠背触发。 */
   private readonly applying = new Set<string>();
+  private readonly rotationTasks = new Set<Promise<boolean>>();
   /** 自愈兜底定时器(per session,pending 收口即清)。 */
   private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -127,6 +138,7 @@ export class PendingCredentialSwitchService {
       providerId: string | null;
       agentKind?: AgentKind;
       previousRoute?: { model: string; providerId: string | null; effort?: string; fastMode?: boolean };
+      codexThreadRotation?: CodexThreadRotationSnapshot;
     },
   ): void {
     this.pending.set(sessionId, {
@@ -134,6 +146,7 @@ export class PendingCredentialSwitchService {
       providerId: target.providerId,
       ...(target.agentKind ? { agentKind: target.agentKind } : {}),
       ...(target.previousRoute ? { previousRoute: target.previousRoute } : {}),
+      ...(target.codexThreadRotation ? { codexThreadRotation: target.codexThreadRotation } : {}),
       requestedAt: Date.now(),
     });
     this.scheduleRetry(sessionId);
@@ -157,6 +170,58 @@ export class PendingCredentialSwitchService {
     this.clearRetry(sessionId);
   }
 
+  /** Drop every owner-scoped deferred switch without applying it. */
+  async clearAll(): Promise<void> {
+    const prepared = [...this.pending.values()]
+      .map((pending) => pending.preparedCodexThreadRotation)
+      .filter((rotation): rotation is PreparedCodexThreadRotation => rotation !== undefined);
+    this.pending.clear();
+    for (const timer of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
+    await Promise.allSettled([
+      ...prepared.map((rotation) => rotation.rollback()),
+      ...this.rotationTasks,
+    ]);
+  }
+
+  private async prepareThreadRotation(
+    sessionId: string,
+    target: PendingCredentialSwitch,
+  ): Promise<boolean> {
+    if (!target.codexThreadRotation || target.preparedCodexThreadRotation) return true;
+    if (!this.deps.prepareCodexThreadRotation) {
+      this.deps.logger?.warn('pending credential switch: Codex thread rotation unavailable; keeping queue gated', {
+        sessionId,
+      });
+      this.scheduleRetry(sessionId);
+      return false;
+    }
+    const task = (async (): Promise<boolean> => {
+      try {
+        const prepared = await this.deps.prepareCodexThreadRotation!(target.codexThreadRotation!);
+        if (this.pending.get(sessionId) !== target) {
+          await prepared.rollback();
+          return false;
+        }
+        target.preparedCodexThreadRotation = prepared;
+        return true;
+      } catch (err) {
+        this.deps.logger?.warn('pending credential switch: Codex thread rotation failed; keeping queue gated for retry', {
+          sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (this.pending.get(sessionId) === target) this.scheduleRetry(sessionId);
+        return false;
+      }
+    })();
+    this.rotationTasks.add(task);
+    try {
+      return await task;
+    } finally {
+      this.rotationTasks.delete(task);
+    }
+  }
+
   /**
    * turn 结束边界回调(register.ts done/error 接线 + 自愈定时器共用)。会话仍在
    * 跑(steer 接续 / 竞态)时保留 pending 等下一个边界;空闲则关会话 + 写 route,
@@ -173,6 +238,7 @@ export class PendingCredentialSwitchService {
 
     this.applying.add(sessionId);
     try {
+      if (!(await this.prepareThreadRotation(sessionId, target))) return;
       if (session) {
         try {
           await prepareLocalSessionCredentialModeSwitch({
@@ -182,7 +248,23 @@ export class PendingCredentialSwitchService {
           });
         } catch (err) {
           if (isCredentialModeSwitchBusyError(err)) {
+            if (target.preparedCodexThreadRotation) {
+              await target.preparedCodexThreadRotation.rollback();
+              target.preparedCodexThreadRotation = undefined;
+            }
             // turn done 与新 turn start 竞态:保留 pending,等下一个边界。
+            return;
+          }
+          if (target.preparedCodexThreadRotation) {
+            await target.preparedCodexThreadRotation.rollback();
+            target.preparedCodexThreadRotation = undefined;
+          }
+          if (target.codexThreadRotation) {
+            this.deps.logger?.warn('pending credential switch: thread rotation/close failed; keeping queue gated for retry', {
+              sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            this.scheduleRetry(sessionId);
             return;
           }
           // 关闭失败也要落 route:下一次发送的 getHost 仲裁仍会按新来源协调,
@@ -215,7 +297,16 @@ export class PendingCredentialSwitchService {
     const target = this.pending.get(sessionId);
     if (!target) return;
     this.applying.add(sessionId);
-    void this.finalizeApplyChecked(sessionId, target, 'session close').finally(() => {
+    if (!target.codexThreadRotation) {
+      void this.finalizeApplyChecked(sessionId, target, 'session close').finally(() => {
+        this.applying.delete(sessionId);
+      });
+      return;
+    }
+    void (async () => {
+      if (!(await this.prepareThreadRotation(sessionId, target))) return;
+      await this.finalizeApplyChecked(sessionId, target, 'session close');
+    })().finally(() => {
       this.applying.delete(sessionId);
     });
   }

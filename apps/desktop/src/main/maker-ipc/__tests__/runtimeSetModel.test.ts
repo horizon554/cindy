@@ -321,6 +321,55 @@ describe('applyRuntimeSetModelChange', () => {
     expect(getSessionProvider(sessionId)).toBe('deepseek');
   });
 
+  it('rotates a resumable Codex thread before closing across CodeModeOnly', async () => {
+    const sessionId = rememberSession('runtime-set-model-codemode-rotate');
+    setSessionProvider(sessionId, 'deepseek');
+    const setModel = vi.fn(async () => {});
+    const closeSession = vi.fn(async () => {});
+    const prepareCodexThreadRotation = vi.fn(async () => ({
+      newSdkSessionId: 'thread-new',
+      rollback: vi.fn(async () => undefined),
+    }));
+    const maker: RuntimeSetModelMaker = {
+      getSession: () => ({
+        agentKind: 'codex',
+        remoteHostId: null,
+        codexProxyActive: true,
+        model: 'shared-model',
+        sdkSessionId: 'thread-old',
+        workDir: '/work',
+        setModel,
+      }),
+      listActiveSessions: () => [{
+        id: sessionId,
+        agentKind: 'codex',
+        remoteHostId: null,
+        isTurnRunning: () => false,
+      }],
+      closeSession,
+    };
+
+    await applyRuntimeSetModelChange({
+      maker,
+      sessionId,
+      model: 'shared-model',
+      providerId: 'xd',
+      resolveCodexRouteCapabilitiesForSwitch: gatewayCodeModeCapability,
+      prepareCodexThreadRotation,
+    });
+
+    expect(prepareCodexThreadRotation).toHaveBeenCalledWith({
+      sessionId,
+      sourceSdkSessionId: 'thread-old',
+      sourceModel: 'shared-model',
+      sourceProviderId: 'deepseek',
+      workingDir: '/work',
+    });
+    expect(prepareCodexThreadRotation.mock.invocationCallOrder[0]).toBeLessThan(
+      closeSession.mock.invocationCallOrder[0],
+    );
+  });
+
   it('prefers the active proxy auth shape over an explicit provider-derived mode', async () => {
     const resolver = vi.fn(async ({
       providerId,

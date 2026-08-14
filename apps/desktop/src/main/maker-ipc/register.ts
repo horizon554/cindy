@@ -253,6 +253,7 @@ import {
   getSessionRowSnapshot,
   getSessionRowSnapshotStrict,
   persistSessionFields,
+  replaceSessionSdkSessionIdIfCurrent,
   recycleSessionWorktreeForStatusChange,
 } from '../localDb/ipc/sessions.js';
 // sidebar-card-mode: turn-done 后触发任务现状摘要生成
@@ -802,6 +803,10 @@ import { applyRuntimeEffortWithRecovery } from './runtimeSetEffort.js';
 import { normalizeDeviceLinkSetModelWireArgs } from './setModelWireArgs.js';
 import { PendingCredentialSwitchService } from './pendingCredentialSwitch.js';
 import { CodexRouteRebuildService } from './codexRouteRebuild.js';
+import {
+  createCodexThreadRotationPreparer,
+  type PrepareCodexThreadRotation,
+} from './codexThreadRotation.js';
 import {
   DeferredCodexRestartService,
   runMemoryChangeWithCodexRestart,
@@ -2541,6 +2546,7 @@ const rewindInputSessions = new Set<string>();
 const SESSION_REWIND_INPUT_LOCK_ID = 'session-rewind';
 const SESSION_REWIND_STOP_TIMEOUT_MS = 15_000;
 let pendingCredentialSwitchHolder: PendingCredentialSwitchService | null = null;
+let prepareCodexThreadRotationHolder: PrepareCodexThreadRotation | null = null;
 function settlePendingCredentialSwitch(sessionId: string, source: string): void {
   const pending = pendingCredentialSwitchHolder?.onTurnSettled(sessionId);
   if (!pending) return;
@@ -2707,9 +2713,12 @@ export function isSessionTurnPendingCompletion(sessionId: string): boolean {
  * 重启、关掉新 owner 的会话(review P1 2026-07-23)。bootstrap 的 owner 边界
  * 收口在 maker.shutdown()/resetMaker() 前调用。
  */
-export function clearDeferredCodexRestartForOwnerBoundary(): void {
+export async function clearDeferredCodexRestartForOwnerBoundary(): Promise<void> {
   deferredCodexRestartHolder?.clear();
-  codexRouteRebuildHolder?.clear();
+  await Promise.all([
+    pendingCredentialSwitchHolder?.clearAll() ?? Promise.resolve(),
+    codexRouteRebuildHolder?.clearAsync() ?? Promise.resolve(),
+  ]);
 }
 
 /** Reconcile live local Codex threads after catalog or Provider access changes. */
@@ -2756,7 +2765,11 @@ export function cancelPendingAgentSwitchForSession(sessionId: string): void {
  */
 export async function registerPendingCredentialSwitchForSession(
   sessionId: string,
-  target: { model: string; providerId: string | null },
+  target: {
+    model: string;
+    providerId: string | null;
+    codexThreadRotation?: import('./codexThreadRotation.js').CodexThreadRotationSnapshot;
+  },
 ): Promise<void> {
   const service = pendingCredentialSwitchHolder;
   if (!service) {
@@ -2807,7 +2820,19 @@ export async function registerPendingCredentialSwitchForSession(
           },
         }
       : {}),
+    ...(target.codexThreadRotation
+      ? { codexThreadRotation: target.codexThreadRotation }
+      : {}),
   });
+}
+
+export async function prepareCodexThreadRotationForSession(
+  snapshot: import('./codexThreadRotation.js').CodexThreadRotationSnapshot,
+) {
+  if (!prepareCodexThreadRotationHolder) {
+    throw new Error('Codex thread rotation service is not initialized');
+  }
+  return prepareCodexThreadRotationHolder(snapshot);
 }
 
 export function clearPendingCredentialSwitchForSession(
@@ -11473,6 +11498,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       await getDbClient().drizzle.update(sessions).set(patch).where(eq(sessions.id, sessionId));
       broadcastSessionPatched(sessionId, patch);
     },
+    prepareCodexThreadRotation: prepareCodexThreadRotationForSession,
     logger: log,
   });
   pendingCredentialSwitchHolder = pendingCredentialSwitchService;
@@ -11487,6 +11513,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
             : {}),
         }
       : undefined;
+  });
+  prepareCodexThreadRotationHolder = createCodexThreadRotationPreparer({
+    maker,
+    replaceSdkSessionIdIfCurrent: replaceSessionSdkSessionIdIfCurrent,
   });
 
   // active catalog 热更新后，proxy 会立刻读取新路由；已存活 Codex thread 的
@@ -11531,6 +11561,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         credentialMode: session.codexRouteCredentialMode,
         codexAuthInjection: getCodexProxyAuthInjectionState(),
       }),
+    getProviderId: getSessionProvider,
+    prepareCodexThreadRotation: prepareCodexThreadRotationForSession,
     onApplied: (sessionId) => {
       inputCoordinator.wakeSession(sessionId, 'codex-catalog-route-rebuild-applied');
     },
@@ -13039,6 +13071,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
                 // 解析隐式来源的凭证家族,精确判定是否跨远端压缩身份边界(见
                 // shouldCloseSessionForCredentialSwitch.codexAuthInjection)。
                 codexAuthInjection: getCodexProxyAuthInjectionState(),
+                prepareCodexThreadRotation: prepareCodexThreadRotationForSession,
                 logger: log,
               }),
             (id) =>

@@ -76,6 +76,11 @@ import {
   crossesCodexCodeModeOnlyBoundary,
   type CodexRouteCapabilitiesResolver,
 } from '../maker-ipc/runtimeSetModel.js';
+import type {
+  CodexThreadRotationSnapshot,
+  PrepareCodexThreadRotation,
+  PreparedCodexThreadRotation,
+} from '../maker-ipc/codexThreadRotation.js';
 import {
   wireSessionToIpc,
   isSessionInTurn,
@@ -286,6 +291,8 @@ export interface MakerScheduleRunnerDeps {
   resolveCodexRouteCapabilities?: CodexRouteCapabilitiesResolver;
   /** Current local Codex spawn credential shape, used for implicit final-route fallback. */
   getCodexAuthInjection?: () => CodexProxyAuthInjection | null;
+  /** Rotate a sticky native Codex thread before resuming it across CodeModeOnly. */
+  prepareCodexThreadRotation?: PrepareCodexThreadRotation;
 }
 
 /**
@@ -330,6 +337,11 @@ interface SchedulerRunContextOwner {
   runId: string;
 }
 
+interface SchedulerRouteRebuildRequirement {
+  reason: 'credential-mode' | 'code-mode-only';
+  requiresCodeModeThreadRotation: boolean;
+}
+
 export class MakerScheduleRunner implements ScheduleRunner {
   private scheduler: Scheduler | null = null;
   /**
@@ -347,46 +359,45 @@ export class MakerScheduleRunner implements ScheduleRunner {
     nextProviderId: string | null,
     currentModel: string,
     nextModel: string,
-  ): Promise<'credential-mode' | 'code-mode-only' | null> {
+  ): Promise<SchedulerRouteRebuildRequirement | null> {
+    const crossesCredentialMode = shouldCloseSessionForCredentialSwitch({
+      agentKind: session.agentKind,
+      remoteHostId: session.remoteHostId,
+      currentProviderId,
+      nextProviderId,
+      currentModel,
+      nextModel,
+      currentCodexProxyActive: session.codexProxyActive,
+      codexAuthInjection: this.deps.getCodexAuthInjection?.(),
+    });
+    let crossesCodeModeOnly = false;
     if (
-      shouldCloseSessionForCredentialSwitch({
-        agentKind: session.agentKind,
-        remoteHostId: session.remoteHostId,
-        currentProviderId,
-        nextProviderId,
-        currentModel,
-        nextModel,
-        currentCodexProxyActive: session.codexProxyActive,
-        codexAuthInjection: this.deps.getCodexAuthInjection?.(),
-      })
+      session.agentKind === 'codex' &&
+      !session.remoteHostId &&
+      this.deps.resolveCodexRouteCapabilities
     ) {
-      return 'credential-mode';
-    }
-    if (
-      session.agentKind !== 'codex' ||
-      session.remoteHostId ||
-      !this.deps.resolveCodexRouteCapabilities
-    ) {
-      return null;
-    }
-    try {
-      return await crossesCodexCodeModeOnlyBoundary({
+      try {
+        crossesCodeModeOnly = await crossesCodexCodeModeOnlyBoundary({
         currentProviderId,
         nextProviderId,
         currentModel,
         nextModel,
         codexAuthInjection: this.deps.getCodexAuthInjection?.(),
         resolver: this.deps.resolveCodexRouteCapabilities,
-      })
-        ? 'code-mode-only'
-        : null;
-    } catch (error) {
-      this.deps.logger.warn?.(
-        '[runner] failed to compare Codex route capabilities; rebuilding the session',
-        error,
-      );
-      return 'code-mode-only';
+        });
+      } catch (error) {
+        this.deps.logger.warn?.(
+          '[runner] failed to compare Codex route capabilities; rebuilding the session',
+          error,
+        );
+        crossesCodeModeOnly = true;
+      }
     }
+    if (!crossesCredentialMode && !crossesCodeModeOnly) return null;
+    return {
+      reason: crossesCredentialMode ? 'credential-mode' : 'code-mode-only',
+      requiresCodeModeThreadRotation: crossesCodeModeOnly,
+    };
   }
 
   /** scheduler-host/index.ts 在 startScheduler 内调一次，让 runner 反向 pause schedule */
@@ -981,9 +992,29 @@ export class MakerScheduleRunner implements ScheduleRunner {
         if (isHeartbeat && isSessionInTurn(sessionId)) {
           return this.failOrDeferSessionRunning(schedule, ctx, sessionId, true);
         }
+        let preparedRotation: PreparedCodexThreadRotation | undefined;
+        const sourceResumeSessionId = resumeSessionId;
         try {
           throwIfFireAborted(ctx.signal, 'session route rebuild');
-          if (liveSession.agentKind === 'codex' && rebuildReason === 'credential-mode') {
+          if (rebuildReason.requiresCodeModeThreadRotation) {
+            if (resumeSessionId && resumeSessionId !== '<pending>') {
+              if (!heartbeatWorkingDir || !this.deps.prepareCodexThreadRotation) {
+                throw new Error(
+                  'Scheduler CodeModeOnly route rebuild requires Codex thread rotation',
+                );
+              }
+              const snapshot: CodexThreadRotationSnapshot = {
+                sessionId,
+                sourceSdkSessionId: resumeSessionId,
+                sourceModel: liveSession.model,
+                sourceProviderId: currentProviderId,
+                workingDir: heartbeatWorkingDir,
+              };
+              preparedRotation = await this.deps.prepareCodexThreadRotation(snapshot);
+              resumeSessionId = preparedRotation.newSdkSessionId;
+            }
+          }
+          if (liveSession.agentKind === 'codex' && rebuildReason.reason === 'credential-mode') {
             await prepareLocalCodexCredentialModeSwitch({
               maker: this.deps.maker,
               isSessionInTurn,
@@ -999,6 +1030,10 @@ export class MakerScheduleRunner implements ScheduleRunner {
           }
           throwIfFireAborted(ctx.signal, 'session route rebuild');
         } catch (err) {
+          if (preparedRotation) {
+            await preparedRotation.rollback();
+            resumeSessionId = sourceResumeSessionId;
+          }
           if (err instanceof CredentialModeSwitchBusyError) {
             return this.failOrDeferSessionRunning(schedule, ctx, sessionId, isHeartbeat);
           }
@@ -1012,7 +1047,8 @@ export class MakerScheduleRunner implements ScheduleRunner {
           nextProviderId,
           fromModel: liveSession.model,
           toModel: model,
-          reason: rebuildReason,
+          reason: rebuildReason.reason,
+          rotatedCodexThread: rebuildReason.requiresCodeModeThreadRotation,
         });
       }
     }
