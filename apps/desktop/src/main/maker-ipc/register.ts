@@ -703,12 +703,18 @@ import {
   normalizeSessionProviderId,
   setSessionProvider,
 } from '../maker-host/session-provider-store.js';
-import { getActiveCatalog, setDiscoveredProviderModels } from '../maker-host/active-catalog.js';
+import {
+  getActiveCatalog,
+  getActiveCatalogRevision,
+  setDiscoveredProviderModels,
+} from '../maker-host/active-catalog.js';
 import { refreshXaiMediaModels } from '../maker-host/model-discovery/xai-media.js';
 import { testProviderConnection } from '../maker-host/provider-diagnostics.js';
 import { fetchProviderModels } from '../maker-host/provider-model-fetch.js';
 import {
   beginProviderRouteMutation,
+  getProviderRouteMutationGeneration,
+  hasAnyProviderRouteMutationInProgress,
   isUserProviderSession,
   setPendingCredentialSwitchReader,
 } from '../maker-host/provider-route.js';
@@ -788,10 +794,14 @@ import {
   isCredentialModeSwitchBusyError,
   isLocalSessionBusy,
 } from '../maker-host/codex-credential-switch.js';
-import { applyRuntimeSetModelChange } from './runtimeSetModel.js';
+import {
+  applyRuntimeSetModelChange,
+  resolveCodexCodeModeOnlyForRoute,
+} from './runtimeSetModel.js';
 import { applyRuntimeEffortWithRecovery } from './runtimeSetEffort.js';
 import { normalizeDeviceLinkSetModelWireArgs } from './setModelWireArgs.js';
 import { PendingCredentialSwitchService } from './pendingCredentialSwitch.js';
+import { CodexRouteRebuildService } from './codexRouteRebuild.js';
 import {
   DeferredCodexRestartService,
   runMemoryChangeWithCodexRestart,
@@ -2542,6 +2552,18 @@ function settlePendingCredentialSwitch(sessionId: string, source: string): void 
     });
   });
 }
+let codexRouteRebuildHolder: CodexRouteRebuildService | null = null;
+function settlePendingCodexRouteRebuild(sessionId: string, source: string): void {
+  const pending = codexRouteRebuildHolder?.onTurnSettled(sessionId);
+  if (!pending) return;
+  void pending.catch((err) => {
+    log.warn('pending Codex catalog route rebuild settle failed', {
+      sessionId,
+      source,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
 // turn 收口时对远端 codex MCP 做一次 best-effort ensure 的钩子 (live turn
 // 期间被推迟的 daemon bootstrap 在 idle 时点补刀)。真实现定义在
 // registerMakerIpcs 闭包内 (依赖 maker / ensure 函数), 模块级 turn 收口
@@ -2687,6 +2709,22 @@ export function isSessionTurnPendingCompletion(sessionId: string): boolean {
  */
 export function clearDeferredCodexRestartForOwnerBoundary(): void {
   deferredCodexRestartHolder?.clear();
+  codexRouteRebuildHolder?.clear();
+}
+
+/** Reconcile live local Codex threads after catalog or Provider access changes. */
+export function reconcileCodexRouteRebuildsAfterProviderChange(
+  revision = getActiveCatalogRevision(),
+): void {
+  if (hasAnyProviderRouteMutationInProgress()) return;
+  const reconciliation = codexRouteRebuildHolder?.reconcile(revision);
+  if (!reconciliation) return;
+  void reconciliation.catch((error) => {
+    log.warn('Codex catalog route rebuild reconciliation failed', {
+      revision,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 }
 
 /**
@@ -3383,6 +3421,7 @@ async function settleSilentStopDone(
   noteClaudeSessionTurnState(sessionId, false);
   agentInputCoordinatorHolder?.onTurnEvent(sessionId, 'done');
   settlePendingCredentialSwitch(sessionId, `silent-stop:${reason}`);
+  settlePendingCodexRouteRebuild(sessionId, `silent-stop:${reason}`);
   deferredCodexRestartHolder?.onSessionSettled();
   agentInputCoordinatorHolder?.onExternalTurnSettled(sessionId);
   refreshRemoteCodexMcpOnTurnSettledHolder?.(sessionId);
@@ -4060,6 +4099,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
         // (review P2 2026-07-04)。apply 内部串行 + 幂等,fire-and-forget 安全;
         // planned upgrade close 等场景多唤一次也只是 no-op。
         settlePendingCredentialSwitch(session.id, `event:${event.type}`);
+        settlePendingCodexRouteRebuild(session.id, `event:${event.type}`);
         deferredCodexRestartHolder?.onSessionSettled();
         agentInputCoordinatorHolder?.onExternalTurnSettled(session.id);
         refreshRemoteCodexMcpOnTurnSettledHolder?.(session.id);
@@ -5091,6 +5131,7 @@ export function wireSessionToIpc(session: ReturnType<Maker['getSession']>): void
           });
           // 会话关闭:兑现延迟凭证切换(直接写 route),并唤醒被它挡住的等待者。
           pendingCredentialSwitchHolder?.onSessionClosed(session.id);
+          codexRouteRebuildHolder?.onSessionClosed(session.id);
           deferredCodexRestartHolder?.onSessionSettled();
           agentInputCoordinatorHolder?.onExternalTurnSettled(session.id);
           refreshRemoteCodexMcpOnTurnSettledHolder?.(session.id);
@@ -5751,7 +5792,11 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     getModelVisibilityOverrides: () => getModelVisibilityMirrorSnapshot(),
     refreshCatalog: () => refreshCustomProvidersIntoCatalog(),
     beginRouteMutation: (providerId) => beginProviderRouteMutation(providerId),
-    broadcastChanged: () => broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {}),
+    broadcastChanged: () => {
+      reconcileCodexRouteRebuildsAfterProviderChange();
+      broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {});
+    },
+    afterRouteMutation: () => reconcileCodexRouteRebuildsAfterProviderChange(),
     listProviderIds: () => getDesktopSelectableCatalog().providers.map((provider) => provider.id),
     setProviderOrder: (providerIds) => setProviderOrder(providerIds),
     getProviderOrder: () => readProviderOrder(),
@@ -5899,7 +5944,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         } catch {
           /* 发现失败保持纯静态目录，不影响登录结果 */
         }
-        if (isCurrent()) broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {});
+        if (isCurrent()) {
+          reconcileCodexRouteRebuildsAfterProviderChange();
+          broadcastToAllWindows(MAKER_PUSH.PROVIDER_CHANGED, {});
+        }
       }
       return {
         ...result,
@@ -10610,6 +10658,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       resetTurnPersistState(sessionId);
       noteClaudeSessionTurnState(sessionId, false);
       settlePendingCredentialSwitch(sessionId, `reconcile:${source}`);
+      settlePendingCodexRouteRebuild(sessionId, `reconcile:${source}`);
       deferredCodexRestartHolder?.onSessionSettled();
       agentInputCoordinatorHolder?.onExternalTurnSettled(sessionId);
       refreshRemoteCodexMcpOnTurnSettledHolder?.(sessionId);
@@ -11230,7 +11279,8 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
     // 晚绑定。
     hasPendingCredentialSwitch: createDeferredRestartQueueGate({
       hasPendingCredentialSwitchEntry: (sessionId) =>
-        pendingCredentialSwitchHolder?.has(sessionId) === true,
+        pendingCredentialSwitchHolder?.has(sessionId) === true ||
+        codexRouteRebuildHolder?.has(sessionId) === true,
       isDeferredRestartPending: () => deferredCodexRestartHolder?.isPending() === true,
       listActiveSessions: () => maker.listActiveSessions(),
     }),
@@ -11438,6 +11488,28 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         }
       : undefined;
   });
+
+  // active catalog 热更新后，proxy 会立刻读取新路由；已存活 Codex thread 的
+  // CodeModeOnly 是 start/resume 级冻结值。只重建能力跨边界的本地会话，busy
+  // 时沿用输入队列门延迟到 turn 结束，不改 Provider/model 持久状态。
+  codexRouteRebuildHolder?.clear();
+  const codexRouteRebuildService = new CodexRouteRebuildService({
+    maker,
+    isSessionInTurn,
+    isReconciliationBlocked: hasAnyProviderRouteMutationInProgress,
+    getReconciliationGeneration: getProviderRouteMutationGeneration,
+    resolveRequiresCodeModeOnly: (session) =>
+      resolveCodexCodeModeOnlyForRoute({
+        providerId: getSessionProvider(session.id),
+        model: session.model,
+        codexAuthInjection: getCodexProxyAuthInjectionState(),
+      }),
+    onApplied: (sessionId) => {
+      inputCoordinator.wakeSession(sessionId, 'codex-catalog-route-rebuild-applied');
+    },
+    logger: log,
+  });
+  codexRouteRebuildHolder = codexRouteRebuildService;
 
   // Memory 设置变更撞上 Codex busy 时的延迟软重启登记(见 deferredCodexRestart.ts)。
   // 与 pendingCredentialSwitchService 共用 turn 结束 / 会话关闭边界接线;pending

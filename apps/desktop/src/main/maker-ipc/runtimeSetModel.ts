@@ -127,6 +127,26 @@ function credentialModeForCodexRoute(
   });
 }
 
+/** Resolve the final route's sticky CodeModeOnly value using the live proxy auth shape. */
+export async function resolveCodexCodeModeOnlyForRoute(args: {
+  providerId: string | null;
+  model: string;
+  codexAuthInjection?: CodexProxyAuthInjection | null;
+  resolver?: CodexRouteCapabilitiesResolver;
+}): Promise<boolean> {
+  const resolver = args.resolver ?? resolveCodexRouteCapabilities;
+  const capability = await resolver({
+    providerId: args.providerId,
+    model: args.model,
+    credentialMode: credentialModeForCodexRoute(
+      args.providerId,
+      args.model,
+      args.codexAuthInjection,
+    ),
+  });
+  return capability?.requiresCodeModeOnly === true;
+}
+
 export async function crossesCodexCodeModeOnlyBoundary(args: {
   currentProviderId: string | null;
   nextProviderId: string | null;
@@ -135,29 +155,20 @@ export async function crossesCodexCodeModeOnlyBoundary(args: {
   codexAuthInjection?: CodexProxyAuthInjection | null;
   resolver?: CodexRouteCapabilitiesResolver;
 }): Promise<boolean> {
-  const resolver = args.resolver ?? resolveCodexRouteCapabilities;
-  const [currentCapability, nextCapability] = await Promise.all([
-    resolver({
+  const [current, next] = await Promise.all([
+    resolveCodexCodeModeOnlyForRoute({
       providerId: args.currentProviderId,
       model: args.currentModel,
-      credentialMode: credentialModeForCodexRoute(
-        args.currentProviderId,
-        args.currentModel,
-        args.codexAuthInjection,
-      ),
+      codexAuthInjection: args.codexAuthInjection,
+      resolver: args.resolver,
     }),
-    resolver({
+    resolveCodexCodeModeOnlyForRoute({
       providerId: args.nextProviderId,
       model: args.nextModel,
-      credentialMode: credentialModeForCodexRoute(
-        args.nextProviderId,
-        args.nextModel,
-        args.codexAuthInjection,
-      ),
+      codexAuthInjection: args.codexAuthInjection,
+      resolver: args.resolver,
     }),
   ]);
-  const current = currentCapability?.requiresCodeModeOnly === true;
-  const next = nextCapability?.requiresCodeModeOnly === true;
   return current !== next;
 }
 

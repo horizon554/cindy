@@ -49,6 +49,7 @@ import { getSessionProvider } from './session-provider-store.js';
 type CustomProviderKeyReader = (providerId: string, agent: AgentKind) => string | null;
 let customProviderKeyReader: CustomProviderKeyReader = () => null;
 const providerRouteMutationCounts = new Map<string, number>();
+let providerRouteMutationGeneration = 0;
 
 /** host 启动期接通真实 safeStorage 读取（按 `provider_key_<id>_<agent>`，per-runtime 独立密钥）。 */
 export function setCustomProviderKeyReader(reader: CustomProviderKeyReader): void {
@@ -64,6 +65,7 @@ export function setCustomProviderKeyReader(reader: CustomProviderKeyReader): voi
  */
 export function beginProviderRouteMutation(providerId: string): () => void {
   providerId = runtimeCustomProviderId(providerId);
+  providerRouteMutationGeneration += 1;
   providerRouteMutationCounts.set(
     providerId,
     (providerRouteMutationCounts.get(providerId) ?? 0) + 1,
@@ -80,6 +82,16 @@ export function beginProviderRouteMutation(providerId: string): () => void {
 
 export function isProviderRouteMutationInProgress(providerId: string): boolean {
   return providerRouteMutationCounts.has(runtimeCustomProviderId(providerId));
+}
+
+/** True while any Provider config/credential route is between its old and new snapshots. */
+export function hasAnyProviderRouteMutationInProgress(): boolean {
+  return providerRouteMutationCounts.size > 0;
+}
+
+/** Monotonic token used to discard capability reads that overlap any Provider mutation. */
+export function getProviderRouteMutationGeneration(): number {
+  return providerRouteMutationGeneration;
 }
 
 /**

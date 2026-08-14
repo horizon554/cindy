@@ -20,7 +20,9 @@ import {
   beginProviderRouteMutation,
   buildLocalHandlerHeaders,
   buildRouteDecision,
+  getProviderRouteMutationGeneration,
   getSessionRoutingDescriptor,
+  hasAnyProviderRouteMutationInProgress,
   resolveSessionRoute,
   resolveSessionRouteDecision,
   resolveImplicitLocalBridgeRoute,
@@ -1186,6 +1188,21 @@ describe('resolveSessionRouteDecision — 自定义供应商(resolve 时注入 k
       upstreamOverride: 'https://new.example/v1',
       headerOverride: { authorization: 'Bearer new-key' },
     });
+  });
+
+  it('keeps the global mutation guard active until every provider route is released', () => {
+    const generationBefore = getProviderRouteMutationGeneration();
+    const finishOpenRouter = beginProviderRouteMutation('openrouter');
+    expect(getProviderRouteMutationGeneration()).toBe(generationBefore + 1);
+    const finishDeepSeek = beginProviderRouteMutation('deepseek');
+    expect(getProviderRouteMutationGeneration()).toBe(generationBefore + 2);
+
+    expect(hasAnyProviderRouteMutationInProgress()).toBe(true);
+    finishOpenRouter();
+    expect(hasAnyProviderRouteMutationInProgress()).toBe(true);
+    finishDeepSeek();
+    expect(hasAnyProviderRouteMutationInProgress()).toBe(false);
+    expect(getProviderRouteMutationGeneration()).toBe(generationBefore + 2);
   });
 
   it('精确请求路径只覆盖带 model 的推理请求，不改写无 body 的控制面请求', () => {

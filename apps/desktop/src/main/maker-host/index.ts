@@ -42,6 +42,7 @@ import type { MakerSessionCreateOpts } from '../maker-ipc/sessionRequest.js';
 import {
   dispatchInterAgentMessage,
   isSessionInTurn,
+  reconcileCodexRouteRebuildsAfterProviderChange,
   wireSessionToIpc,
 } from '../maker-ipc/register.js';
 import { MAKER_PUSH } from '../maker-ipc/channels.js';
@@ -289,6 +290,7 @@ let _codexModelBackfill: CodexModelBackfillCoordinator | null = null;
 
 /** Refresh selectable model capabilities, then notify every local/remote renderer. */
 function refreshSelectableModelsAndBroadcast(payload: Record<string, unknown>): void {
+  reconcileCodexRouteRebuildsAfterProviderChange();
   if (_maker) refreshCatalogDerivedModels(_maker, getDesktopSelectableCatalog());
   try {
     providerAccessRuntimeRefreshListener?.();

@@ -952,6 +952,11 @@ export class Session {
     return this.handle.codexProxyActive;
   }
 
+  /** Codex-only: 当前 thread 生命周期内冻结的 CodeModeOnly 路由能力。 */
+  get codexRouteRequiresCodeModeOnly(): boolean | undefined {
+    return this.handle.codexRouteRequiresCodeModeOnly;
+  }
+
   /** Snapshot used by temporary host overrides to avoid undoing a newer user change. */
   get permissionModeState(): PermissionModeState {
     return { ...this.permissionModeStateValue };

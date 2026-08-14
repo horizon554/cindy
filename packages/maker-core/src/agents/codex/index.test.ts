@@ -3437,6 +3437,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
       config?: Record<string, unknown>;
     };
     expect(nativeParams.config?.['features.code_mode_only']).toBeUndefined();
+    expect(nativeHandle.codexRouteRequiresCodeModeOnly).toBe(false);
     await nativeHandle.close();
 
     host.request.mock.calls.length = 0;
@@ -3450,6 +3451,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
       config?: Record<string, unknown>;
     };
     expect(gatewayParams.config?.['features.code_mode_only']).toBe(true);
+    expect(gatewayHandle.codexRouteRequiresCodeModeOnly).toBe(true);
     await gatewayHandle.close();
 
     host.request.mock.calls.length = 0;
@@ -3496,6 +3498,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
       config?: Record<string, unknown>;
     };
     expect(remoteGatewayParams.config?.['features.code_mode_only']).toBeUndefined();
+    expect(remoteGatewayHandle.codexRouteRequiresCodeModeOnly).toBeUndefined();
     await remoteGatewayHandle.close();
   });
 

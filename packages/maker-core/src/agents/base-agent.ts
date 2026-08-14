@@ -1488,6 +1488,8 @@ export interface AgentSessionHandle {
   ): () => void;
   /** Codex-only: 当前会话绑定的 app-server host 是否经 loopback proxy 出口。 */
   readonly codexProxyActive?: boolean;
+  /** Codex-only: 当前 thread 创建/恢复时冻结的 CodeModeOnly 路由能力。 */
+  readonly codexRouteRequiresCodeModeOnly?: boolean;
   /**
    * Codex-only: start/resume 成功后,产品 prompt 这一次到底有没有进入
    * codex thread history。Maker 用这个事实更新 host 持久化 bit,避免再从
