@@ -440,8 +440,14 @@ describe('register.ts 真实接线经由共享工厂(源码断言,#2506)', () =>
     const rebuildBlock = registerSource.slice(
       registerSource.indexOf('const codexRouteRebuildService = new CodexRouteRebuildService'),
     );
-    expect(rebuildBlock.slice(0, 1_000)).toContain(
+    expect(rebuildBlock.slice(0, 2_500)).toContain(
       'credentialMode: session.codexRouteCredentialMode',
+    );
+    expect(rebuildBlock.slice(0, 2_500)).toContain('await session.abort()');
+    expect(rebuildBlock.slice(0, 2_500)).toContain('reconcileDirectAbortBoundary(');
+    expect(rebuildBlock.slice(0, 2_500)).toContain("'catalog-route-rebuild-abort'");
+    expect(rebuildBlock.slice(0, 2_500)).toContain(
+      "cleanupPendingInteractionsForSession(sessionId, 'session_aborted')",
     );
   });
 });

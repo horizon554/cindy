@@ -24,6 +24,8 @@ export interface CodexRouteRebuildDeps {
     listActiveSessions: () => CodexRouteRebuildSession[];
     closeSession: (sessionId: string) => Promise<void>;
   };
+  /** Interrupt the current turn before its live proxy route can drift further. */
+  abortSession: (sessionId: string) => Promise<void>;
   isSessionInTurn?: (sessionId: string) => boolean;
   /** True while Provider routing is intentionally between committed snapshots. */
   isReconciliationBlocked?: () => boolean;
@@ -41,6 +43,7 @@ export interface CodexRouteRebuildDeps {
 interface PendingRouteRebuild {
   instanceId: string;
   revision: number;
+  abortRequested: boolean;
 }
 
 /**
@@ -50,6 +53,7 @@ interface PendingRouteRebuild {
  */
 export class CodexRouteRebuildService {
   private readonly pending = new Map<string, PendingRouteRebuild>();
+  private readonly interrupting = new Set<string>();
   private readonly applying = new Set<string>();
   private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private reconcileGeneration = 0;
@@ -108,17 +112,41 @@ export class CodexRouteRebuildService {
     for (const comparison of comparisons) {
       if (!comparison) continue;
       const { session, current } = comparison;
+      const previous = this.pending.get(session.id);
       if (current === session.codexRouteRequiresCodeModeOnly) {
+        // Once a busy turn has been interrupted, keep its queue boundary and
+        // rebuild at the abort terminal. A later catalog flip cannot undo an
+        // abort that is already in flight.
+        if (previous?.instanceId === session.instanceId && previous.abortRequested) {
+          previous.revision = revision;
+          this.scheduleRetry(session.id);
+          toApply.push(session.id);
+          continue;
+        }
         this.finish(session.id, session.instanceId, 'catalog capability converged');
         continue;
       }
-      this.pending.set(session.id, { instanceId: session.instanceId, revision });
+      if (previous?.instanceId === session.instanceId) {
+        // Keep the same object while abort is in flight. Its completion/error
+        // path uses object identity to avoid mutating a replacement instance.
+        previous.revision = revision;
+      } else {
+        this.pending.set(session.id, {
+          instanceId: session.instanceId,
+          revision,
+          abortRequested: false,
+        });
+      }
       this.scheduleRetry(session.id);
       toApply.push(session.id);
     }
 
     for (const [sessionId, pending] of [...this.pending]) {
-      if (!scannedIds.has(sessionId) && !this.applying.has(sessionId)) {
+      if (
+        !scannedIds.has(sessionId) &&
+        !this.interrupting.has(sessionId) &&
+        !this.applying.has(sessionId)
+      ) {
         this.finish(sessionId, pending.instanceId, 'session no longer eligible');
       }
     }
@@ -130,7 +158,7 @@ export class CodexRouteRebuildService {
   }
 
   onSessionClosed(sessionId: string): void {
-    if (this.applying.has(sessionId)) return;
+    if (this.interrupting.has(sessionId) || this.applying.has(sessionId)) return;
     const pending = this.pending.get(sessionId);
     if (!pending) return;
     this.finish(sessionId, pending.instanceId, 'session closed');
@@ -143,13 +171,14 @@ export class CodexRouteRebuildService {
     this.lifecycleAbortController = new AbortController();
     for (const timer of this.retryTimers.values()) clearTimeout(timer);
     this.retryTimers.clear();
+    this.interrupting.clear();
     this.pending.clear();
   }
 
   private async tryApply(sessionId: string): Promise<void> {
     const pending = this.pending.get(sessionId);
-    if (!pending || this.applying.has(sessionId)) return;
-    if (this.deps.isReconciliationBlocked?.() === true) {
+    if (!pending || this.interrupting.has(sessionId) || this.applying.has(sessionId)) return;
+    if (!pending.abortRequested && this.deps.isReconciliationBlocked?.() === true) {
       this.scheduleRetry(sessionId);
       return;
     }
@@ -181,40 +210,72 @@ export class CodexRouteRebuildService {
       return;
     }
 
-    let current: boolean;
-    try {
-      current = await this.deps.resolveRequiresCodeModeOnly(session);
-    } catch (error) {
-      this.deps.logger?.warn('catalog route rebuild revalidation failed', {
-        sessionId,
-        revision: pending.revision,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      this.scheduleRetry(sessionId);
-      return;
-    }
-    if (
-      lifecycleGeneration !== this.lifecycleGeneration ||
-      signal.aborted ||
-      this.pending.get(sessionId) !== pending
-    ) return;
-    if (this.deps.isReconciliationBlocked?.() === true) {
-      this.scheduleRetry(sessionId);
-      return;
-    }
-    if (this.deps.getReconciliationGeneration?.() !== routeGeneration) {
-      this.scheduleRetry(sessionId);
-      return;
-    }
-    if (current === session.codexRouteRequiresCodeModeOnly) {
-      this.finish(sessionId, pending.instanceId, 'catalog capability reverted');
-      return;
+    if (!pending.abortRequested) {
+      let current: boolean;
+      try {
+        current = await this.deps.resolveRequiresCodeModeOnly(session);
+      } catch (error) {
+        this.deps.logger?.warn('catalog route rebuild revalidation failed', {
+          sessionId,
+          revision: pending.revision,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        this.scheduleRetry(sessionId);
+        return;
+      }
+      if (
+        lifecycleGeneration !== this.lifecycleGeneration ||
+        signal.aborted ||
+        this.pending.get(sessionId) !== pending
+      )
+        return;
+      if (this.deps.isReconciliationBlocked?.() === true) {
+        this.scheduleRetry(sessionId);
+        return;
+      }
+      if (this.deps.getReconciliationGeneration?.() !== routeGeneration) {
+        this.scheduleRetry(sessionId);
+        return;
+      }
+      if (current === session.codexRouteRequiresCodeModeOnly) {
+        this.finish(sessionId, pending.instanceId, 'catalog capability reverted');
+        return;
+      }
     }
     if (isLocalSessionBusy(session, this.deps.isSessionInTurn)) {
+      // The proxy reads the live catalog on every request, while CodeModeOnly
+      // is sticky on the thread. Do not let later tool rounds in this turn mix
+      // the new route with the old thread capability: interrupt once, keep the
+      // queue gated, then close/rebuild at the terminal boundary.
+      if (!pending.abortRequested) {
+        pending.abortRequested = true;
+        this.interrupting.add(sessionId);
+        let abortSucceeded = false;
+        try {
+          await this.deps.abortSession(sessionId);
+          abortSucceeded = true;
+        } catch (error) {
+          if (this.pending.get(sessionId) === pending) {
+            pending.abortRequested = false;
+            this.deps.logger?.warn('catalog route rebuild abort failed; will retry', {
+              sessionId,
+              revision: pending.revision,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } finally {
+          this.interrupting.delete(sessionId);
+        }
+        if (abortSucceeded && this.pending.has(sessionId)) {
+          await this.tryApply(sessionId);
+          return;
+        }
+      }
+      if (this.pending.get(sessionId) !== pending) return;
       this.scheduleRetry(sessionId);
       return;
     }
-    if (this.deps.isReconciliationBlocked?.() === true) {
+    if (!pending.abortRequested && this.deps.isReconciliationBlocked?.() === true) {
       this.scheduleRetry(sessionId);
       return;
     }

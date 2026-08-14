@@ -21,12 +21,14 @@ function createHarness(initialSessions: CodexRouteRebuildSession[]) {
     const index = sessions.findIndex((session) => session.id === sessionId);
     if (index >= 0) sessions.splice(index, 1);
   });
+  const abortSession = vi.fn(async () => {});
   const onApplied = vi.fn();
   const service = new CodexRouteRebuildService({
     maker: {
       listActiveSessions: () => sessions,
       closeSession,
     },
+    abortSession,
     isReconciliationBlocked: () => reconciliationBlocked,
     resolveRequiresCodeModeOnly: async () => currentRequiresCodeModeOnly,
     onApplied,
@@ -36,6 +38,7 @@ function createHarness(initialSessions: CodexRouteRebuildSession[]) {
     service,
     sessions,
     closeSession,
+    abortSession,
     onApplied,
     setCurrentRequiresCodeModeOnly(value: boolean) {
       currentRequiresCodeModeOnly = value;
@@ -86,14 +89,18 @@ describe('CodexRouteRebuildService', () => {
     expect(h.onApplied).toHaveBeenCalledWith('idle');
   });
 
-  it('gates a busy session and closes it after the turn settles', async () => {
+  it('interrupts a busy turn once, then closes after the terminal boundary', async () => {
     let running = true;
     const h = createHarness([localCodex('busy', false, () => running)]);
     h.setCurrentRequiresCodeModeOnly(true);
 
     await h.service.reconcile(3);
     expect(h.service.has('busy')).toBe(true);
+    expect(h.abortSession).toHaveBeenCalledWith('busy');
     expect(h.closeSession).not.toHaveBeenCalled();
+
+    await h.service.reconcile(4);
+    expect(h.abortSession).toHaveBeenCalledTimes(1);
 
     running = false;
     await h.service.onTurnSettled('busy');
@@ -101,6 +108,42 @@ describe('CodexRouteRebuildService', () => {
     expect(h.closeSession).toHaveBeenCalledWith('busy');
     expect(h.service.has('busy')).toBe(false);
     expect(h.onApplied).toHaveBeenCalledWith('busy');
+  });
+
+  it('keeps the queue gated if the terminal signal arrives before abort settles', async () => {
+    let running = true;
+    const sessions = [localCodex('abort-terminal-race', false, () => running)];
+    const abortBarrier = deferred<void>();
+    const abortSession = vi.fn(async () => abortBarrier.promise);
+    const closeSession = vi.fn(async () => {
+      sessions.splice(0, 1);
+    });
+    const onApplied = vi.fn();
+    const service = new CodexRouteRebuildService({
+      maker: {
+        listActiveSessions: () => sessions,
+        closeSession,
+      },
+      abortSession,
+      resolveRequiresCodeModeOnly: async () => true,
+      onApplied,
+      retryDelayMs: 60_000,
+    });
+
+    const reconcile = service.reconcile(4);
+    await vi.waitFor(() => expect(abortSession).toHaveBeenCalledWith('abort-terminal-race'));
+
+    running = false;
+    await service.onTurnSettled('abort-terminal-race');
+    expect(closeSession).not.toHaveBeenCalled();
+    expect(service.has('abort-terminal-race')).toBe(true);
+
+    abortBarrier.resolve();
+    await reconcile;
+
+    expect(closeSession).toHaveBeenCalledWith('abort-terminal-race');
+    expect(service.has('abort-terminal-race')).toBe(false);
+    expect(onApplied).toHaveBeenCalledWith('abort-terminal-race');
   });
 
   it('keeps a pending rebuild queue-gated while a Provider route mutation is active', async () => {
@@ -113,13 +156,16 @@ describe('CodexRouteRebuildService', () => {
     running = false;
     h.setReconciliationBlocked(true);
     await h.service.onTurnSettled('mutation-pending');
-    expect(h.closeSession).not.toHaveBeenCalled();
+    // The interrupted thread is closed immediately so direct send paths cannot
+    // reuse it, but the queue remains gated until the route mutation commits.
+    expect(h.closeSession).toHaveBeenCalledWith('mutation-pending');
     expect(h.service.has('mutation-pending')).toBe(true);
+    expect(h.onApplied).not.toHaveBeenCalled();
 
     h.setReconciliationBlocked(false);
     await h.service.onTurnSettled('mutation-pending');
-    expect(h.closeSession).toHaveBeenCalledWith('mutation-pending');
     expect(h.service.has('mutation-pending')).toBe(false);
+    expect(h.onApplied).toHaveBeenCalledWith('mutation-pending');
   });
 
   it('discards an async capability snapshot if a Provider mutation starts while resolving', async () => {
@@ -132,6 +178,7 @@ describe('CodexRouteRebuildService', () => {
         listActiveSessions: () => sessions,
         closeSession,
       },
+      abortSession: vi.fn(async () => {}),
       isReconciliationBlocked: () => blocked,
       resolveRequiresCodeModeOnly: () =>
         new Promise<boolean>((resolve) => {
@@ -150,45 +197,46 @@ describe('CodexRouteRebuildService', () => {
     expect(service.has('mutation-race')).toBe(false);
   });
 
-  it('keeps pending when a Provider mutation starts and finishes during revalidation', async () => {
+  it('retries abort after a concurrent reconciliation updates the pending revision', async () => {
     let running = true;
-    let generation = 0;
-    let resolveCount = 0;
-    let finishRevalidation!: (value: boolean) => void;
-    const sessions = [localCodex('transient-mutation', false, () => running)];
-    const closeSession = vi.fn(async () => {});
+    let rejectFirstAbort!: (reason?: unknown) => void;
+    const firstAbort = new Promise<void>((_resolve, reject) => {
+      rejectFirstAbort = reject;
+    });
+    const sessions = [localCodex('abort-retry', false, () => running)];
+    const closeSession = vi.fn(async () => {
+      sessions.splice(0, 1);
+    });
+    const abortSession = vi
+      .fn<() => Promise<void>>()
+      .mockImplementationOnce(() => firstAbort)
+      .mockImplementationOnce(async () => {
+        running = false;
+      });
     const service = new CodexRouteRebuildService({
       maker: {
         listActiveSessions: () => sessions,
         closeSession,
       },
-      getReconciliationGeneration: () => generation,
-      resolveRequiresCodeModeOnly: () => {
-        resolveCount += 1;
-        if (resolveCount <= 2 || resolveCount > 3) return Promise.resolve(true);
-        return new Promise<boolean>((resolve) => {
-          finishRevalidation = resolve;
-        });
-      },
+      abortSession,
+      resolveRequiresCodeModeOnly: async () => true,
       retryDelayMs: 60_000,
     });
 
-    await service.reconcile(6);
-    expect(service.has('transient-mutation')).toBe(true);
-    running = false;
+    const firstReconcile = service.reconcile(6);
+    await vi.waitFor(() => expect(abortSession).toHaveBeenCalledTimes(1));
+    await service.reconcile(7);
 
-    const settle = service.onTurnSettled('transient-mutation');
-    await vi.waitFor(() => expect(finishRevalidation).toBeTypeOf('function'));
-    generation += 1;
-    finishRevalidation(true);
-    await settle;
-
+    rejectFirstAbort(new Error('abort failed'));
+    await firstReconcile;
+    expect(service.has('abort-retry')).toBe(true);
     expect(closeSession).not.toHaveBeenCalled();
-    expect(service.has('transient-mutation')).toBe(true);
 
-    await service.onTurnSettled('transient-mutation');
-    expect(closeSession).toHaveBeenCalledWith('transient-mutation');
-    expect(service.has('transient-mutation')).toBe(false);
+    await service.onTurnSettled('abort-retry');
+
+    expect(abortSession).toHaveBeenCalledTimes(2);
+    expect(closeSession).toHaveBeenCalledWith('abort-retry');
+    expect(service.has('abort-retry')).toBe(false);
   });
 
   it('claims one close when duplicate settle signals finish revalidation together', async () => {
@@ -221,6 +269,7 @@ describe('CodexRouteRebuildService', () => {
         listActiveSessions: () => sessions,
         closeSession,
       },
+      abortSession: vi.fn(async () => {}),
       getReconciliationGeneration: () => routeGeneration,
       resolveRequiresCodeModeOnly: async () => true,
       onApplied,
@@ -244,20 +293,41 @@ describe('CodexRouteRebuildService', () => {
     expect(onApplied).toHaveBeenCalledWith('close-mutation-race');
   });
 
-  it('cancels a pending rebuild when a later catalog revision restores the frozen value', async () => {
+  it('does not release an interrupted session when a later catalog revision restores the frozen value', async () => {
     let running = true;
-    const h = createHarness([localCodex('reverted', false, () => running)]);
-    h.setCurrentRequiresCodeModeOnly(true);
-    await h.service.reconcile(8);
-    expect(h.service.has('reverted')).toBe(true);
+    const sessions = [localCodex('reverted', false, () => running)];
+    let currentRequiresCodeModeOnly = true;
+    const abortBarrier = deferred<void>();
+    const abortSession = vi.fn(async () => abortBarrier.promise);
+    const closeSession = vi.fn(async () => {});
+    const onApplied = vi.fn();
+    const service = new CodexRouteRebuildService({
+      maker: {
+        listActiveSessions: () => sessions,
+        closeSession,
+      },
+      abortSession,
+      resolveRequiresCodeModeOnly: async () => currentRequiresCodeModeOnly,
+      onApplied,
+      retryDelayMs: 60_000,
+    });
 
-    h.setCurrentRequiresCodeModeOnly(false);
-    await h.service.reconcile(9);
+    const firstReconcile = service.reconcile(8);
+    await vi.waitFor(() => expect(abortSession).toHaveBeenCalledWith('reverted'));
+    expect(service.has('reverted')).toBe(true);
+
+    currentRequiresCodeModeOnly = false;
+    await service.reconcile(9);
+    expect(service.has('reverted')).toBe(true);
+    expect(onApplied).not.toHaveBeenCalled();
+
     running = false;
+    abortBarrier.resolve();
+    await firstReconcile;
 
-    expect(h.service.has('reverted')).toBe(false);
-    expect(h.closeSession).not.toHaveBeenCalled();
-    expect(h.onApplied).toHaveBeenCalledWith('reverted');
+    expect(service.has('reverted')).toBe(false);
+    expect(closeSession).toHaveBeenCalledWith('reverted');
+    expect(onApplied).toHaveBeenCalledWith('reverted');
   });
 
   it('ignores remote Codex sessions', async () => {

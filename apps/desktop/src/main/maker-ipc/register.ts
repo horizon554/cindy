@@ -11491,10 +11491,33 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
 
   // active catalog 热更新后，proxy 会立刻读取新路由；已存活 Codex thread 的
   // CodeModeOnly 是 start/resume 级冻结值。只重建能力跨边界的本地会话，busy
-  // 时沿用输入队列门延迟到 turn 结束，不改 Provider/model 持久状态。
+  // 时先中断当前 turn，再在终态关闭旧 thread；不改 Provider/model 持久状态。
   codexRouteRebuildHolder?.clear();
   const codexRouteRebuildService = new CodexRouteRebuildService({
     maker,
+    abortSession: async (sessionId) => {
+      // Catalog routes are live per request but CodeModeOnly is thread-sticky.
+      // Treat this as an intentional stop so interrupted-turn auto-resume
+      // cannot continue the old turn through a changed proxy route.
+      resetAutomaticRecoveryForExplicitStop(sessionId);
+      const session = getStableSessionForTurnBoundary(sessionId);
+      if (!session) return;
+      handleAgentIslandSessionStopped(session);
+      const directAbortBoundary = beginDirectAbortReconciliation(sessionId, session);
+      try {
+        await session.abort();
+      } finally {
+        try {
+          reconcileDirectAbortBoundary(
+            sessionId,
+            directAbortBoundary,
+            'catalog-route-rebuild-abort',
+          );
+        } finally {
+          cleanupPendingInteractionsForSession(sessionId, 'session_aborted');
+        }
+      }
+    },
     isSessionInTurn,
     isReconciliationBlocked: hasAnyProviderRouteMutationInProgress,
     getReconciliationGeneration: getProviderRouteMutationGeneration,
