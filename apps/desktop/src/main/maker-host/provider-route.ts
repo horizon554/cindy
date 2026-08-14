@@ -544,8 +544,7 @@ export async function resolveCodexRouteCapabilities(args: {
     if (providerId === 'xd' && !getAppCapabilities().canUseCindyGateway) return undefined;
     const routing = provider?.routing.codex;
     if (isProviderRouteMutationInProgress(providerId)) return undefined;
-    if (routing?.disabled) return { requiresCodeModeOnly: false };
-    if (routing && routingServesWireModel(routing, model || undefined)) {
+    if (routing) {
       // The proxy applies builtin per-session routes only for the OAuth spawn,
       // host-injected auth, user providers, or local protocol bridges. An
       // explicit builtin provider can therefore be present while env-key has
@@ -556,15 +555,31 @@ export async function resolveCodexRouteCapabilities(args: {
       const routeUsesHostInjectedAuth =
         routing.authStrategy === 'provider-oauth-header'
         || routing.authStrategy === 'oauth-token';
-      const explicitRouteApplies =
-        args.credentialMode === 'oauth-bearer'
-        || provider?.source === 'user'
-        || routeUsesLocalBridge
-        || routeUsesHostInjectedAuth;
-      if (explicitRouteApplies) {
-        return { requiresCodeModeOnly: routing.requiresCodeModeOnly === true };
+      if (routing.disabled) {
+        // getSessionRoutingDescriptor filters disabled routes, so a builtin
+        // env-key route is ignored and the proxy falls through to its Gateway
+        // default. OAuth, user, and host-injected-auth sessions still enter
+        // resolveSessionRouteDecision and receive the explicit disabled-route
+        // error instead of falling through.
+        const disabledRouteIsIntercepted =
+          args.credentialMode === 'oauth-bearer'
+          || provider?.source === 'user'
+          || routeUsesHostInjectedAuth;
+        if (disabledRouteIsIntercepted) {
+          return { requiresCodeModeOnly: false };
+        }
+        explicitRouteWasIgnored = true;
+      } else if (routingServesWireModel(routing, model || undefined)) {
+        const explicitRouteApplies =
+          args.credentialMode === 'oauth-bearer'
+          || provider?.source === 'user'
+          || routeUsesLocalBridge
+          || routeUsesHostInjectedAuth;
+        if (explicitRouteApplies) {
+          return { requiresCodeModeOnly: routing.requiresCodeModeOnly === true };
+        }
+        explicitRouteWasIgnored = true;
       }
-      explicitRouteWasIgnored = true;
     }
     explicitRouteWasOutOfScope = routing !== null && routing !== undefined;
   }

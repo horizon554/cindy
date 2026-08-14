@@ -11502,6 +11502,10 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
       resolveCodexCodeModeOnlyForRoute({
         providerId: getSessionProvider(session.id),
         model: session.model,
+        // Reviewer uses an isolated proxy whose auth shape can differ from the
+        // ordinary local host. Prefer the thread-frozen per-session snapshot;
+        // the process-global injection remains a compatibility fallback.
+        credentialMode: session.codexRouteCredentialMode,
         codexAuthInjection: getCodexProxyAuthInjectionState(),
       }),
     onApplied: (sessionId) => {

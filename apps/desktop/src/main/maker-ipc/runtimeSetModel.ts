@@ -131,6 +131,7 @@ function credentialModeForCodexRoute(
 export async function resolveCodexCodeModeOnlyForRoute(args: {
   providerId: string | null;
   model: string;
+  credentialMode?: AgentCredentialMode;
   codexAuthInjection?: CodexProxyAuthInjection | null;
   resolver?: CodexRouteCapabilitiesResolver;
 }): Promise<boolean> {
@@ -138,11 +139,13 @@ export async function resolveCodexCodeModeOnlyForRoute(args: {
   const capability = await resolver({
     providerId: args.providerId,
     model: args.model,
-    credentialMode: credentialModeForCodexRoute(
-      args.providerId,
-      args.model,
-      args.codexAuthInjection,
-    ),
+    credentialMode:
+      args.credentialMode ??
+      credentialModeForCodexRoute(
+        args.providerId,
+        args.model,
+        args.codexAuthInjection,
+      ),
   });
   return capability?.requiresCodeModeOnly === true;
 }

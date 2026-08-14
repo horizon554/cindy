@@ -1490,6 +1490,8 @@ export interface AgentSessionHandle {
   readonly codexProxyActive?: boolean;
   /** Codex-only: 当前 thread 创建/恢复时冻结的 CodeModeOnly 路由能力。 */
   readonly codexRouteRequiresCodeModeOnly?: boolean;
+  /** Codex-only: 当前 thread 解析最终路由时采用的会话级凭证形态。 */
+  readonly codexRouteCredentialMode?: AgentCredentialMode;
   /**
    * Codex-only: start/resume 成功后,产品 prompt 这一次到底有没有进入
    * codex thread history。Maker 用这个事实更新 host 持久化 bit,避免再从

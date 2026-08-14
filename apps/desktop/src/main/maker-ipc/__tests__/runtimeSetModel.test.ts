@@ -8,6 +8,7 @@ import {
 import {
   applyRuntimeSetModelChange,
   crossesCodexCodeModeOnlyBoundary,
+  resolveCodexCodeModeOnlyForRoute,
   type RuntimeSetModelMaker,
 } from '../runtimeSetModel.js';
 
@@ -347,6 +348,25 @@ describe('applyRuntimeSetModelChange', () => {
     expect(resolver).toHaveBeenNthCalledWith(2, expect.objectContaining({
       providerId: 'deepseek',
       credentialMode: 'gateway-key',
+    }));
+  });
+
+  it('prefers a thread-frozen credential mode over the ordinary host auth shape', async () => {
+    const resolver = vi.fn(async ({ credentialMode }: { credentialMode?: string }) => ({
+      requiresCodeModeOnly: credentialMode === 'gateway-key',
+    }));
+
+    await expect(resolveCodexCodeModeOnlyForRoute({
+      providerId: 'openai',
+      model: 'gpt-5.5',
+      credentialMode: 'oauth-bearer',
+      codexAuthInjection: 'env-key',
+      resolver,
+    })).resolves.toBe(false);
+
+    expect(resolver).toHaveBeenCalledWith(expect.objectContaining({
+      providerId: 'openai',
+      credentialMode: 'oauth-bearer',
     }));
   });
 

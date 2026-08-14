@@ -41,6 +41,7 @@ import {
 } from '../provider-route.js';
 import {
   getActiveCatalog,
+  setActiveCatalog,
   setAnthropicDiscoveredModels,
   setCustomProviders,
   setDiscoveredCodexModels,
@@ -78,6 +79,7 @@ afterEach(() => {
   mockGetAppCapabilities.mockReturnValue({ canUseCindyGateway: true });
   setProviderOAuthTokenReader(() => null);
   setPendingCredentialSwitchReader(() => undefined);
+  setActiveCatalog(BUNDLED_CATALOG);
   clearSessionProvider('s-xai');
   clearSessionProvider('s-xai-rewrite');
   clearSessionProvider('s-anthropic-codex');
@@ -158,6 +160,37 @@ describe('Codex CodeModeOnly route capability', () => {
       model: 'codex/gpt-5.5',
       credentialMode: 'gateway-key',
     })).resolves.toEqual({ requiresCodeModeOnly: true });
+  });
+
+  it('uses the Gateway capability when env-key ignores a disabled builtin provider', async () => {
+    setActiveCatalog({
+      ...BUNDLED_CATALOG,
+      providers: BUNDLED_CATALOG.providers.map((provider) =>
+        provider.id === 'openai'
+          ? {
+              ...provider,
+              routing: {
+                ...provider.routing,
+                codex: { ...provider.routing.codex!, disabled: true },
+              },
+            }
+          : provider,
+      ),
+    });
+
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'openai',
+      model: 'gpt-5.5',
+      credentialMode: 'gateway-key',
+    })).resolves.toEqual({ requiresCodeModeOnly: true });
+
+    // OAuth sessions still enter the explicit route branch and receive the
+    // disabled-provider error, so they must not be classified as Gateway.
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'openai',
+      model: 'gpt-5.5',
+      credentialMode: 'oauth-bearer',
+    })).resolves.toEqual({ requiresCodeModeOnly: false });
   });
 
   it.each([

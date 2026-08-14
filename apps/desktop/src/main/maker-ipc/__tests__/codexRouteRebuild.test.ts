@@ -5,6 +5,14 @@ import {
   type CodexRouteRebuildSession,
 } from '../codexRouteRebuild.js';
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 function createHarness(initialSessions: CodexRouteRebuildSession[]) {
   const sessions = [...initialSessions];
   let currentRequiresCodeModeOnly = false;
@@ -196,6 +204,44 @@ describe('CodexRouteRebuildService', () => {
     ]);
 
     expect(h.closeSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not wake the queue when a Provider mutation overlaps session close', async () => {
+    let routeGeneration = 0;
+    const sessions = [localCodex('close-mutation-race', false)];
+    const closeBarrier = deferred<void>();
+    const closeSession = vi.fn(async (sessionId: string) => {
+      const index = sessions.findIndex((session) => session.id === sessionId);
+      if (index >= 0) sessions.splice(index, 1);
+      await closeBarrier.promise;
+    });
+    const onApplied = vi.fn();
+    const service = new CodexRouteRebuildService({
+      maker: {
+        listActiveSessions: () => sessions,
+        closeSession,
+      },
+      getReconciliationGeneration: () => routeGeneration,
+      resolveRequiresCodeModeOnly: async () => true,
+      onApplied,
+      retryDelayMs: 60_000,
+    });
+
+    const firstReconcile = service.reconcile(11);
+    await vi.waitFor(() => expect(closeSession).toHaveBeenCalledWith('close-mutation-race'));
+
+    routeGeneration += 1;
+    await service.reconcile(12);
+    expect(onApplied).not.toHaveBeenCalled();
+
+    closeBarrier.resolve();
+    await firstReconcile;
+    expect(service.has('close-mutation-race')).toBe(true);
+    expect(onApplied).not.toHaveBeenCalled();
+
+    await service.onTurnSettled('close-mutation-race');
+    expect(service.has('close-mutation-race')).toBe(false);
+    expect(onApplied).toHaveBeenCalledWith('close-mutation-race');
   });
 
   it('cancels a pending rebuild when a later catalog revision restores the frozen value', async () => {

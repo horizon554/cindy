@@ -435,4 +435,13 @@ describe('register.ts 真实接线经由共享工厂(源码断言,#2506)', () =>
     );
     expect(wakeBlock.slice(0, 300)).toContain('inputCoordinator.wakeSession(sessionId, reason)');
   });
+
+  it('Codex route rebuild 使用 thread 冻结的会话级凭证形态', () => {
+    const rebuildBlock = registerSource.slice(
+      registerSource.indexOf('const codexRouteRebuildService = new CodexRouteRebuildService'),
+    );
+    expect(rebuildBlock.slice(0, 1_000)).toContain(
+      'credentialMode: session.codexRouteCredentialMode',
+    );
+  });
 });

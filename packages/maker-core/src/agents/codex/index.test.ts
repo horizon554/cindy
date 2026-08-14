@@ -13,7 +13,7 @@ import {
   type AgentSessionHandle,
   type TurnPermissionPolicy,
 } from '../base-agent.js';
-import type { AuthAdapter } from '../../interfaces/auth-adapter.js';
+import type { AgentCredentialMode, AuthAdapter } from '../../interfaces/auth-adapter.js';
 import type { AgentEvent as CoreAgentEvent, InteractionDecision, InteractionRequest } from '../../types/events.js';
 import type { Logger } from '../../interfaces/logger.js';
 import {
@@ -3417,10 +3417,16 @@ describe('CodexAgent.startSession developerInstructions', () => {
   });
 
   it('scopes CodeModeOnly to Cindy Gateway threads, not native Responses providers', async () => {
+    const resolveCodexRouteCapabilities = vi.fn(async (input: {
+      sessionId?: string;
+      providerId?: string | null;
+      model: string;
+      credentialMode?: AgentCredentialMode;
+    }) => ({
+      requiresCodeModeOnly: input.providerId === 'xd',
+    }));
     const agent = new CodexAgent(createDeps({}, {
-      resolveCodexRouteCapabilities: async ({ providerId }) => ({
-        requiresCodeModeOnly: providerId === 'xd',
-      }),
+      resolveCodexRouteCapabilities,
     }));
     const host = installFakeHost(agent, (method) => {
       if (method === Method.ExperimentalFeatureEnablementSet) return {};
@@ -3438,6 +3444,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
     };
     expect(nativeParams.config?.['features.code_mode_only']).toBeUndefined();
     expect(nativeHandle.codexRouteRequiresCodeModeOnly).toBe(false);
+    expect(nativeHandle.codexRouteCredentialMode).toBe('provider-oauth');
     await nativeHandle.close();
 
     host.request.mock.calls.length = 0;
@@ -3452,6 +3459,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
     };
     expect(gatewayParams.config?.['features.code_mode_only']).toBe(true);
     expect(gatewayHandle.codexRouteRequiresCodeModeOnly).toBe(true);
+    expect(gatewayHandle.codexRouteCredentialMode).toBe('gateway-key');
     await gatewayHandle.close();
 
     host.request.mock.calls.length = 0;
@@ -3470,7 +3478,25 @@ describe('CodexAgent.startSession developerInstructions', () => {
       config?: Record<string, unknown>;
     };
     expect(reviewGatewayParams.config?.['features.code_mode_only']).toBe(true);
+    expect(reviewGatewayHandle.codexRouteCredentialMode).toBe('gateway-key');
     await reviewGatewayHandle.close();
+
+    host.request.mock.calls.length = 0;
+    const reviewOpenAiHandle = await agent.startSession({
+      sessionId: 'session-openai-review-codemode',
+      model: 'gpt-5.5',
+      providerId: 'openai',
+      workingDir: reviewDir,
+      reviewMode: true,
+    });
+    expect(reviewOpenAiHandle.codexRouteRequiresCodeModeOnly).toBe(false);
+    expect(reviewOpenAiHandle.codexRouteCredentialMode).toBe('oauth-bearer');
+    expect(resolveCodexRouteCapabilities).toHaveBeenLastCalledWith(expect.objectContaining({
+      sessionId: 'session-openai-review-codemode',
+      providerId: 'openai',
+      credentialMode: 'oauth-bearer',
+    }));
+    await reviewOpenAiHandle.close();
 
     host.request.mock.calls.length = 0;
     const resumedNativeHandle = await agent.startSession({
@@ -3499,6 +3525,7 @@ describe('CodexAgent.startSession developerInstructions', () => {
     };
     expect(remoteGatewayParams.config?.['features.code_mode_only']).toBeUndefined();
     expect(remoteGatewayHandle.codexRouteRequiresCodeModeOnly).toBeUndefined();
+    expect(remoteGatewayHandle.codexRouteCredentialMode).toBeUndefined();
     await remoteGatewayHandle.close();
   });
 

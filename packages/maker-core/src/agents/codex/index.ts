@@ -9957,6 +9957,9 @@ export class CodexAgent extends BaseAgent {
       get model() { return mutableModel; },
       get codexProxyActive() { return hostUsesCodexProxy; },
       get codexRouteRequiresCodeModeOnly() { return routeRequiresCodeModeOnly; },
+      get codexRouteCredentialMode() {
+        return opts.remoteHostId ? undefined : sessionCredentialMode;
+      },
       get codexProductPromptDelivery() { return codexProductPromptDelivery; },
 
       validateSendOptions(sendOpts: SendOptions) {

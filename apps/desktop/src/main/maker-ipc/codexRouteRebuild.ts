@@ -1,4 +1,4 @@
-import type { AgentKind } from '@cindy/maker-core';
+import type { AgentCredentialMode, AgentKind } from '@cindy/maker-core';
 
 import {
   isCredentialModeSwitchBusyError,
@@ -15,6 +15,7 @@ export interface CodexRouteRebuildSession {
   remoteHostId?: string | null;
   model: string;
   codexRouteRequiresCodeModeOnly?: boolean;
+  codexRouteCredentialMode?: AgentCredentialMode;
   isTurnRunning?: () => boolean;
 }
 
@@ -117,7 +118,7 @@ export class CodexRouteRebuildService {
     }
 
     for (const [sessionId, pending] of [...this.pending]) {
-      if (!scannedIds.has(sessionId)) {
+      if (!scannedIds.has(sessionId) && !this.applying.has(sessionId)) {
         this.finish(sessionId, pending.instanceId, 'session no longer eligible');
       }
     }
@@ -229,9 +230,18 @@ export class CodexRouteRebuildService {
         isSessionInTurn: this.deps.isSessionInTurn,
         signal,
       });
-      if (this.pending.get(sessionId) === pending) {
-        this.finish(sessionId, pending.instanceId, 'catalog capability changed');
+      if (this.pending.get(sessionId) !== pending) return;
+      // Provider mutation can start while closeSession is awaiting teardown.
+      // The old thread is already gone, but waking the queue before the new
+      // route snapshot commits could recreate it against an intermediate route.
+      if (
+        this.deps.isReconciliationBlocked?.() === true ||
+        this.deps.getReconciliationGeneration?.() !== routeGeneration
+      ) {
+        this.scheduleRetry(sessionId);
+        return;
       }
+      this.finish(sessionId, pending.instanceId, 'catalog capability changed');
     } catch (error) {
       if (!isCredentialModeSwitchBusyError(error)) {
         this.deps.logger?.warn('catalog route rebuild close failed; will retry', {
