@@ -138,6 +138,12 @@ describe('Codex CodeModeOnly route capability', () => {
     })).resolves.toEqual({ requiresCodeModeOnly: false });
 
     await expect(resolveCodexRouteCapabilities({
+      providerId: 'openai',
+      model: 'gpt-5.5',
+      credentialMode: 'gateway-key',
+    })).resolves.toEqual({ requiresCodeModeOnly: true });
+
+    await expect(resolveCodexRouteCapabilities({
       providerId: 'xai',
       model: 'xai/grok-4.3',
       credentialMode: 'provider-oauth',

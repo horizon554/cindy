@@ -525,6 +525,7 @@ export async function resolveCodexRouteCapabilities(args: {
   const model = args.model.trim();
   const providerId = args.providerId?.trim() || null;
   let explicitRouteWasOutOfScope = false;
+  let explicitRouteWasIgnored = false;
 
   if (providerId) {
     const provider = getActiveCatalog().providers.find((candidate) => candidate.id === providerId);
@@ -533,7 +534,25 @@ export async function resolveCodexRouteCapabilities(args: {
     if (isProviderRouteMutationInProgress(providerId)) return undefined;
     if (routing?.disabled) return { requiresCodeModeOnly: false };
     if (routing && routingServesWireModel(routing, model || undefined)) {
-      return { requiresCodeModeOnly: routing.requiresCodeModeOnly === true };
+      // The proxy applies builtin per-session routes only for the OAuth spawn,
+      // host-injected auth, user providers, or local protocol bridges. An
+      // explicit builtin provider can therefore be present while env-key has
+      // already fallen back to the default Cindy Gateway route.
+      const routeUsesLocalBridge =
+        routing.wireProtocol === 'openai-chat'
+        || routing.wireProtocol === 'anthropic-messages';
+      const routeUsesHostInjectedAuth =
+        routing.authStrategy === 'provider-oauth-header'
+        || routing.authStrategy === 'oauth-token';
+      const explicitRouteApplies =
+        args.credentialMode === 'oauth-bearer'
+        || provider?.source === 'user'
+        || routeUsesLocalBridge
+        || routeUsesHostInjectedAuth;
+      if (explicitRouteApplies) {
+        return { requiresCodeModeOnly: routing.requiresCodeModeOnly === true };
+      }
+      explicitRouteWasIgnored = true;
     }
     explicitRouteWasOutOfScope = routing !== null && routing !== undefined;
   }
@@ -568,6 +587,7 @@ export async function resolveCodexRouteCapabilities(args: {
   const usesCindyGateway = getAppCapabilities().canUseCindyGateway && (
     args.credentialMode === 'gateway-key'
     || model.startsWith('codex/')
+    || explicitRouteWasIgnored
     || (explicitRouteWasOutOfScope && args.credentialMode === 'provider-oauth')
   );
   if (!usesCindyGateway) return undefined;
