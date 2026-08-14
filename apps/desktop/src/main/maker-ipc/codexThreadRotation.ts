@@ -13,6 +13,31 @@ export interface PreparedCodexThreadRotation {
   rollback: () => Promise<void>;
 }
 
+/**
+ * The session binding changed while this rotation was being prepared.  A
+ * newer lifecycle (clear, agent switch, or another rotation) owns the
+ * session now; retrying this snapshot would keep the input gate open forever.
+ */
+export class CodexThreadRotationSupersededError extends Error {
+  readonly code = 'CODEX_THREAD_ROTATION_SUPERSEDED';
+
+  constructor(sessionId: string) {
+    super(`Codex thread rotation was superseded by a newer session binding: ${sessionId}`);
+    this.name = 'CodexThreadRotationSupersededError';
+  }
+}
+
+export function isCodexThreadRotationSupersededError(
+  error: unknown,
+): error is CodexThreadRotationSupersededError {
+  return (
+    error instanceof CodexThreadRotationSupersededError ||
+    (typeof error === 'object' &&
+      error !== null &&
+      (error as { code?: unknown }).code === 'CODEX_THREAD_ROTATION_SUPERSEDED')
+  );
+}
+
 export type PrepareCodexThreadRotation = (
   snapshot: CodexThreadRotationSnapshot,
 ) => Promise<PreparedCodexThreadRotation>;
@@ -71,9 +96,7 @@ export function createCodexThreadRotationPreparer(args: {
       fork.newSdkSessionId,
     );
     if (!applied) {
-      throw new Error(
-        `Codex thread rotation lost its session binding: ${snapshot.sessionId}`,
-      );
+      throw new CodexThreadRotationSupersededError(snapshot.sessionId);
     }
     let rolledBack = false;
     return {

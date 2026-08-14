@@ -11,6 +11,7 @@ import type {
   PrepareCodexThreadRotation,
   PreparedCodexThreadRotation,
 } from './codexThreadRotation.js';
+import { isCodexThreadRotationSupersededError } from './codexThreadRotation.js';
 
 /**
  * PendingCredentialSwitchService —— 会话凭证形态切换的「延迟生效」登记表。
@@ -206,6 +207,23 @@ export class PendingCredentialSwitchService {
         target.preparedCodexThreadRotation = prepared;
         return true;
       } catch (err) {
+        if (isCodexThreadRotationSupersededError(err)) {
+          // A newer lifecycle already owns the session binding. Retrying this
+          // stale snapshot would keep the input queue gated forever.
+          if (this.pending.get(sessionId) === target) {
+            this.pending.delete(sessionId);
+            this.clearRetry(sessionId);
+            try {
+              this.deps.onApplied?.(sessionId);
+            } catch (wakeError) {
+              this.deps.logger?.warn('pending credential switch: superseded wake failed', {
+                sessionId,
+                error: wakeError instanceof Error ? wakeError.message : String(wakeError),
+              });
+            }
+          }
+          return false;
+        }
         this.deps.logger?.warn('pending credential switch: Codex thread rotation failed; keeping queue gated for retry', {
           sessionId,
           error: err instanceof Error ? err.message : String(err),

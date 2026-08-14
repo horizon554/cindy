@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createCodexThreadRotationPreparer } from '../codexThreadRotation.js';
+import {
+  CodexThreadRotationSupersededError,
+  createCodexThreadRotationPreparer,
+} from '../codexThreadRotation.js';
 
 describe('createCodexThreadRotationPreparer', () => {
   const snapshot = {
@@ -40,7 +43,7 @@ describe('createCodexThreadRotationPreparer', () => {
     expect(prepared.newSdkSessionId).toBe('thread-new');
   });
 
-  it('fails closed when a newer lifecycle already changed the session binding', async () => {
+  it('reports a superseded rotation when a newer lifecycle changed the session binding', async () => {
     const prepare = createCodexThreadRotationPreparer({
       maker: {
         forkSdkSession: vi.fn(async () => ({
@@ -51,8 +54,8 @@ describe('createCodexThreadRotationPreparer', () => {
       replaceSdkSessionIdIfCurrent: vi.fn(async () => false),
     });
 
-    await expect(prepare(snapshot)).rejects.toThrow(
-      'Codex thread rotation lost its session binding',
+    await expect(prepare(snapshot)).rejects.toBeInstanceOf(
+      CodexThreadRotationSupersededError,
     );
   });
 

@@ -9,6 +9,7 @@ import {
   PendingCredentialSwitchService,
   type PendingCredentialSwitchDeps,
 } from '../pendingCredentialSwitch.js';
+import { CodexThreadRotationSupersededError } from '../codexThreadRotation.js';
 
 const touchedSessions = new Set<string>();
 
@@ -288,6 +289,38 @@ describe('PendingCredentialSwitchService', () => {
     expect(prepareCodexThreadRotation).toHaveBeenCalledTimes(2);
     expect(h.service.has(sessionId)).toBe(false);
     expect(getSessionProvider(sessionId)).toBe('xd');
+  });
+
+  it('releases a stale deferred switch when a newer lifecycle owns the thread binding', async () => {
+    const sessionId = rememberSession('pending-switch-codemode-superseded');
+    setSessionProvider(sessionId, 'deepseek');
+    const prepareCodexThreadRotation = vi.fn(async () => {
+      throw new CodexThreadRotationSupersededError(sessionId);
+    });
+    const h = createHarness(
+      [{ id: sessionId, agentKind: 'codex', remoteHostId: null, isTurnRunning: () => false }],
+      { prepareCodexThreadRotation, retryDelayMs: 60_000 },
+    );
+
+    h.service.register(sessionId, {
+      model: 'qwen3.8-max',
+      providerId: 'xd',
+      codexThreadRotation: {
+        sessionId,
+        sourceSdkSessionId: 'thread-old',
+        sourceModel: 'deepseek-v4',
+        sourceProviderId: 'deepseek',
+        workingDir: '/work',
+      },
+    });
+    await h.service.onTurnSettled(sessionId);
+
+    expect(prepareCodexThreadRotation).toHaveBeenCalledTimes(1);
+    expect(h.service.has(sessionId)).toBe(false);
+    expect(h.closeSession).not.toHaveBeenCalled();
+    expect(getSessionProvider(sessionId)).toBe('deepseek');
+    expect(h.onApplied).toHaveBeenCalledWith(sessionId);
+    expect(h.broadcastApplied).not.toHaveBeenCalled();
   });
 
   it('drops every deferred rotation without applying it at an owner boundary', async () => {

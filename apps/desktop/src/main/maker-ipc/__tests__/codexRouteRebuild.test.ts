@@ -4,6 +4,7 @@ import {
   CodexRouteRebuildService,
   type CodexRouteRebuildSession,
 } from '../codexRouteRebuild.js';
+import { CodexThreadRotationSupersededError } from '../codexThreadRotation.js';
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -119,6 +120,31 @@ describe('CodexRouteRebuildService', () => {
     expect(prepareCodexThreadRotation.mock.invocationCallOrder[0]).toBeLessThan(
       closeSession.mock.invocationCallOrder[0],
     );
+  });
+
+  it('retires a stale catalog rebuild when a newer lifecycle owns the thread binding', async () => {
+    const sessions = [localCodex('rotation-superseded', false)];
+    const prepareCodexThreadRotation = vi.fn(async () => {
+      throw new CodexThreadRotationSupersededError('rotation-superseded');
+    });
+    const onApplied = vi.fn();
+    const service = new CodexRouteRebuildService({
+      maker: {
+        listActiveSessions: () => sessions,
+        closeSession: vi.fn(async () => undefined),
+      },
+      abortSession: vi.fn(async () => undefined),
+      resolveRequiresCodeModeOnly: async () => true,
+      prepareCodexThreadRotation,
+      onApplied,
+      retryDelayMs: 60_000,
+    });
+
+    await service.reconcile(2);
+
+    expect(prepareCodexThreadRotation).toHaveBeenCalledTimes(1);
+    expect(service.has('rotation-superseded')).toBe(false);
+    expect(onApplied).toHaveBeenCalledWith('rotation-superseded');
   });
 
   it('interrupts a busy turn once, then closes after the terminal boundary', async () => {

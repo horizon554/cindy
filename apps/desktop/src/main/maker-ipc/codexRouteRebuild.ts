@@ -7,6 +7,7 @@ import {
 } from '../maker-host/codex-credential-switch.js';
 import {
   codexThreadRotationSnapshotFromSession,
+  isCodexThreadRotationSupersededError,
   type CodexThreadRotationSnapshot,
   type PrepareCodexThreadRotation,
   type PreparedCodexThreadRotation,
@@ -489,6 +490,12 @@ export class CodexRouteRebuildService {
         pending.preparedThreadRotation = prepared;
         return true;
       } catch (error) {
+        if (isCodexThreadRotationSupersededError(error)) {
+          // The DB binding moved to a newer lifecycle while the fork was in
+          // flight. Retire this stale rebuild instead of retrying forever.
+          this.finish(sessionId, pending.instanceId, 'thread rotation superseded');
+          return false;
+        }
         this.deps.logger?.warn('catalog route rebuild thread rotation failed; will retry', {
           sessionId,
           error: error instanceof Error ? error.message : String(error),
