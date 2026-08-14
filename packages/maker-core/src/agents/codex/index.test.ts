@@ -3529,6 +3529,33 @@ describe('CodexAgent.startSession developerInstructions', () => {
     await remoteGatewayHandle.close();
   });
 
+  it('snapshots the effective reused host mode for route capability reconciliation', async () => {
+    const resolveCodexRouteCapabilities = vi.fn(async () => ({
+      requiresCodeModeOnly: false,
+    }));
+    const agent = new CodexAgent(createDeps({}, {
+      resolveCodexRouteCapabilities,
+    }));
+    installFakeHost(agent, undefined, { codexProxyActive: true });
+    (agent as unknown as {
+      hostEffectiveCredentialModes: Map<string, AgentCredentialMode>;
+    }).hostEffectiveCredentialModes.set('local', 'gateway-key');
+
+    const handle = await agent.startSession({
+      sessionId: 'session-provider-oauth-on-gateway-host',
+      model: 'xai/grok-4.3',
+      providerId: 'xai',
+      workingDir: '/repo',
+    });
+
+    expect(resolveCodexRouteCapabilities).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-provider-oauth-on-gateway-host',
+      credentialMode: 'gateway-key',
+    }));
+    expect(handle.codexRouteCredentialMode).toBe('gateway-key');
+    await handle.close();
+  });
+
   it('passes the OpenAI compaction provider for implicit-source sessions on an oauth-effective host', async () => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, undefined, {

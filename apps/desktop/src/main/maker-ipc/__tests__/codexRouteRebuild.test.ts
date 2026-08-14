@@ -110,6 +110,40 @@ describe('CodexRouteRebuildService', () => {
     expect(h.onApplied).toHaveBeenCalledWith('busy');
   });
 
+  it('gates candidate sessions before all asynchronous route comparisons settle', async () => {
+    let running = true;
+    const sessions = [
+      localCodex('busy-fast', false, () => running),
+      localCodex('slow-lookup', false),
+    ];
+    const slowLookup = deferred<boolean>();
+    const abortSession = vi.fn(async () => {});
+    const closeSession = vi.fn(async () => {});
+    const service = new CodexRouteRebuildService({
+      maker: {
+        listActiveSessions: () => sessions,
+        closeSession,
+      },
+      abortSession,
+      resolveRequiresCodeModeOnly: (session) =>
+        session.id === 'slow-lookup' ? slowLookup.promise : Promise.resolve(true),
+      retryDelayMs: 60_000,
+    });
+
+    const reconcile = service.reconcile(4);
+    await vi.waitFor(() => expect(service.has('slow-lookup')).toBe(true));
+
+    expect(service.has('busy-fast')).toBe(true);
+    expect(abortSession).not.toHaveBeenCalled();
+
+    slowLookup.resolve(false);
+    await reconcile;
+
+    expect(abortSession).toHaveBeenCalledWith('busy-fast');
+    running = false;
+    await service.onTurnSettled('busy-fast');
+  });
+
   it('keeps the queue gated if the terminal signal arrives before abort settles', async () => {
     let running = true;
     const sessions = [localCodex('abort-terminal-race', false, () => running)];
@@ -168,7 +202,7 @@ describe('CodexRouteRebuildService', () => {
     expect(h.onApplied).toHaveBeenCalledWith('mutation-pending');
   });
 
-  it('discards an async capability snapshot if a Provider mutation starts while resolving', async () => {
+  it('keeps the session gated when a Provider mutation invalidates an async snapshot', async () => {
     const sessions = [localCodex('mutation-race', false)];
     let blocked = false;
     let finishResolve!: (value: boolean) => void;
@@ -194,7 +228,7 @@ describe('CodexRouteRebuildService', () => {
     await reconcile;
 
     expect(closeSession).not.toHaveBeenCalled();
-    expect(service.has('mutation-race')).toBe(false);
+    expect(service.has('mutation-race')).toBe(true);
   });
 
   it('retries abort after a concurrent reconciliation updates the pending revision', async () => {

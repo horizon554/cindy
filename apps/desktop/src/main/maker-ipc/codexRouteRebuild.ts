@@ -88,6 +88,24 @@ export class CodexRouteRebuildService {
       return;
     }
 
+    // The proxy observes the new catalog immediately, while capability
+    // resolution can await connected Provider state. Gate every candidate
+    // before that await so no later tool round can reuse the old thread
+    // profile against the new live route.
+    for (const session of sessions) {
+      const previous = this.pending.get(session.id);
+      if (previous?.instanceId === session.instanceId) {
+        previous.revision = revision;
+      } else {
+        this.pending.set(session.id, {
+          instanceId: session.instanceId,
+          revision,
+          abortRequested: false,
+        });
+      }
+      this.scheduleRetry(session.id);
+    }
+
     const comparisons = await Promise.all(
       sessions.map(async (session) => {
         try {

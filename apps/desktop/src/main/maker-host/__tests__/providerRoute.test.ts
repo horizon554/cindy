@@ -254,6 +254,14 @@ describe('Codex CodeModeOnly route capability', () => {
     })).resolves.toEqual({ requiresCodeModeOnly: false });
   });
 
+  it('does not infer an implicit OAuth route while an explicit Provider is selected', async () => {
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'removed-provider',
+      model: 'xai/grok-4.3',
+      credentialMode: 'gateway-key',
+    })).resolves.toEqual({ requiresCodeModeOnly: true });
+  });
+
   it('does not claim the gateway capability when the gateway is unavailable', async () => {
     mockGetAppCapabilities.mockReturnValue({ canUseCindyGateway: false });
     await expect(resolveCodexRouteCapabilities({

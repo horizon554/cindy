@@ -3769,6 +3769,11 @@ export class CodexAgent extends BaseAgent {
           model: opts.model,
         }) ?? this.hostEffectiveCredentialModes.get(currentHostKey)
       : credentialMode ?? this.hostEffectiveCredentialModes.get(currentHostKey);
+    // Route fallback follows the auth shape of the host that this session
+    // actually reused, which can differ from the session's requested mode.
+    const sessionRouteCredentialMode = opts.remoteHostId
+      ? undefined
+      : this.hostEffectiveCredentialModes.get(currentHostKey) ?? sessionCredentialMode;
     const approvalsReviewerProtocolSupported =
       supportsCodexApprovalsReviewerProtocol(initResp.userAgent);
     const codexBrowserUseProvisioned = host.isCodexBrowserUseAvailable();
@@ -4770,7 +4775,7 @@ export class CodexAgent extends BaseAgent {
           sessionId: sid,
           providerId: mutableProviderId,
           model: mutableModel,
-          credentialMode: sessionCredentialMode,
+          credentialMode: sessionRouteCredentialMode,
         }))?.requiresCodeModeOnly === true;
       } catch (error) {
         log.warn('failed to resolve Codex route capabilities; disabling CodeModeOnly', {
@@ -9958,7 +9963,7 @@ export class CodexAgent extends BaseAgent {
       get codexProxyActive() { return hostUsesCodexProxy; },
       get codexRouteRequiresCodeModeOnly() { return routeRequiresCodeModeOnly; },
       get codexRouteCredentialMode() {
-        return opts.remoteHostId ? undefined : sessionCredentialMode;
+        return sessionRouteCredentialMode;
       },
       get codexProductPromptDelivery() { return codexProductPromptDelivery; },
 

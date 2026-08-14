@@ -604,7 +604,9 @@ export async function resolveCodexRouteCapabilities(args: {
 
   // xAI and future uniquely namespaced provider-OAuth routes are handled
   // before the default Gateway/ChatGPT branch even without a session provider.
-  const implicitProviderOAuth = uniqueProviderForModel(model, 'codex')?.routing.codex;
+  const implicitProviderOAuth = providerId
+    ? undefined
+    : uniqueProviderForModel(model, 'codex')?.routing.codex;
   if (implicitProviderOAuth?.authStrategy === 'provider-oauth-header') {
     return { requiresCodeModeOnly: implicitProviderOAuth.requiresCodeModeOnly === true };
   }
