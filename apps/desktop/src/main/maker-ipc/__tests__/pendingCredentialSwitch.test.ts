@@ -25,6 +25,14 @@ function rememberSession(sessionId: string): string {
   return sessionId;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 interface HarnessSession {
   id: string;
   agentKind: 'claude-code' | 'codex';
@@ -289,6 +297,205 @@ describe('PendingCredentialSwitchService', () => {
     expect(prepareCodexThreadRotation).toHaveBeenCalledTimes(2);
     expect(h.service.has(sessionId)).toBe(false);
     expect(getSessionProvider(sessionId)).toBe('xd');
+  });
+
+  it('keeps the queue gated until a cancelled rotation and its obsolete close both settle', async () => {
+    const sessionId = rememberSession('pending-switch-codemode-clear-during-close');
+    setSessionProvider(sessionId, 'deepseek');
+    const closeStarted = deferred<void>();
+    const releaseClose = deferred<void>();
+    const rollbackStarted = deferred<void>();
+    const releaseRollback = deferred<void>();
+    const rollback = vi.fn(async () => {
+      rollbackStarted.resolve();
+      await releaseRollback.promise;
+    });
+    const h = createHarness(
+      [{ id: sessionId, agentKind: 'codex', remoteHostId: null, isTurnRunning: () => false }],
+      {
+        prepareCodexThreadRotation: vi.fn(async () => ({
+          newSdkSessionId: 'thread-new',
+          rollback,
+        })),
+        retryDelayMs: 60_000,
+      },
+    );
+    h.closeSession.mockImplementationOnce(async () => {
+      closeStarted.resolve();
+      await releaseClose.promise;
+    });
+
+    await h.service.register(sessionId, {
+      model: 'qwen3.8-max',
+      providerId: 'xd',
+      codexThreadRotation: {
+        sessionId,
+        sourceSdkSessionId: 'thread-old',
+        sourceModel: 'deepseek-v4',
+        sourceProviderId: 'deepseek',
+        workingDir: '/work',
+      },
+    });
+    const applying = h.service.onTurnSettled(sessionId);
+    await closeStarted.promise;
+
+    const clearing = h.service.clear(sessionId);
+    await rollbackStarted.promise;
+    expect(h.service.get(sessionId)).toBeUndefined();
+    expect(h.service.has(sessionId)).toBe(true);
+    expect(h.onApplied).not.toHaveBeenCalled();
+
+    releaseRollback.resolve();
+    await Promise.resolve();
+    expect(h.service.has(sessionId)).toBe(true);
+
+    releaseClose.resolve();
+    await Promise.all([applying, clearing]);
+
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(h.service.has(sessionId)).toBe(false);
+    expect(getSessionProvider(sessionId)).toBe('deepseek');
+    expect(h.broadcastApplied).not.toHaveBeenCalled();
+    expect(h.onApplied).not.toHaveBeenCalled();
+  });
+
+  it('keeps the queue fail-closed without rejecting when a cancelled rotation cannot roll back', async () => {
+    const sessionId = rememberSession('pending-switch-codemode-clear-rollback-fail');
+    setSessionProvider(sessionId, 'deepseek');
+    const closeStarted = deferred<void>();
+    const releaseClose = deferred<void>();
+    const rollback = vi.fn(async () => {
+      throw new Error('rollback lost binding');
+    });
+    const h = createHarness(
+      [{ id: sessionId, agentKind: 'codex', remoteHostId: null, isTurnRunning: () => false }],
+      {
+        prepareCodexThreadRotation: vi.fn(async () => ({
+          newSdkSessionId: 'thread-new',
+          rollback,
+        })),
+        retryDelayMs: 60_000,
+      },
+    );
+    h.closeSession.mockImplementationOnce(async () => {
+      closeStarted.resolve();
+      await releaseClose.promise;
+    });
+
+    await h.service.register(sessionId, {
+      model: 'qwen3.8-max',
+      providerId: 'xd',
+      codexThreadRotation: {
+        sessionId,
+        sourceSdkSessionId: 'thread-old',
+        sourceModel: 'deepseek-v4',
+        sourceProviderId: 'deepseek',
+        workingDir: '/work',
+      },
+    });
+    const applying = h.service.onTurnSettled(sessionId);
+    await closeStarted.promise;
+    const clearing = h.service.clear(sessionId);
+    await vi.waitFor(() => expect(rollback).toHaveBeenCalledTimes(1));
+
+    releaseClose.resolve();
+    await expect(Promise.all([applying, clearing])).resolves.toBeDefined();
+
+    expect(h.service.get(sessionId)).toBeUndefined();
+    expect(h.service.has(sessionId)).toBe(true);
+    expect(h.onApplied).not.toHaveBeenCalled();
+    expect(h.broadcastApplied).not.toHaveBeenCalled();
+
+    await h.service.clearAll();
+    expect(h.service.has(sessionId)).toBe(false);
+  });
+
+  it('rolls back a prepared rotation before a replacement target is rotated and applied', async () => {
+    const sessionId = rememberSession('pending-switch-codemode-replace-during-close');
+    setSessionProvider(sessionId, 'deepseek');
+    const closeStarted = deferred<void>();
+    const releaseClose = deferred<void>();
+    const rollbackStarted = deferred<void>();
+    const releaseRollback = deferred<void>();
+    const events: string[] = [];
+    const firstRollback = vi.fn(async () => {
+      events.push('rollback-old-start');
+      rollbackStarted.resolve();
+      await releaseRollback.promise;
+      events.push('rollback-old-end');
+    });
+    const secondRollback = vi.fn(async () => undefined);
+    const prepareCodexThreadRotation = vi
+      .fn<NonNullable<PendingCredentialSwitchDeps['prepareCodexThreadRotation']>>()
+      .mockImplementationOnce(async () => {
+        events.push('prepare-old');
+        return { newSdkSessionId: 'thread-old-fork', rollback: firstRollback };
+      })
+      .mockImplementationOnce(async () => {
+        events.push('prepare-latest');
+        return { newSdkSessionId: 'thread-latest-fork', rollback: secondRollback };
+      });
+    const h = createHarness(
+      [{ id: sessionId, agentKind: 'codex', remoteHostId: null, isTurnRunning: () => false }],
+      { prepareCodexThreadRotation, retryDelayMs: 60_000 },
+    );
+    h.closeSession.mockImplementationOnce(async () => {
+      events.push('close-start');
+      closeStarted.resolve();
+      await releaseClose.promise;
+      events.push('close-end');
+    });
+
+    await h.service.register(sessionId, {
+      model: 'qwen3.8-max',
+      providerId: 'xd',
+      codexThreadRotation: {
+        sessionId,
+        sourceSdkSessionId: 'thread-old',
+        sourceModel: 'deepseek-v4',
+        sourceProviderId: 'deepseek',
+        workingDir: '/work',
+      },
+    });
+    const applying = h.service.onTurnSettled(sessionId);
+    await closeStarted.promise;
+
+    const replacing = h.service.register(sessionId, {
+      model: 'gpt-5.5',
+      providerId: 'openai',
+      codexThreadRotation: {
+        sessionId,
+        sourceSdkSessionId: 'thread-old',
+        sourceModel: 'deepseek-v4',
+        sourceProviderId: 'deepseek',
+        workingDir: '/work',
+      },
+    });
+    await rollbackStarted.promise;
+    expect(h.service.has(sessionId)).toBe(true);
+    expect(prepareCodexThreadRotation).toHaveBeenCalledTimes(1);
+
+    releaseRollback.resolve();
+    await replacing;
+    expect(prepareCodexThreadRotation).toHaveBeenCalledTimes(1);
+
+    releaseClose.resolve();
+    await applying;
+
+    expect(events).toEqual([
+      'prepare-old',
+      'close-start',
+      'rollback-old-start',
+      'rollback-old-end',
+      'close-end',
+      'prepare-latest',
+    ]);
+    expect(firstRollback).toHaveBeenCalledTimes(1);
+    expect(secondRollback).not.toHaveBeenCalled();
+    expect(prepareCodexThreadRotation).toHaveBeenCalledTimes(2);
+    expect(h.service.has(sessionId)).toBe(false);
+    expect(getSessionProvider(sessionId)).toBe('openai');
+    expect(h.onApplied).toHaveBeenCalledWith(sessionId);
   });
 
   it('releases a stale deferred switch when a newer lifecycle owns the thread binding', async () => {

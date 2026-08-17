@@ -2807,7 +2807,7 @@ export async function registerPendingCredentialSwitchForSession(
     prevRow = null;
   }
   const prevModel = live?.model ?? prevRow?.model ?? null;
-  service.register(sessionId, {
+  await service.register(sessionId, {
     ...target,
     ...(dbAgentKind ? { agentKind: dbToMakerAgentKind(dbAgentKind) } : {}),
     ...(prevModel
@@ -2835,11 +2835,11 @@ export async function prepareCodexThreadRotationForSession(
   return prepareCodexThreadRotationHolder(snapshot);
 }
 
-export function clearPendingCredentialSwitchForSession(
+export async function clearPendingCredentialSwitchForSession(
   sessionId: string,
   opts?: { wake?: boolean },
-): void {
-  pendingCredentialSwitchHolder?.clear(sessionId);
+): Promise<void> {
+  await pendingCredentialSwitchHolder?.clear(sessionId);
   // pending 门解除后 coordinator 没有其它唤醒源；wake:false 由调用方在
   // close + route 写入完成后显式唤醒，避免队首趁窗口派发到旧凭证。
   if (opts?.wake !== false) {

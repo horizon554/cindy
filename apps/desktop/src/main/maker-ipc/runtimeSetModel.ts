@@ -88,7 +88,10 @@ export interface ApplyRuntimeSetModelChangeInput {
    * model-only 变更后 pending 的目标形态与当前进程重新同族(如从折扣模型切回
    * 普通模型)—— 不清会让已被放弃的 pending 在 turn 结束时照样生效。
    */
-  clearPendingCredentialSwitch?: (sessionId: string, opts?: { wake?: boolean }) => void;
+  clearPendingCredentialSwitch?: (
+    sessionId: string,
+    opts?: { wake?: boolean },
+  ) => void | Promise<void>;
   /**
    * 空闲切换分支收尾唤醒:关会话 + 写新 route 完成后恢复该会话输入队列的派发。
    * 不能依赖 clear 钩子的默认唤醒 —— 那发生在 close **之前**,drain 会趁 await
@@ -358,7 +361,7 @@ export async function applyRuntimeSetModelChange(
     // 记下清除前的值:后续失败(非 busy)时恢复,不让用户的待定选择随异常丢失
     // (Greptile review #1035)。
     const clearedPending = input.getPendingCredentialSwitch?.(sessionId);
-    input.clearPendingCredentialSwitch?.(sessionId, { wake: false });
+    await input.clearPendingCredentialSwitch?.(sessionId, { wake: false });
     let preparedRotation: Awaited<ReturnType<PrepareCodexThreadRotation>> | undefined;
     try {
       if (shouldCloseSessionForCodeModeOnly) {
@@ -379,7 +382,7 @@ export async function applyRuntimeSetModelChange(
       // 没有(老调用方)保持抛 busy 的旧语义。
       if (isCredentialModeSwitchBusyError(err) && input.registerPendingCredentialSwitch) {
         await preparedRotation?.rollback();
-        input.registerPendingCredentialSwitch(sessionId, {
+        await input.registerPendingCredentialSwitch(sessionId, {
           model,
           providerId: nextProviderId,
           ...(codexThreadRotation ? { codexThreadRotation } : {}),
@@ -392,7 +395,7 @@ export async function applyRuntimeSetModelChange(
       }
       // 非 busy 失败:恢复被清除的 pending,用户的待定来源选择不随异常丢失。
       if (clearedPending && input.registerPendingCredentialSwitch) {
-        input.registerPendingCredentialSwitch(sessionId, clearedPending);
+        await input.registerPendingCredentialSwitch(sessionId, clearedPending);
       }
       await preparedRotation?.rollback();
       throw err;
@@ -414,12 +417,12 @@ export async function applyRuntimeSetModelChange(
   if (providerId !== undefined) {
     setSessionProvider(sessionId, nextProviderId);
     // 显式选源且无需切换 → 取消尚未兑现的 pending(后选覆盖先选)。
-    input.clearPendingCredentialSwitch?.(sessionId);
+    await input.clearPendingCredentialSwitch?.(sessionId);
   } else if (pendingTarget !== undefined) {
     // model-only 变更 + 已有 pending:能走到无需切换分支,说明按 pending 来源 +
     // 新模型评估后凭证形态已与当前进程同族(典型:折扣模型 pending 后切回普通
     // 模型)→ 切换意图不复存在,取消 pending(review P1)。
-    input.clearPendingCredentialSwitch?.(sessionId);
+    await input.clearPendingCredentialSwitch?.(sessionId);
     logger?.info('set-model: cancelled stale pending credential switch after model-only change', {
       sessionId,
       pendingProviderId: pendingTarget.providerId,
@@ -449,7 +452,7 @@ export async function applyRuntimeSetModelChange(
     // (providerId !== undefined)时旧 pending 已被本次明确选择覆盖,恢复它会静默
     // 撤销用户最后一次选择(Greptile review #1035 七轮)。
     if (pendingTarget && input.registerPendingCredentialSwitch) {
-      input.registerPendingCredentialSwitch(sessionId, pendingTarget);
+      await input.registerPendingCredentialSwitch(sessionId, pendingTarget);
     }
     throw err;
   }
