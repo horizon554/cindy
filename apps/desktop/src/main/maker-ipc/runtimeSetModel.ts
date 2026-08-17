@@ -169,6 +169,7 @@ export async function crossesCodexCodeModeOnlyBoundary(args: {
   nextProviderId: string | null;
   currentModel: string;
   nextModel: string;
+  nextCredentialMode?: AgentCredentialMode;
   codexAuthInjection?: CodexProxyAuthInjection | null;
   resolver?: CodexRouteCapabilitiesResolver;
 }): Promise<boolean> {
@@ -182,6 +183,7 @@ export async function crossesCodexCodeModeOnlyBoundary(args: {
     resolveCodexCodeModeOnlyForRoute({
       providerId: args.nextProviderId,
       model: args.nextModel,
+      credentialMode: args.nextCredentialMode,
       codexAuthInjection: args.codexAuthInjection,
       resolver: args.resolver,
     }),
@@ -237,6 +239,17 @@ export async function applyRuntimeSetModelChange(
         codexAuthInjection: input.codexAuthInjection,
       })
     : false;
+  // A credential-family close means the destination will no longer use the
+  // currently spawned proxy shape. Resolve that post-switch route from the
+  // target request; hot-reused hosts keep the live injection as before.
+  const nextCredentialMode =
+    shouldCloseSessionForCredentials && sess?.agentKind === 'codex'
+      ? resolveAgentCredentialMode({
+          agentKind: 'codex',
+          providerId: nextProviderId,
+          model,
+        })
+      : undefined;
   let shouldCloseSessionForCodeModeOnly = false;
   if (sess?.agentKind === 'codex' && !sess.remoteHostId) {
     try {
@@ -245,6 +258,7 @@ export async function applyRuntimeSetModelChange(
         nextProviderId,
         currentModel: sess.model,
         nextModel: model,
+        nextCredentialMode,
         codexAuthInjection: input.codexAuthInjection,
         resolver: input.resolveCodexRouteCapabilitiesForSwitch ?? resolveCodexRouteCapabilities,
       });

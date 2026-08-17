@@ -370,6 +370,66 @@ describe('applyRuntimeSetModelChange', () => {
     );
   });
 
+  it('uses the rebuilt host credential mode when switching from env-key to OpenAI OAuth', async () => {
+    const sessionId = rememberSession('runtime-set-model-codemode-env-openai');
+    const setModel = vi.fn(async () => {});
+    const closeSession = vi.fn(async () => {});
+    const prepareCodexThreadRotation = vi.fn(async () => ({
+      newSdkSessionId: 'thread-openai-new',
+      rollback: vi.fn(async () => undefined),
+    }));
+    const resolver = vi.fn(async ({ credentialMode }: { credentialMode?: string }) => ({
+      requiresCodeModeOnly: credentialMode === 'gateway-key',
+    }));
+    const maker: RuntimeSetModelMaker = {
+      getSession: () => ({
+        agentKind: 'codex',
+        remoteHostId: null,
+        codexProxyActive: true,
+        model: 'gpt-5.4',
+        sdkSessionId: 'thread-openai-old',
+        workDir: '/work',
+        setModel,
+      }),
+      listActiveSessions: () => [{
+        id: sessionId,
+        agentKind: 'codex',
+        remoteHostId: null,
+        isTurnRunning: () => false,
+      }],
+      closeSession,
+    };
+
+    await applyRuntimeSetModelChange({
+      maker,
+      sessionId,
+      model: 'gpt-5.4',
+      providerId: 'openai',
+      codexAuthInjection: 'env-key',
+      resolveCodexRouteCapabilitiesForSwitch: resolver,
+      prepareCodexThreadRotation,
+    });
+
+    expect(resolver).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      providerId: null,
+      credentialMode: 'gateway-key',
+    }));
+    expect(resolver).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      providerId: 'openai',
+      credentialMode: 'oauth-bearer',
+    }));
+    expect(prepareCodexThreadRotation).toHaveBeenCalledWith({
+      sessionId,
+      sourceSdkSessionId: 'thread-openai-old',
+      sourceModel: 'gpt-5.4',
+      sourceProviderId: null,
+      workingDir: '/work',
+    });
+    expect(closeSession).toHaveBeenCalledWith(sessionId);
+    expect(setModel).not.toHaveBeenCalled();
+    expect(getSessionProvider(sessionId)).toBe('openai');
+  });
+
   it('prefers the active proxy auth shape over an explicit provider-derived mode', async () => {
     const resolver = vi.fn(async ({
       providerId,
