@@ -31,7 +31,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { isTerminalAgentErrorEvent } from '@cindy/maker-core';
+import { isTerminalAgentErrorEvent, resolveAgentCredentialMode } from '@cindy/maker-core';
 import type {
   Maker,
   AgentEvent,
@@ -360,6 +360,7 @@ export class MakerScheduleRunner implements ScheduleRunner {
     currentModel: string,
     nextModel: string,
   ): Promise<SchedulerRouteRebuildRequirement | null> {
+    const codexAuthInjection = this.deps.getCodexAuthInjection?.();
     const crossesCredentialMode = shouldCloseSessionForCredentialSwitch({
       agentKind: session.agentKind,
       remoteHostId: session.remoteHostId,
@@ -368,8 +369,18 @@ export class MakerScheduleRunner implements ScheduleRunner {
       currentModel,
       nextModel,
       currentCodexProxyActive: session.codexProxyActive,
-      codexAuthInjection: this.deps.getCodexAuthInjection?.(),
+      codexAuthInjection,
     });
+    // A credential-family rebuild discards the live proxy auth shape, so the
+    // destination capability must be resolved from the target request.
+    const nextCredentialMode =
+      crossesCredentialMode && session.agentKind === 'codex'
+        ? resolveAgentCredentialMode({
+            agentKind: 'codex',
+            providerId: nextProviderId,
+            model: nextModel,
+          })
+        : undefined;
     let crossesCodeModeOnly = false;
     if (
       session.agentKind === 'codex' &&
@@ -378,12 +389,13 @@ export class MakerScheduleRunner implements ScheduleRunner {
     ) {
       try {
         crossesCodeModeOnly = await crossesCodexCodeModeOnlyBoundary({
-        currentProviderId,
-        nextProviderId,
-        currentModel,
-        nextModel,
-        codexAuthInjection: this.deps.getCodexAuthInjection?.(),
-        resolver: this.deps.resolveCodexRouteCapabilities,
+          currentProviderId,
+          nextProviderId,
+          currentModel,
+          nextModel,
+          nextCredentialMode,
+          codexAuthInjection,
+          resolver: this.deps.resolveCodexRouteCapabilities,
         });
       } catch (error) {
         this.deps.logger.warn?.(

@@ -1268,6 +1268,72 @@ describe('MakerScheduleRunner model selection', () => {
       );
     });
 
+    it('heartbeat 从 env-key Gateway 切到 OpenAI OAuth 时按目标凭证形态轮换 thread', async () => {
+      mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active', providerId: 'xd' });
+      const h = createSessionHarness();
+      Object.defineProperty(h.session, 'agentKind', { value: 'codex' });
+      Object.defineProperty(h.session, 'model', { value: 'gpt-5.4' });
+      Object.defineProperty(h.session, 'codexProxyActive', { value: true });
+      const resolveCodexRouteCapabilities = vi.fn(
+        async ({ credentialMode }: { credentialMode?: string }) => ({
+          requiresCodeModeOnly: credentialMode === 'gateway-key',
+        }),
+      );
+      const prepareCodexThreadRotation = vi.fn(async () => ({
+        newSdkSessionId: 'sdk-openai-forked',
+        rollback: vi.fn(async () => undefined),
+      }));
+      const harness = createRunnerHarness(
+        h,
+        {
+          model: 'gpt-5.4',
+          workDir: '/work',
+          sdkSessionId: 'sdk-openai-old',
+        },
+        {
+          sessionAlive: true,
+          getCodexAuthInjection: () => 'env-key',
+          resolveCodexRouteCapabilities,
+          prepareCodexThreadRotation,
+        },
+      );
+
+      await fireToCompletion(
+        harness,
+        h,
+        baseSchedule({
+          agentKind: 'codex',
+          model: 'gpt-5.4',
+          providerId: 'openai',
+          targetSessionId: 'scheduler-session',
+        }),
+      );
+
+      expect(resolveCodexRouteCapabilities).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ providerId: 'xd', credentialMode: 'gateway-key' }),
+      );
+      expect(resolveCodexRouteCapabilities).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ providerId: 'openai', credentialMode: 'oauth-bearer' }),
+      );
+      expect(prepareCodexThreadRotation).toHaveBeenCalledWith({
+        sessionId: 'scheduler-session',
+        sourceSdkSessionId: 'sdk-openai-old',
+        sourceModel: 'gpt-5.4',
+        sourceProviderId: 'xd',
+        workingDir: '/work',
+      });
+      expect(harness.closeSession).toHaveBeenCalledWith('scheduler-session');
+      expect(harness.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: 'openai',
+          model: 'gpt-5.4',
+          resumeSessionId: 'sdk-openai-forked',
+        }),
+      );
+    });
+
     it('heartbeat 复用本地 Codex 且仅跨 CodeModeOnly 能力 → 关闭后按新来源重建', async () => {
       mocks.getSessionRowSnapshot.mockResolvedValue({ status: 'active', providerId: 'xd' });
       const h = createSessionHarness();
