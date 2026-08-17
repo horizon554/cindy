@@ -576,9 +576,15 @@ export async function resolveCodexRouteCapabilities(args: {
           || routeUsesLocalBridge
           || routeUsesHostInjectedAuth;
         if (explicitRouteApplies) {
-          return { requiresCodeModeOnly: routing.requiresCodeModeOnly === true };
+          // An OAuth host can only take an explicit gateway-key route when the
+          // proxy can replace its subscription bearer with the live Gateway key.
+          // Without that key, the proxy falls through to its spawn-default route.
+          if (routing.authStrategy !== 'gateway-key' || gatewayKeyReader()) {
+            return { requiresCodeModeOnly: routing.requiresCodeModeOnly === true };
+          }
+        } else {
+          explicitRouteWasIgnored = true;
         }
-        explicitRouteWasIgnored = true;
       }
     }
     explicitRouteWasOutOfScope = routing !== null && routing !== undefined;

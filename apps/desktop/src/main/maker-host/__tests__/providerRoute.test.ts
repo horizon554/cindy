@@ -88,7 +88,10 @@ afterEach(() => {
   setAnthropicDiscoveredModels([]);
   setCustomProviders([]);
   setProviderViewsReader(async () => []);
+  setVisionGatewayKeyReader(() => KEY);
 });
+
+setVisionGatewayKeyReader(() => KEY);
 
 describe('implicit local bridge resume routing', () => {
   it('keeps the connected source when a running session model becomes retired', async () => {
@@ -152,6 +155,22 @@ describe('Codex CodeModeOnly route capability', () => {
       model: 'xai/grok-4.3',
       credentialMode: 'provider-oauth',
     })).resolves.toEqual({ requiresCodeModeOnly: false });
+  });
+
+  it('uses the OAuth spawn fallback when an explicit Gateway route has no key', async () => {
+    setVisionGatewayKeyReader(() => null);
+
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'xd',
+      model: 'gpt-5.5',
+      credentialMode: 'oauth-bearer',
+    })).resolves.toBeUndefined();
+
+    await expect(resolveCodexRouteCapabilities({
+      providerId: 'xd',
+      model: 'codex/gpt-5.5',
+      credentialMode: 'oauth-bearer',
+    })).resolves.toEqual({ requiresCodeModeOnly: true });
   });
 
   it('uses the fallback route when an explicit provider does not serve the model', async () => {
