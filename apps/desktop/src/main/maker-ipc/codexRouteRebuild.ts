@@ -36,6 +36,8 @@ export interface CodexRouteRebuildDeps {
   };
   /** Interrupt the current turn before its live proxy route can drift further. */
   abortSession: (sessionId: string) => Promise<void>;
+  /** Serialize thread rotation/close with every local Session.send route decision. */
+  withSessionLock: <T>(sessionId: string, task: () => Promise<T>) => Promise<T>;
   isSessionInTurn?: (sessionId: string) => boolean;
   /** True while Provider routing is intentionally between committed snapshots. */
   isReconciliationBlocked?: () => boolean;
@@ -241,12 +243,15 @@ export class CodexRouteRebuildService {
     if (pending.requiresThreadRotation !== true) return;
     this.applying.add(sessionId);
     void (async () => {
-      if (!(await this.prepareThreadRotation(sessionId, pending))) return;
-      if (this.deps.isReconciliationBlocked?.() === true) {
-        this.scheduleRetry(sessionId);
-        return;
-      }
-      this.finish(sessionId, pending.instanceId, 'session closed');
+      await this.deps.withSessionLock(sessionId, async () => {
+        if (this.pending.get(sessionId) !== pending) return;
+        if (!(await this.prepareThreadRotation(sessionId, pending))) return;
+        if (this.deps.isReconciliationBlocked?.() === true) {
+          this.scheduleRetry(sessionId);
+          return;
+        }
+        this.finish(sessionId, pending.instanceId, 'session closed');
+      });
     })()
       .catch((error) => {
         this.deps.logger?.warn('catalog route rebuild close-boundary rotation failed', {
@@ -316,10 +321,24 @@ export class CodexRouteRebuildService {
         }
         return;
       }
-      if (pending.threadRotation && !pending.preparedThreadRotation) {
-        if (!(await this.prepareThreadRotation(sessionId, pending))) return;
-      }
-      this.finish(sessionId, pending.instanceId, 'session already closed');
+      await this.deps.withSessionLock(sessionId, async () => {
+        if (this.pending.get(sessionId) !== pending) return;
+        const currentSession = this.deps.maker
+          .listActiveSessions()
+          .find((candidate) => candidate.id === sessionId);
+        if (currentSession) {
+          if (currentSession.instanceId !== pending.instanceId) {
+            this.finish(sessionId, pending.instanceId, 'session incarnation changed');
+          } else {
+            this.scheduleRetry(sessionId);
+          }
+          return;
+        }
+        if (pending.threadRotation && !pending.preparedThreadRotation) {
+          if (!(await this.prepareThreadRotation(sessionId, pending))) return;
+        }
+        this.finish(sessionId, pending.instanceId, 'session already closed');
+      });
       return;
     }
     if (
@@ -409,25 +428,41 @@ export class CodexRouteRebuildService {
 
     this.applying.add(sessionId);
     try {
-      if (!(await this.prepareThreadRotation(sessionId, pending, session))) return;
-      await prepareLocalSessionCredentialModeSwitch({
-        maker: this.deps.maker,
-        sessionId,
-        isSessionInTurn: this.deps.isSessionInTurn,
-        signal,
+      await this.deps.withSessionLock(sessionId, async () => {
+        if (this.pending.get(sessionId) !== pending || signal.aborted) return;
+        const currentSession = this.deps.maker
+          .listActiveSessions()
+          .find((candidate) => candidate.id === sessionId);
+        if (
+          currentSession &&
+          (currentSession.instanceId !== pending.instanceId ||
+            currentSession.agentKind !== 'codex' ||
+            currentSession.remoteHostId ||
+            typeof currentSession.codexRouteRequiresCodeModeOnly !== 'boolean')
+        ) {
+          this.finish(sessionId, pending.instanceId, 'session incarnation changed');
+          return;
+        }
+        if (!(await this.prepareThreadRotation(sessionId, pending, currentSession ?? session))) return;
+        await prepareLocalSessionCredentialModeSwitch({
+          maker: this.deps.maker,
+          sessionId,
+          isSessionInTurn: this.deps.isSessionInTurn,
+          signal,
+        });
+        if (this.pending.get(sessionId) !== pending) return;
+        // Provider mutation can start while closeSession is awaiting teardown.
+        // The old thread is already gone, but waking the queue before the new
+        // route snapshot commits could recreate it against an intermediate route.
+        if (
+          this.deps.isReconciliationBlocked?.() === true ||
+          this.deps.getReconciliationGeneration?.() !== routeGeneration
+        ) {
+          this.scheduleRetry(sessionId);
+          return;
+        }
+        this.finish(sessionId, pending.instanceId, 'catalog capability changed');
       });
-      if (this.pending.get(sessionId) !== pending) return;
-      // Provider mutation can start while closeSession is awaiting teardown.
-      // The old thread is already gone, but waking the queue before the new
-      // route snapshot commits could recreate it against an intermediate route.
-      if (
-        this.deps.isReconciliationBlocked?.() === true ||
-        this.deps.getReconciliationGeneration?.() !== routeGeneration
-      ) {
-        this.scheduleRetry(sessionId);
-        return;
-      }
-      this.finish(sessionId, pending.instanceId, 'catalog capability changed');
     } catch (error) {
       if (pending.preparedThreadRotation) {
         await pending.preparedThreadRotation.rollback().catch((rollbackError) => {

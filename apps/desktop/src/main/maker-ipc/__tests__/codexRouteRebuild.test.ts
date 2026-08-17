@@ -14,6 +14,25 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+const runWithoutSessionLock = <T>(_sessionId: string, task: () => Promise<T>): Promise<T> => task();
+
+function createSessionLock() {
+  let tail = Promise.resolve();
+  return async <T>(_sessionId: string, task: () => Promise<T>): Promise<T> => {
+    const previous = tail;
+    let release!: () => void;
+    tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  };
+}
+
 function createHarness(initialSessions: CodexRouteRebuildSession[]) {
   const sessions = [...initialSessions];
   let currentRequiresCodeModeOnly = false;
@@ -30,6 +49,7 @@ function createHarness(initialSessions: CodexRouteRebuildSession[]) {
       closeSession,
     },
     abortSession,
+    withSessionLock: runWithoutSessionLock,
     isReconciliationBlocked: () => reconciliationBlocked,
     resolveRequiresCodeModeOnly: async () => currentRequiresCodeModeOnly,
     onApplied,
@@ -105,6 +125,7 @@ describe('CodexRouteRebuildService', () => {
     const service = new CodexRouteRebuildService({
       maker: { listActiveSessions: () => sessions, closeSession },
       abortSession: vi.fn(async () => undefined),
+      withSessionLock: runWithoutSessionLock,
       resolveRequiresCodeModeOnly: async () => true,
       prepareCodexThreadRotation,
       retryDelayMs: 60_000,
@@ -122,6 +143,49 @@ describe('CodexRouteRebuildService', () => {
     );
   });
 
+  it('holds the session route lock until thread rotation and close finish', async () => {
+    const sessions = [localCodex('locked-rotation', false)];
+    const rotationBarrier = deferred<void>();
+    const events: string[] = [];
+    const withSessionLock = createSessionLock();
+    const closeSession = vi.fn(async () => {
+      events.push('close');
+      sessions.splice(0, 1);
+    });
+    const prepareCodexThreadRotation = vi.fn(async () => {
+      events.push('rotation-start');
+      await rotationBarrier.promise;
+      events.push('rotation-finish');
+      return {
+        newSdkSessionId: 'thread-locked-rotation-new',
+        rollback: vi.fn(async () => undefined),
+      };
+    });
+    const service = new CodexRouteRebuildService({
+      maker: { listActiveSessions: () => sessions, closeSession },
+      abortSession: vi.fn(async () => undefined),
+      withSessionLock,
+      resolveRequiresCodeModeOnly: async () => true,
+      prepareCodexThreadRotation,
+      retryDelayMs: 60_000,
+    });
+
+    const reconcile = service.reconcile(2);
+    await vi.waitFor(() => expect(prepareCodexThreadRotation).toHaveBeenCalledTimes(1));
+    const directSend = withSessionLock('locked-rotation', async () => {
+      events.push('direct-send');
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(['rotation-start']);
+
+    rotationBarrier.resolve();
+    await reconcile;
+    await directSend;
+
+    expect(events).toEqual(['rotation-start', 'rotation-finish', 'close', 'direct-send']);
+  });
+
   it('retires a stale catalog rebuild when a newer lifecycle owns the thread binding', async () => {
     const sessions = [localCodex('rotation-superseded', false)];
     const prepareCodexThreadRotation = vi.fn(async () => {
@@ -134,6 +198,7 @@ describe('CodexRouteRebuildService', () => {
         closeSession: vi.fn(async () => undefined),
       },
       abortSession: vi.fn(async () => undefined),
+      withSessionLock: runWithoutSessionLock,
       resolveRequiresCodeModeOnly: async () => true,
       prepareCodexThreadRotation,
       onApplied,
@@ -183,6 +248,7 @@ describe('CodexRouteRebuildService', () => {
         closeSession,
       },
       abortSession,
+      withSessionLock: runWithoutSessionLock,
       resolveRequiresCodeModeOnly: (session) =>
         session.id === 'slow-lookup' ? slowLookup.promise : Promise.resolve(true),
       retryDelayMs: 60_000,
@@ -216,6 +282,7 @@ describe('CodexRouteRebuildService', () => {
         closeSession: vi.fn(async () => undefined),
       },
       abortSession: vi.fn(async () => undefined),
+      withSessionLock: runWithoutSessionLock,
       resolveRequiresCodeModeOnly: () => lookup.promise,
       prepareCodexThreadRotation,
       onApplied,
@@ -251,6 +318,7 @@ describe('CodexRouteRebuildService', () => {
         closeSession,
       },
       abortSession,
+      withSessionLock: runWithoutSessionLock,
       resolveRequiresCodeModeOnly: async () => true,
       onApplied,
       retryDelayMs: 60_000,
@@ -305,6 +373,7 @@ describe('CodexRouteRebuildService', () => {
         closeSession,
       },
       abortSession: vi.fn(async () => {}),
+      withSessionLock: runWithoutSessionLock,
       isReconciliationBlocked: () => blocked,
       resolveRequiresCodeModeOnly: () =>
         new Promise<boolean>((resolve) => {
@@ -345,6 +414,7 @@ describe('CodexRouteRebuildService', () => {
         closeSession,
       },
       abortSession,
+      withSessionLock: runWithoutSessionLock,
       resolveRequiresCodeModeOnly: async () => true,
       retryDelayMs: 60_000,
     });
@@ -396,6 +466,7 @@ describe('CodexRouteRebuildService', () => {
         closeSession,
       },
       abortSession: vi.fn(async () => {}),
+      withSessionLock: runWithoutSessionLock,
       getReconciliationGeneration: () => routeGeneration,
       resolveRequiresCodeModeOnly: async () => true,
       onApplied,
@@ -433,6 +504,7 @@ describe('CodexRouteRebuildService', () => {
         closeSession,
       },
       abortSession,
+      withSessionLock: runWithoutSessionLock,
       resolveRequiresCodeModeOnly: async () => currentRequiresCodeModeOnly,
       onApplied,
       retryDelayMs: 60_000,

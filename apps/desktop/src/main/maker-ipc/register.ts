@@ -11548,6 +11548,7 @@ export function registerMakerIpc(maker: Maker, options: RegisterMakerIpcOptions)
         }
       }
     },
+    withSessionLock: withSendToSessionLock,
     isSessionInTurn,
     isReconciliationBlocked: hasAnyProviderRouteMutationInProgress,
     getReconciliationGeneration: getProviderRouteMutationGeneration,
