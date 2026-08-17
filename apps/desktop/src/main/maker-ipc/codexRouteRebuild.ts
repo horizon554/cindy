@@ -136,9 +136,9 @@ export class CodexRouteRebuildService {
 
     const comparisons = await Promise.all(
       sessions.map(async (session) => {
+        let current: boolean;
         try {
-          const current = await this.deps.resolveRequiresCodeModeOnly(session);
-          return { session, current } as const;
+          current = await this.deps.resolveRequiresCodeModeOnly(session);
         } catch (error) {
           this.deps.logger?.warn('catalog route capability resolve failed', {
             revision,
@@ -147,6 +147,15 @@ export class CodexRouteRebuildService {
           });
           return null;
         }
+        if (
+          generation !== this.reconcileGeneration ||
+          this.deps.isReconciliationBlocked?.() === true ||
+          this.deps.getReconciliationGeneration?.() !== routeGeneration
+        ) {
+          return null;
+        }
+        await this.applyComparison(session, current, revision);
+        return { session, current } as const;
       }),
     );
     if (generation !== this.reconcileGeneration) return;
@@ -154,45 +163,6 @@ export class CodexRouteRebuildService {
     if (this.deps.getReconciliationGeneration?.() !== routeGeneration) return;
 
     const scannedIds = new Set(sessions.map((session) => session.id));
-    const toApply: string[] = [];
-    for (const comparison of comparisons) {
-      if (!comparison) continue;
-      const { session, current } = comparison;
-      const previous = this.pending.get(session.id);
-      if (current === session.codexRouteRequiresCodeModeOnly) {
-        if (previous?.instanceId === session.instanceId) {
-          previous.requiresThreadRotation = false;
-        }
-        // Once a busy turn has been interrupted, keep its queue boundary and
-        // rebuild at the abort terminal. A later catalog flip cannot undo an
-        // abort that is already in flight.
-        if (previous?.instanceId === session.instanceId && previous.abortRequested) {
-          previous.revision = revision;
-          this.scheduleRetry(session.id);
-          toApply.push(session.id);
-          continue;
-        }
-        this.finish(session.id, session.instanceId, 'catalog capability converged');
-        continue;
-      }
-      if (previous?.instanceId === session.instanceId) {
-        // Keep the same object while abort is in flight. Its completion/error
-        // path uses object identity to avoid mutating a replacement instance.
-        previous.revision = revision;
-        previous.requiresThreadRotation = true;
-      } else {
-        this.pending.set(session.id, {
-          instanceId: session.instanceId,
-          revision,
-          abortRequested: false,
-          requiresThreadRotation: true,
-          threadRotation: this.snapshotFor(session),
-        });
-      }
-      this.scheduleRetry(session.id);
-      toApply.push(session.id);
-    }
-
     for (const [sessionId, pending] of [...this.pending]) {
       if (
         !scannedIds.has(sessionId) &&
@@ -220,7 +190,6 @@ export class CodexRouteRebuildService {
         this.finish(session.id, pending.instanceId, 'capability comparison failed after session close');
       }
     }
-    await Promise.all(toApply.map((sessionId) => this.tryApply(sessionId)));
   }
 
   onTurnSettled(sessionId: string): Promise<void> {
@@ -336,6 +305,13 @@ export class CodexRouteRebuildService {
         }
         if (pending.threadRotation && !pending.preparedThreadRotation) {
           if (!(await this.prepareThreadRotation(sessionId, pending))) return;
+        }
+        if (
+          this.deps.isReconciliationBlocked?.() === true ||
+          this.deps.getReconciliationGeneration?.() !== routeGeneration
+        ) {
+          this.scheduleRetry(sessionId);
+          return;
         }
         this.finish(sessionId, pending.instanceId, 'session already closed');
       });
@@ -484,6 +460,46 @@ export class CodexRouteRebuildService {
     } finally {
       this.applying.delete(sessionId);
     }
+  }
+
+  private async applyComparison(
+    session: CodexRouteRebuildSession,
+    current: boolean,
+    revision: number,
+  ): Promise<void> {
+    const previous = this.pending.get(session.id);
+    if (current === session.codexRouteRequiresCodeModeOnly) {
+      if (previous?.instanceId === session.instanceId) {
+        previous.requiresThreadRotation = false;
+      }
+      // Once a busy turn has been interrupted, keep its queue boundary and
+      // rebuild at the abort terminal. A later catalog flip cannot undo an
+      // abort that is already in flight.
+      if (previous?.instanceId === session.instanceId && previous.abortRequested) {
+        previous.revision = revision;
+        this.scheduleRetry(session.id);
+        await this.tryApply(session.id);
+        return;
+      }
+      this.finish(session.id, session.instanceId, 'catalog capability converged');
+      return;
+    }
+    if (previous?.instanceId === session.instanceId) {
+      // Keep the same object while abort is in flight. Its completion/error
+      // path uses object identity to avoid mutating a replacement instance.
+      previous.revision = revision;
+      previous.requiresThreadRotation = true;
+    } else {
+      this.pending.set(session.id, {
+        instanceId: session.instanceId,
+        revision,
+        abortRequested: false,
+        requiresThreadRotation: true,
+        threadRotation: this.snapshotFor(session),
+      });
+    }
+    this.scheduleRetry(session.id);
+    await this.tryApply(session.id);
   }
 
   private snapshotFor(session: CodexRouteRebuildSession): CodexThreadRotationSnapshot | undefined {

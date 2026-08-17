@@ -233,7 +233,7 @@ describe('CodexRouteRebuildService', () => {
     expect(h.onApplied).toHaveBeenCalledWith('busy');
   });
 
-  it('gates candidate sessions before all asynchronous route comparisons settle', async () => {
+  it('interrupts a confirmed busy route change before slower comparisons settle', async () => {
     let running = true;
     const sessions = [
       localCodex('busy-fast', false, () => running),
@@ -258,12 +258,12 @@ describe('CodexRouteRebuildService', () => {
     await vi.waitFor(() => expect(service.has('slow-lookup')).toBe(true));
 
     expect(service.has('busy-fast')).toBe(true);
-    expect(abortSession).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(abortSession).toHaveBeenCalledWith('busy-fast'));
 
     slowLookup.resolve(false);
     await reconcile;
 
-    expect(abortSession).toHaveBeenCalledWith('busy-fast');
+    expect(abortSession).toHaveBeenCalledTimes(1);
     running = false;
     await service.onTurnSettled('busy-fast');
   });
@@ -353,6 +353,12 @@ describe('CodexRouteRebuildService', () => {
     // The interrupted thread is closed immediately so direct send paths cannot
     // reuse it, but the queue remains gated until the route mutation commits.
     expect(h.closeSession).toHaveBeenCalledWith('mutation-pending');
+    expect(h.service.has('mutation-pending')).toBe(true);
+    expect(h.onApplied).not.toHaveBeenCalled();
+
+    // A close notification/retry while the mutation is still active must not
+    // release the queue merely because the old session is already absent.
+    await h.service.onTurnSettled('mutation-pending');
     expect(h.service.has('mutation-pending')).toBe(true);
     expect(h.onApplied).not.toHaveBeenCalled();
 
