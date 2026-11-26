@@ -47,6 +47,26 @@
     {
       "name": "recording",
       "value": "#D91F37"
+    },
+    {
+      "name": "login_bg",
+      "value": "#EDEDED"
+    },
+    {
+      "name": "login_card",
+      "value": "#FAFAFA"
+    },
+    {
+      "name": "warning",
+      "value": "#963A18"
+    },
+    {
+      "name": "danger",
+      "value": "#A12622"
+    },
+    {
+      "name": "brand_splash",
+      "value": "#DF0C27"
     }
   ]
 }

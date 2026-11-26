@@ -1,6 +1,17 @@
 import { normalizeAskQuestions, answerKey, askQuestionOptions, askAnswerError, encodeMultiSelectAnswer,
   selectionFromAnswer, buildPermissionReviewPresentation } from './protocol.generated';
 
+function decode(content) {
+  if (typeof content !== 'string') return content;
+  try { return JSON.parse(content); } catch { return content; }
+}
+
+export function approvalKey(request) {
+  if (request.kind !== 'permission') return '';
+  const p = buildPermissionReviewPresentation(request);
+  return p.riskSummary ? JSON.stringify([request.requestId, request.toolName, request.input, p.title, p.description, p.sourceDescription, p.riskSummary, p.code]) : '';
+}
+
 function body(content) {
   if (typeof content === 'string') {
     if (/^\s*[[{]/.test(content)) {
@@ -23,16 +34,30 @@ export function taskPage(rows, task) {
   for (const row of rows) {
     if (!row?.id || row.sessionId !== task || seen.has(row.id)) continue;
     seen.add(row.id);
-    let title;
+    let title, detail;
     if (row.role === 'ask_user' || row.role === 'permission' || row.role === 'tool_use' || row.role === 'tool_result') {
       let data = row.content;
       if (typeof data === 'string') { try { data = JSON.parse(data); } catch { /* Plain tool output. */ } }
       if (row.role === 'ask_user') title = normalizeAskQuestions(data?.questions).map(q => q.question).join('\n');
       if (row.role === 'permission') title = data?.title || data?.toolName || '操作审批';
-      if (row.role === 'tool_use') title = '工具 · ' + (data?.toolName || data?.name || row.toolName || '调用');
+      if (row.role === 'tool_use') {
+        title = '工具 · ' + (data?.toolName || data?.name || row.toolName || '调用');
+        detail = [data?.input?.description, data?.input?.command, data?.input?.file_path, data?.input?.path]
+          .filter(v => typeof v === 'string' && v).join('\n').slice(0, 8192);
+      }
       if (row.role === 'tool_result') title = body(data) || data?.output || '工具已返回';
     }
-    page.push({ id: row.id, clientId: row.clientId || '', role: row.role || '',
+    const content = decode(row.content);
+    const media = [];
+    for (const kind of ['images', 'files']) {
+      for (const file of Array.isArray(content?.[kind]) ? content[kind] : []) {
+        if (!file || typeof file !== 'object') continue;
+        const path = file.url || file.path;
+        media.push({ path: typeof path === 'string' ? path : '', name: file.originalName || file.name || (kind === 'images' ? '图片' : '文件'),
+          size: Number(file.size) || 0, mimeType: file.mimeType || (kind === 'images' ? 'image/*' : '') });
+      }
+    }
+    page.push({ ...(detail ? { detail } : {}), ...(media.length ? { media, messageText: content.text || '' } : {}), id: row.id, clientId: row.clientId || '', role: row.role || '',
       title: (typeof title === 'string' && title) || body(row.content) || row.toolName || '暂不支持显示此消息' });
   }
   return page.reverse();
@@ -56,21 +81,27 @@ export function presentCards(entries, edits, revisions) {
     if (r.kind === 'permission') {
       const p = buildPermissionReviewPresentation(r);
       result.title = p.title || r.toolName || '操作审批';
-      result.detail = [p.sourceDescription, p.description, p.riskSummary, p.code].filter(Boolean).join('\n');
+      result.approvalKey = approvalKey(r);
+      result.risk = p.riskSummary || '';
+      result.code = p.code || '';
+      result.detail = [p.sourceDescription, p.description].filter(Boolean).join('\n');
     } else if (r.kind === 'plan_review') {
       result.title = '审核计划';
       result.detail = r.plan || '';
     } else if (r.kind === 'ask_user_question') {
       result.title = '待回答';
+      let complete = true;
       result.questions = normalizeAskQuestions(r.questions).map(q => {
         const key = answerKey(q);
         const answer = edits.get(r.requestId)?.get(key) || '';
+        if (askAnswerError(q, answer) || (!q.answerConstraints && (!answer.trim() || answer === '[]'))) complete = false;
         const { selectedLabels, customInput } = selectionFromAnswer(q, answer);
         const choices = askQuestionOptions(q);
         return { key, label: q.question, multi: !!q.multiSelect, free: !q.answerConstraints?.choices,
           value: q.multiSelect ? customInput : answer,
           options: choices.map(opt => ({ label: opt.label, detail: opt.description || '', selected: selectedLabels.has(opt.label) })) };
       });
+      result.complete = complete && result.questions.length > 0;
     } else { result.title = '请在电脑上处理此请求'; }
     return [result];
   });
@@ -108,4 +139,39 @@ export function decisionFor(request, edits, choice) {
     return { kind: request.kind, behavior: choice };
   }
   throw new Error('请在电脑上处理此请求');
+}
+
+// Preserve fenced text verbatim and keep links inert until explicitly opened.
+export function messageBlocks(text) {
+  const blocks = [];
+  let fence = null, lines = [];
+  function flush(kind) {
+    if (lines.length) blocks.push({ kind, text: lines.join('\n') });
+    lines = [];
+  }
+  for (const line of text.split('\n')) {
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (marker && (!fence || (marker[1][0] === fence[0] && marker[1].length >= fence.length))) {
+      flush(fence ? 'code' : 'text'); fence = fence ? null : marker[1]; continue;
+    }
+    if (fence) { lines.push(line); continue; }
+    const heading = /^(#{1,6})\s+(.+)/.exec(line);
+    if (heading) { flush('text'); blocks.push({ kind: 'heading', text: heading[2] }); }
+    else if (!line.trim()) flush('text');
+    else lines.push(line.replace(/^\s*[-*+]\s+/, '• '));
+  }
+  flush(fence ? 'code' : 'text');
+  return blocks;
+}
+export function messageSpans(text) {
+  const spans = [];
+  const tokens = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>]+)|\*\*([^*\n]+)\*\*|`([^`\n]+)`/g;
+  let end = 0;
+  for (const m of text.matchAll(tokens)) {
+    if (m.index > end) spans.push({ text: text.slice(end, m.index) });
+    spans.push({ text: m[1] || m[3] || m[4] || m[5], url: m[2] || m[3], bold: !!m[4], code: !!m[5] });
+    end = m.index + m[0].length;
+  }
+  if (end < text.length) spans.push({ text: text.slice(end) });
+  return spans;
 }

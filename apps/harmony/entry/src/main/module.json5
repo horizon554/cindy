@@ -30,8 +30,8 @@
         "srcEntry": "./ets/EntryAbility.ets",
         "label": "$string:app_name",
         "icon": "$media:cindy",
-        "startWindowIcon": "$media:cindy",
-        "startWindowBackground": "$color:splash",
+        "startWindowIcon": "$media:login_hero",
+        "startWindowBackground": "$color:brand_splash",
         "exported": true,
         "skills": [
           {

@@ -10,7 +10,7 @@
     },
     {
       "name": "phone",
-      "value": "+86 手机号"
+      "value": "手机号"
     },
     {
       "name": "sms",
@@ -307,6 +307,150 @@
     {
       "name": "choice_unselected",
       "value": "未选中"
+    },
+    {
+      "name": "next_step",
+      "value": "继续"
+    },
+    {
+      "name": "sso_org",
+      "value": "企业 SSO"
+    },
+    {
+      "name": "org_hint",
+      "value": "输入组织标识或已验证域名"
+    },
+    {
+      "name": "confirm_risk",
+      "value": "确认允许本次高风险操作"
+    },
+    {
+      "name": "collapse_plan",
+      "value": "收起计划"
+    },
+    {
+      "name": "expand_plan",
+      "value": "展开计划"
+    },
+    {
+      "name": "again_in",
+      "value": "%d 秒后可重发"
+    },
+    {
+      "name": "agreement_title",
+      "value": "请阅读并同意用户协议和隐私政策"
+    },
+    {
+      "name": "agree_continue",
+      "value": "同意并继续"
+    },
+    {
+      "name": "search_task",
+      "value": "搜索任务或项目"
+    },
+    {
+      "name": "select_host",
+      "value": "选择电脑"
+    },
+    {
+      "name": "settings",
+      "value": "设置"
+    },
+    {
+      "name": "task_info",
+      "value": "任务详情"
+    },
+    {
+      "name": "project",
+      "value": "项目"
+    },
+    {
+      "name": "dialogue",
+      "value": "对话"
+    },
+    {
+      "name": "no_matches",
+      "value": "没有匹配的任务"
+    },
+    {
+      "name": "first_input",
+      "value": "你想让 Cindy 做什么？"
+    },
+    {
+      "name": "workspace_path",
+      "value": "工作目录"
+    },
+    {
+      "name": "all_tasks",
+      "value": "全部任务"
+    },
+    {
+      "name": "archived",
+      "value": "已归档"
+    },
+    {
+      "name": "ready_tasks",
+      "value": "未归档"
+    },
+    {
+      "name": "open_file",
+      "value": "打开文件"
+    },
+    {
+      "name": "preview",
+      "value": "预览"
+    },
+    {
+      "name": "close",
+      "value": "关闭"
+    },
+    {
+      "name": "choose_target",
+      "value": "选择接收任务"
+    },
+    {
+      "name": "current_host",
+      "value": "执行电脑"
+    },
+    {
+      "name": "notification_settings",
+      "value": "任务通知"
+    },
+    {
+      "name": "last_input",
+      "value": "上次发送"
+    },
+    {
+      "name": "unavailable_preview",
+      "value": "此文件可在执行电脑上查看"
+    },
+    {
+      "name": "other_requests",
+      "value": "下一项请求"
+    },
+    {
+      "name": "share_new",
+      "value": "新建任务接收"
+    },
+    {
+      "name": "search",
+      "value": "搜索"
+    },
+    {
+      "name": "expand_input",
+      "value": "展开输入框"
+    },
+    {
+      "name": "collapse_input",
+      "value": "收起输入框"
+    },
+    {
+      "name": "phone_code_title",
+      "value": "输入验证码"
+    },
+    {
+      "name": "change_number",
+      "value": "更换手机号"
     }
   ]
 }

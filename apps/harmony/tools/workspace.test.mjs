@@ -170,7 +170,7 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   globalThis.harmonyPorts = { deviceIdentity: async () => 'phone', readSession: async () => null, saveSession: async () => {},
     request: async () => { throw Object.assign(new Error('directory denied'), {httpStatus:403}); } };
   const { Workspace } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64') + '#m2');
-  const app = new Workspace(() => {});
+  const app = new Workspace(() => {}, true);
   await app.init({});
   app.session = { id: 'account-one', name: '测试' };
   app.show({ account: '测试', relay: 'online', devices: [{ id: 'pc', title: '电脑' }] });
@@ -229,10 +229,13 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
       return { ok: true, result };
     } };
   await app.openDevice('pc');
-  await assert.rejects(app.create('同一任务'), /reply lost/);
-  await Promise.all([app.create('同一任务'),app.create('同一任务')]);
+  await assert.rejects(app.create('同一任务', '/fixture', '第一条消息'), /reply lost/);
+  await Promise.all([app.create('同一任务', '/fixture', '第一条消息'),app.create('同一任务', '/fixture', '第一条消息')]);
   const task = app.state.task;
   assert.ok(task); assert.equal(created,1); assert.equal(sessions.get(task).title,'同一任务');
+  assert.equal(enqueue,1);
+  assert.equal(sessions.get(task).workspaceKind,'project');
+  assert.equal(requests.filter(r => r.channel === 'maker:input:enqueue')[0].args[1].text,'第一条消息');
   assert.equal(app.state.running,true);
   await app.control(false); await app.control(true); assert.equal(stopped,1); assert.equal(resumed,1);
   history = Array.from({length:85},(_,i)=>({id:'m'+i,sessionId:task,createdAt:20,role:'user',content:'行 '+i}));
@@ -261,12 +264,14 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   await assert.rejects(app.send('上次发送'),/reply lost/);
   app.editDraft('继续写的新草稿');
   await app.reconcile(app.version);
-  assert.equal(app.state.draft,'继续写的新草稿'); assert.equal(enqueue,1);
+  assert.equal(app.state.draft,'继续写的新草稿'); assert.equal(enqueue,2);
 
   cards = [ask]; await app.refreshCards(app.version);
   app.editAnswer('q','q1','乙',true); app.editAnswer('q','q1','甲',true);
   await assert.rejects(app.decide('q','answer'),/检查回答/);
+  assert.equal(app.state.cards[0].complete,false);
   app.editAnswer('q','q2','中文',false);
+  assert.equal(app.state.cards[0].complete,true);
   await app.decide('q','answer');
   assert.deepEqual({...requests.filter(r=>r.channel==='maker:resolve-interaction').at(-1).args[1].answers}, {q1:'["甲","乙"]',q2:'中文'});
   for (const choice of ['allow','deny']) {
@@ -279,6 +284,20 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   await assert.rejects(app.decide('p','allow'),/已过期/); assert.deepEqual(app.state.cards,[]);
   lostDecision = true; cards = [permission]; await app.refreshCards(app.version);
   await assert.rejects(app.decide('p','allow'),/已结束/); assert.deepEqual(app.state.cards,[]);
+
+  // A second tap must still refer to the command currently authorized by the Host.
+  refuse = false; lostDecision = false;
+  const risk = {request:{requestId:'risk',kind:'permission',toolName:'Bash',input:{command:'git push --dry-run'}}};
+  cards = [risk]; await app.refreshCards(app.version);
+  const original = app.state.cards[0].approvalKey;
+  assert.ok(original);
+  const beforeConfirm = resolved;
+  await assert.rejects(app.decide('risk','allow'), /重新确认/);
+  risk.request.input.command = 'git push --dry-run origin';
+  await assert.rejects(app.decide('risk','allow',original), /重新确认/);
+  assert.equal(resolved,beforeConfirm);
+  await app.decide('risk','allow',app.state.cards[0].approvalKey);
+  assert.equal(resolved,beforeConfirm + 1);
 
   await app.back(); await app.back(); app.show({relay:'offline'});
   await app.openDevice('pc'); await app.openTask(task);
@@ -312,7 +331,13 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
 // and an accepted attachment-only enqueue may lose its reply. Assert what the
 // next task and the Host actually receive, including a cold task restore.
 test('route a notification, accept a share and recover one attachment-only message', async () => {
-  globalThis.harmonyPorts = {};
+  const previews = [];
+  globalThis.harmonyPorts = { request: async (url, body, token) => {
+    assert.ok(url.endsWith('/api/device-link/media/presign-get'));
+    assert.equal(token, 'preview-access');
+    previews.push(body.key);
+    return { getUrl: 'https://fixture.invalid/picture', expiresAt: new Date(Date.now()+60000).toISOString() };
+  } };
   const module = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64') + '#media');
   const { Workspace } = module;
   const app = new Workspace(() => {});
@@ -350,6 +375,16 @@ test('route a notification, accept a share and recover one attachment-only messa
     dictation(ctx, update, cb) { complete=cb; update('录音中');return {cancel:()=>cb('',''),finish:()=>cb('验收','')}; }
   };
   app.show({relay:'online'}); await app.devices(); await app.openDevice('mac'); await app.openTask('a');
+  app.token = async () => 'preview-access';
+  const ref = 'cindy-oss-attach://m/' + Buffer.from(JSON.stringify({ossKey:'fixture-key'})).toString('base64url');
+  const photo = {path:ref,mimeType:'image/png',size:200};
+  assert.equal(await app.thumbnail(photo, () => false), '');
+  assert.equal(await app.thumbnail({...photo,size:4*1024*1024}, () => true), '');
+  await assert.rejects(app.previewUrl('/not-a-media-ref'), /电脑上打开/);
+  assert.equal(previews.length, 0);
+  const [first, second] = await Promise.all([app.thumbnail(photo, () => true), app.thumbnail(photo, () => true)]);
+  assert.equal(first, 'https://fixture.invalid/picture'); assert.equal(second, first);
+  assert.deepEqual(previews, ['fixture-key']);
   app.external({target:{owner:'other',host:'mac',task:'b'}});
   assert.equal(app.state.task,'a');
   app.notification={owner:'owner',host:'mac',task:'hidden'};
@@ -359,6 +394,7 @@ test('route a notification, accept a share and recover one attachment-only messa
   app.notification={owner:'owner',host:'mac',task:'outside-first-page'};
   await app.openNotification(); release(); await late; delayed=null;
   assert.equal(app.state.task,'outside-first-page'); assert.deepEqual(app.state.attachments,[]);
+  assert.equal(app.localPreview(ref), '');
   app.external({share:{text:'放弃的分享',uris:[]}});app.dismissShare();
   assert.equal(app.state.draft,'');
   app.external({share:{text:'',uris:['image']}}); await app.acceptShare();

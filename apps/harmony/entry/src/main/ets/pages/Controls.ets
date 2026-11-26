@@ -45,6 +45,8 @@ export struct IconAction {
 @Component
 export struct DirectoryRow {
   @Prop title: string = '';
+  @Prop subtitle: string = '';
+  @Prop running: boolean = false;
   @Prop offline: boolean = false;
   @Prop computer: boolean = false;
   @Prop available: boolean = true;
@@ -57,8 +59,11 @@ export struct DirectoryRow {
         if (this.computer) {
           SymbolGlyph($r('sys.symbol.desktop')).fontSize(21).fontColor([$r('app.color.muted')]).accessibilityLevel('no')
         }
-        Text(this.title).fontSize(16).fontColor($r('app.color.ink')).layoutWeight(1).maxLines(2)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Column({ space: 2 }) {
+          Text(this.title).fontSize(16).lineHeight(22).fontColor($r('app.color.ink')).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          if (this.subtitle) { Text(this.subtitle).fontSize(13).lineHeight(18).fontColor($r('app.color.muted')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }) }
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        if (this.running) { LoadingProgress().width(14).height(14).color($r('app.color.running')).accessibilityText($r('app.string.working')) }
         if (this.offline) { Text($r('app.string.offline')).fontSize(13).fontColor($r('app.color.muted')) }
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([$r('app.color.faint')]).accessibilityLevel('no')
       }.width('100%').padding({ left: 14, right: 12, top: 12, bottom: 12 })

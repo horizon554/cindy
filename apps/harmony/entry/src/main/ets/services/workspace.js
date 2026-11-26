@@ -1,19 +1,23 @@
 import { messageMedia } from './media';
 import { openCache } from './cache';
-import { taskPage, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
+import { approvalKey, taskPage, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
 import util from '@ohos.util';
-import { DeviceLinkClient, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
+import { deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
 import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, readSession, saveSession, createSocket } from './platform';
 
 import { authorize, cancelAuthorization, consumeAuthorization, listenForWant, pendingAuthorization } from './sso';
 
-const taskView = { task: '', messages: [], live: '', draft: '', cards: [], running: false,
+const taskView = { taskContext: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
   attachments: [], transfer: '', voice: '', activity: '', hasOlder: false, paused: false, retryable: false, delivery: '' };
 const hostView = { ...taskView, device: '', tasks: [], linked: false, moreTasks: false };
 
 // One instance owns one visible account. Only the native page can initiate a send.
 export class Workspace {
-  constructor(changed) {
+  constructor(changed, taskHome = false) {
+    this.taskHome = taskHome;
+    this.localMedia = new Map();
+    this.recentImages = new Map();
+    this.thumbnailQueue = Promise.resolve();
     this.changed = changed;
     this.version = 0;
     this.authEpoch = 0;
@@ -21,6 +25,18 @@ export class Workspace {
     this.state = { ...hostView, shareLabel: '', pushStatus: '', pushEnabled: false, ssoWaiting: false, ssoMethods: [], verification: '', accounts: [], account: '', relay: '', devices: [], error: '' };
   }
   show(patch) {
+    if (this.taskHome && patch.devices) {
+      const devices = patch.devices, owner = this.session?.id;
+      patch.homeIndex = [];
+      if (owner && devices.length) {
+        Promise.all(devices.map(async host => {
+          const rows = await this.cache.read([owner, host.id, '', 'tasks']);
+          return (rows || []).map(row => ({ ...row, host: host.id }));
+        })).then(pages => {
+          if (this.session?.id === owner && this.state.devices === devices) this.show({ homeIndex: pages.flat() });
+        }).catch(() => {});
+      }
+    }
     Object.assign(this.state, patch);
     this.changed({ ...this.state });
   }
@@ -43,6 +59,7 @@ export class Workspace {
       this.callbackQueue = (this.callbackQueue || Promise.resolve()).then(() => this.finishSSO(uri)).catch(e => this.report(e));
     });
   }
+  clearMethods() { this.show({ ssoMethods: [], error: '' }); }
   async discover(org) {
     const reply = await request(accountUrl + '/api/auth/sso/discovery', { org: org.trim() });
     if (reply.region !== 'cn') throw new Error('该组织不属于当前 CN 登录环境');
@@ -178,7 +195,16 @@ export class Workspace {
     this.show({ account: this.session.name, error: '' });
     const directoryEpoch = this.directoryEpoch || 0;
     this.cache.read(this.key('devices', '', '')).then(rows => {
-      if (client === this.client && directoryEpoch === (this.directoryEpoch || 0) && rows) this.show({ devices: rows });
+      if (client !== this.client || directoryEpoch !== (this.directoryEpoch || 0) || !rows) return;
+      this.show({ devices: rows });
+      if (this.taskHome && this.state.relay !== 'online' && !this.state.device && rows.length) {
+        return this.cache.read(this.key('home-device', '', '')).then(id => {
+          if (client === this.client && !this.state.device && this.state.relay !== 'online' && directoryEpoch === (this.directoryEpoch || 0)) {
+            const host = this.homeHost(rows, id);
+            if (host) return this.openDevice(host.id);
+          }
+        });
+      }
     }).catch(e => { if (client === this.client) this.report(e); });
     client.onStatusChange(status => {
       if (this.client !== client) return;
@@ -297,9 +323,20 @@ export class Workspace {
     if (this.notification) return this.openNotification();
     await this.devices();
     const { device, task } = this.state;
-    if (version !== this.version || !device || !this.available(device)) return;
+    if (version !== this.version) return;
+    if (this.taskHome && !device) {
+      const preferred = await this.cache.read(this.key('home-device', '', ''));
+      if (version !== this.version || this.state.device) return;
+      const next = this.homeHost(this.state.devices, preferred);
+      if (next) await this.openDevice(next.id);
+      return;
+    }
+    if (!device || !this.available(device)) return;
     await this.connectDevice(device, version);
     if (version === this.version && task) await this.attachTask(version);
+  }
+  homeHost(devices, preferred) {
+    return devices.find(host => host.id === preferred) || (devices.length === 1 ? devices[0] : undefined);
   }
   available(id) {
     return this.state.relay === 'online' && this.state.devices.some(d => d.id === id && !d.offline);
@@ -318,8 +355,26 @@ export class Workspace {
   }
   async listTasks(version, limit) {
     const rows = await this.invoke('local-db:sessions:list', [limit, 'all'], version);
-    const tasks = rows.filter(r => r?.id).map(r => ({ id: r.id, title: r.title || '未命名任务' }));
+    let active = [];
+    if (this.taskHome) {
+      try {
+        const snapshot = await this.invoke('maker:list-active', [{ summary: true, snapshotVersion: 2 }], version);
+        active = Array.isArray(snapshot) ? snapshot : snapshot?.sessions || [];
+      } catch (error) {
+        this.guard(version);
+        if (!['CHANNEL_NOT_ALLOWED', 'NOT_FOUND'].includes(error.code)) throw error;
+      }
+    }
+    const running = new Set(active.filter(row => row?.isTurnRunning !== false).map(row => row?.sessionId));
+    const tasks = rows.filter(row => row?.id && row.status !== 'deleted' && !row.hiddenAt).map(row => ({
+      id: row.id, title: row.title || '未命名任务',
+      project: row.projectDir || (row.workspaceKind === 'project' ? row.workingDir : '') || '',
+      summary: row.preview || row.summary || '', updated: row.lastActivityAt || row.updatedAt || row.createdAt || '',
+      status: row.status || '', running: running.has(row.id) || !!row.isTurnRunning
+    }));
     this.limit = limit;
+    if (this.taskHome) this.state.homeIndex = [...(this.state.homeIndex || []).filter(r => r.host !== this.state.device),
+      ...tasks.map(row => ({ ...row, host: this.state.device }))];
     this.show({ tasks, moreTasks: rows.length >= limit && limit < 1000 });
     await this.cache.write(this.key('tasks', this.state.device, ''), tasks);
   }
@@ -332,6 +387,8 @@ export class Workspace {
     this.limit = 40;
     this.resetTask();
     this.show({ ...hostView, device: id, error: '' });
+    if (this.taskHome) await this.cache.write(this.key('home-device', '', ''), id);
+    this.guard(version);
     if (this.available(id)) return this.connectDevice(id, version);
     const tasks = await this.cache.read(this.key('tasks'));
     if (version === this.version) this.show({ tasks: tasks || [] });
@@ -341,6 +398,9 @@ export class Workspace {
     else throw new Error('网络恢复后会自动连接');
   }
   resetTask() {
+    this.localMedia.clear();
+    this.recentImages.clear();
+    this.thumbnailQueue = Promise.resolve();
     this.cancelTransfer();
     this.cancelVoice();
     this.uploadTickets = new Map();
@@ -374,7 +434,7 @@ export class Workspace {
     this.pending = pending;
     this.hydrated = true;
     this.cachedCount = cached?.messages?.length || 0;
-    this.show({ attachments: attachments || [], draft: this.dirtyDraft ? this.state.draft : (draft || ''), delivery: pending ? '正在核对上次发送' : '' });
+    this.show({ attachments: attachments || [], draft: this.dirtyDraft ? this.state.draft : (draft || ''), pendingLabel: pending?.text || pending?.attachments?.[0]?.name || '', delivery: pending ? '正在核对上次发送' : '' });
     return cached;
   }
   async attachTask(version, subscribe = true) {
@@ -383,6 +443,7 @@ export class Workspace {
     try {
       const row = await this.invoke('local-db:sessions:get', [id], version);
       if (!row || row.id !== id || row.status === 'deleted' || row.hiddenAt) throw Object.assign(new Error('任务已不可访问'), { code: 'NOT_FOUND' });
+      this.show({ taskContext: [row.agentKind, row.model, row.permissionMode].filter(Boolean).join(' · ') });
       if (subscribe) await this.invoke('device-link:subscribe', [{ topics: ['session:' + id], controllerName: 'Cindy HarmonyOS', capabilities: [] }], version);
       const tick = this.runtimeTick;
       await Promise.all([
@@ -467,12 +528,14 @@ export class Workspace {
     questionAnswer(request, this.edits.get(id), key, value, select);
     this.show({ cards: presentCards(this.requests, this.edits, this.choiceRevision) });
   }
-  async decide(id, choice) {
+  async decide(id, choice, confirmedKey = '') {
     if (!this.ready || !this.state.linked) throw new Error('请先连接任务');
     const version = this.version;
     await this.refreshCards(version);
     const r = this.requests.find(row => row.request.requestId === id)?.request;
     if (!r) throw new Error('请求已结束或已由另一端处理');
+    const required = approvalKey(r);
+    if (choice === 'allow' && required !== confirmedKey) throw new Error('请重新确认当前高风险操作');
     const decision = decisionFor(r, this.edits.get(id), choice);
     let receipt;
     try { receipt = await this.invoke('maker:resolve-interaction', [id, decision], version); }
@@ -569,21 +632,22 @@ export class Workspace {
     this.cancelDraftTimer();
     if (draft) await this.cache.write(draft.key, draft.text || null);
   }
-  async create(title) {
+  async create(title, project = '', firstText = '') {
     if (this.creating) return this.creating;
-    this.creating = this.createTask(title.trim()).finally(() => { this.creating = null; });
+    this.creating = this.createTask(title.trim(), project, firstText).finally(() => { this.creating = null; });
     return this.creating;
   }
-  async createTask(title) {
+  async createTask(title, project, firstText) {
     const version = this.version;
     if (!this.state.linked || this.state.task) throw new Error('请选择执行电脑');
     const key = this.key('creation');
     let intent = await this.cache.read(key);
     this.guard(version);
     if (!intent) {
-      intent = { id: util.generateRandomUUID(true), title };
+      intent = { id: util.generateRandomUUID(true), title, project, firstText };
       await this.cache.write(key, intent);
     }
+    const sameInput = (intent.firstText || '') === firstText && (intent.project || '') === project && (intent.title || '') === title;
     const existing = await this.invoke('local-db:sessions:get-many', [[intent.id]], version);
     const row = existing.find(r => r.id === intent.id);
     if (!row) {
@@ -597,18 +661,32 @@ export class Workspace {
       if (agentKind !== 'codex') defaults = await this.invoke('maker:get-new-maker-defaults', [agentKind], version);
       const model = defaults.model;
       if (!model) throw new Error('请先在这台电脑上选择新任务的默认模型');
-      const result = await this.invoke('maker:create-session', [{ id: intent.id, workspaceKind: 'dialogue', agentKind,
+      const result = await this.invoke('maker:create-session', [{ id: intent.id, workspaceKind: intent.project ? 'project' : 'dialogue', ...(intent.project ? { workingDir: intent.project } : {}), agentKind,
         model, providerId: defaults.providerId || undefined, effort: defaults.effort || '', fastMode: defaults.fastMode,
         permissionMode: permissionModeOrAsk(defaults.permissionMode) }], version);
       if (result?.sessionId !== intent.id) throw new Error('电脑返回的任务与创建请求不一致');
     }
     if (intent.title && row?.title !== intent.title) await this.invoke('local-db:sessions:patch-meta', [intent.id, { title: intent.title }], version);
-    const tasks = [{ id: intent.id, title: intent.title || row?.title || '新任务' }, ...this.state.tasks.filter(t => t.id !== intent.id)];
+    const tasks = [{ id: intent.id, title: intent.title || row?.title || '新任务', project: intent.project || '' }, ...this.state.tasks.filter(t => t.id !== intent.id)];
     this.show({ tasks });
     await this.cache.write(this.key('tasks'), tasks);
     this.guard(version);
     await this.openTask(intent.id);
+    const opened = this.version;
+    if (this.state.task !== intent.id || this.session?.id !== key[0] || this.state.device !== key[1]) return;
+    if (intent.firstText) {
+      this.editDraft(intent.firstText);
+      await this.flushDraft();
+      this.guard(opened);
+    }
     await this.cache.write(key, null);
+    this.guard(opened);
+    if (!sameInput) {
+      this.show({ error: '已恢复上次创建的任务，请核对草稿和项目后发送' });
+      return;
+    }
+    if (intent.firstText) await this.send(intent.firstText);
+    return true;
   }
   async checkDelivery() {
     if (!this.ready || !this.state.linked) throw new Error('请先连接任务');
@@ -646,6 +724,14 @@ export class Workspace {
     const key = this.key('outbox');
     const sent = new Set((pending.attachments || []).map(a => a.id));
     const sameDraftFiles = this.state.attachments.length === sent.size && this.state.attachments.every(a => sent.has(a.id));
+    for (const file of pending.attachments || []) {
+      const uri = this.localMedia.get(file.id);
+      if (uri && file.path && file.mimeType?.startsWith('image/')) {
+        this.recentImages.set(file.path, { uri, until: Infinity });
+        if (this.recentImages.size > 20) this.recentImages.delete(this.recentImages.keys().next().value);
+      }
+      this.localMedia.delete(file.id);
+    }
     if (sent.size) await this.setAttachments(this.state.attachments.filter(a => !sent.has(a.id)));
     this.guard(version);
     if (this.state.draft === pending.text && sameDraftFiles) this.editDraft('');
@@ -704,7 +790,7 @@ export class Workspace {
     try {
       await this.invoke('maker:input:enqueue', [task, item, { sendAtMs: Date.now() }], version);
     } catch (error) {
-      if (version === this.version) this.show({ retryable: false, delivery: '发送结果待确认' });
+      if (version === this.version) this.show({ retryable: false, delivery: '发送结果待确认', pendingLabel: pending.text || pending.attachments?.[0]?.name || '附件' });
       throw error;
     }
     await this.acknowledge(pending, version);
@@ -714,7 +800,12 @@ export class Workspace {
     if (event.error) { this.show({ error: event.error }); return; }
     if (event.share) {
       this.share = event.share;
-      this.show({ shareLabel: [event.share.text.slice(0,60), event.share.uris.length ? event.share.uris.length + ' 个附件' : ''].filter(Boolean).join(' · ') });
+      const files = event.share.uris.slice(0, 2).map(uri => {
+        try { return decodeURIComponent(uri.split('?')[0].split('/').pop()).replace(/[\u0000-\u001f]/g, '').slice(0, 60); }
+        catch { return ''; }
+      }).filter(Boolean);
+      this.show({ shareLabel: [event.share.text.slice(0, 60), files.join('、'),
+        event.share.uris.length ? event.share.uris.length + ' 个附件' : ''].filter(Boolean).join(' · ') });
       return;
     }
     if (!event.target) return;
@@ -800,7 +891,44 @@ export class Workspace {
     this.show({ attachments });
     await this.cache.write(key, attachments.length ? attachments : null);
   }
+  localPreview(id) {
+    const entry = this.recentImages.get(id);
+    return this.localMedia.get(id) || (entry?.until > Date.now() ? entry.uri : '');
+  }
+  thumbnail(file, visible) {
+    const version = this.version;
+    const read = async () => {
+      if (!visible() || version !== this.version || !this.state.linked) return '';
+      const local = this.localPreview(file.path);
+      if (local) return local;
+      if (!(file.size > 0 && file.size <= 2 * 1024 * 1024) || !file.mimeType?.startsWith('image/')) return '';
+      const ref = typeof file.path === 'string' && parseAttachmentOssRef(file.path);
+      if (!ref || isSharedTaskMediaKey(ref.ossKey)) return '';
+      try {
+        return await this.previewUrl(file.path, true);
+      } catch { return ''; }
+    };
+    return this.thumbnailQueue = this.thumbnailQueue.then(read, read);
+  }
+  async previewUrl(path, thumbnail = false) {
+    if (!this.state.task || !this.state.linked) throw new Error('请先连接任务');
+    const v = this.version;
+    const ref = typeof path === 'string' && parseAttachmentOssRef(path);
+    if (!ref || isSharedTaskMediaKey(ref.ossKey)) throw new Error('此附件需在电脑上打开');
+    const token = await this.token();
+    this.guard(v);
+    const result = await request(deviceLinkApiBaseUrl + '/api/device-link/media/presign-get', { key: ref.ossKey }, token);
+    this.guard(v);
+    if (!/^https:\/\//i.test(result?.getUrl || '')) throw new Error('附件预览不可用');
+    if (thumbnail) {
+      const expiry = Date.parse(result.expiresAt || '');
+      this.recentImages.set(path, { uri: result.getUrl, until: Math.min(Date.now() + 60000, Number.isFinite(expiry) ? expiry : Infinity) });
+      if (this.recentImages.size > 20) this.recentImages.delete(this.recentImages.keys().next().value);
+    }
+    return result.getUrl;
+  }
   removeFile(id) {
+    this.localMedia.delete(id);
     return this.setAttachments(this.state.attachments.filter(f => f.id !== id));
   }
   cancelTransfer() {
@@ -821,6 +949,7 @@ export class Workspace {
       const f = await this.native.uploadFile(this.context, uri, () => this.token(), t, this.state.attachments);
       if (t.cancelled) return false;
       this.guard(v);
+      this.localMedia.set(f.id, uri);
       if (!this.state.attachments.some(a => a.id === f.id)) await this.setAttachments([...this.state.attachments, f]);
       return true;
     } catch (e) { if (!t.cancelled && e.code !== 13900042) throw e; return false; }
@@ -849,6 +978,7 @@ export class Workspace {
             this.guard(v);
             share.prepared.set(uri, file);
           }
+          this.localMedia.set(file.id, uri);
           if (!files.some(f => f.id === file.id)) files.push(file);
         }
         if (files.length > 20) throw new Error('每条消息最多可添加 20 个附件');

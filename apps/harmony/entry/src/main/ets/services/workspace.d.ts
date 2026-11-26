@@ -1,21 +1,23 @@
 import { common } from '@kit.AbilityKit';
-export interface Row { id: string; title: string; offline?: boolean; role?: string }
+export interface Row { host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
 export interface Choice { label: string; detail: string; selected: boolean }
 export interface Question { key: string; label: string; multi: boolean; free: boolean; value: string; options: Choice[] }
-export interface Card { id: string; revision: number; kind: string; title: string; detail: string; questions: Question[] }
-export interface Attachment { id: string; name: string }
+export interface Card { id: string; revision: number; kind: string; title: string; detail: string; questions: Question[]; complete?: boolean; approvalKey?: string; risk?: string; code?: string }
+export interface MediaInfo { path?: string; name: string; size?: number; mimeType?: string }
+export interface Attachment extends MediaInfo { id: string }
 export interface ViewState {
-  attachments: Attachment[]; transfer: string; voice: string; pushEnabled: boolean; pushStatus: string; shareLabel: string;
+  homeIndex?: Row[]; attachments: Attachment[]; transfer: string; voice: string; pushEnabled: boolean; pushStatus: string; shareLabel: string;
   ssoWaiting: boolean; ssoMethods: Row[]; verification: string; accounts: Row[]; account: string; relay: string; devices: Row[]; tasks: Row[]; messages: Row[];
   linked: boolean; moreTasks: boolean; hasOlder: boolean; paused: boolean; running: boolean;
-  retryable: boolean; activity: string; draft: string; delivery: string; cards: Card[];
+  retryable: boolean; activity: string; draft: string; delivery: string; pendingLabel?: string; taskContext?: string; cards: Card[];
   device: string; task: string; live: string; error: string;
 }
 export class Workspace {
-  constructor(changed: (state: ViewState) => void);
+  constructor(changed: (state: ViewState) => void, taskHome?: boolean);
   init(context: common.UIAbilityContext): Promise<void>;
   code(phone: string): Promise<void>;
   login(phone: string, code: string): Promise<void>;
+  clearMethods(): void;
   discover(org: string): Promise<void>;
   startSSO(id: string): Promise<void>;
   cancelSSO(): Promise<void>;
@@ -25,11 +27,11 @@ export class Workspace {
   devices(): Promise<void>;
   openDevice(id: string): Promise<void>;
   openTask(id: string): Promise<void>;
-  create(title: string): Promise<void>;
+  create(title: string, project?: string, firstText?: string): Promise<boolean | undefined>;
   reconnect(): Promise<void>;
   more(): Promise<void>;
   older(): Promise<void>;
-  decide(id: string, choice: string): Promise<void>;
+  decide(id: string, choice: string, confirmedKey?: string): Promise<void>;
   editAnswer(id: string, key: string, value: string, select: boolean): void;
   retryOriginal(): Promise<void>;
   checkDelivery(): Promise<void>;
@@ -39,6 +41,9 @@ export class Workspace {
   back(): Promise<void>;
   send(text: string): Promise<void>;
   addFile(kind: string): Promise<boolean | undefined>;
+  thumbnail(file: MediaInfo, visible: () => boolean): Promise<string>;
+  localPreview(id: string): string;
+  previewUrl(path: string): Promise<string>;
   removeFile(id: string): Promise<void>;
   cancelTransfer(): void;
   startVoice(): void;

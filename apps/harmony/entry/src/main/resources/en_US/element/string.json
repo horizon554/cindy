@@ -10,7 +10,7 @@
     },
     {
       "name": "phone",
-      "value": "+86 phone number"
+      "value": "Phone number"
     },
     {
       "name": "sms",
@@ -307,6 +307,150 @@
     {
       "name": "choice_unselected",
       "value": "Not selected"
+    },
+    {
+      "name": "next_step",
+      "value": "Continue"
+    },
+    {
+      "name": "sso_org",
+      "value": "Enterprise SSO"
+    },
+    {
+      "name": "org_hint",
+      "value": "Enter your organization ID or verified domain"
+    },
+    {
+      "name": "confirm_risk",
+      "value": "Confirm high-risk action"
+    },
+    {
+      "name": "collapse_plan",
+      "value": "Collapse plan"
+    },
+    {
+      "name": "expand_plan",
+      "value": "Expand plan"
+    },
+    {
+      "name": "again_in",
+      "value": "Resend in %d s"
+    },
+    {
+      "name": "agreement_title",
+      "value": "Review the terms and privacy policy"
+    },
+    {
+      "name": "agree_continue",
+      "value": "Agree and continue"
+    },
+    {
+      "name": "search_task",
+      "value": "Search tasks or projects"
+    },
+    {
+      "name": "select_host",
+      "value": "Select computer"
+    },
+    {
+      "name": "settings",
+      "value": "Settings"
+    },
+    {
+      "name": "task_info",
+      "value": "Task details"
+    },
+    {
+      "name": "project",
+      "value": "Project"
+    },
+    {
+      "name": "dialogue",
+      "value": "Conversation"
+    },
+    {
+      "name": "no_matches",
+      "value": "No matching tasks"
+    },
+    {
+      "name": "first_input",
+      "value": "What would you like Cindy to do?"
+    },
+    {
+      "name": "workspace_path",
+      "value": "Working directory"
+    },
+    {
+      "name": "all_tasks",
+      "value": "All tasks"
+    },
+    {
+      "name": "archived",
+      "value": "Archived"
+    },
+    {
+      "name": "ready_tasks",
+      "value": "Unarchived"
+    },
+    {
+      "name": "open_file",
+      "value": "Open file"
+    },
+    {
+      "name": "preview",
+      "value": "Preview"
+    },
+    {
+      "name": "close",
+      "value": "Close"
+    },
+    {
+      "name": "choose_target",
+      "value": "Choose destination"
+    },
+    {
+      "name": "current_host",
+      "value": "Computer"
+    },
+    {
+      "name": "notification_settings",
+      "value": "Task notifications"
+    },
+    {
+      "name": "last_input",
+      "value": "Last message"
+    },
+    {
+      "name": "unavailable_preview",
+      "value": "View this file on the host computer"
+    },
+    {
+      "name": "other_requests",
+      "value": "Next request"
+    },
+    {
+      "name": "share_new",
+      "value": "Share to a new task"
+    },
+    {
+      "name": "search",
+      "value": "Search"
+    },
+    {
+      "name": "expand_input",
+      "value": "Expand composer"
+    },
+    {
+      "name": "collapse_input",
+      "value": "Collapse composer"
+    },
+    {
+      "name": "phone_code_title",
+      "value": "Enter verification code"
+    },
+    {
+      "name": "change_number",
+      "value": "Change phone number"
     }
   ]
 }
