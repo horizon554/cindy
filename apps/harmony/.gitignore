@@ -1,0 +1,10 @@
+.idea/
+.hvigor/
+oh_modules/
+build/
+node_modules/
+local.properties
+*.p12
+*.p7b
+*.cer
+entry/src/main/ets/services/protocol.generated.js

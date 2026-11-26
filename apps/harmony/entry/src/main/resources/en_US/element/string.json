@@ -1,0 +1,312 @@
+{
+  "string": [
+    {
+      "name": "app_login",
+      "value": "Sign in to Cindy"
+    },
+    {
+      "name": "org_id",
+      "value": "Organization or company domain"
+    },
+    {
+      "name": "phone",
+      "value": "+86 phone number"
+    },
+    {
+      "name": "sms",
+      "value": "SMS code"
+    },
+    {
+      "name": "consent",
+      "value": "Agree to the terms and privacy policy"
+    },
+    {
+      "name": "agree",
+      "value": "I agree to the"
+    },
+    {
+      "name": "terms",
+      "value": "Terms of Service"
+    },
+    {
+      "name": "and",
+      "value": "and"
+    },
+    {
+      "name": "privacy",
+      "value": "Privacy Policy"
+    },
+    {
+      "name": "sso_continue",
+      "value": "Continue with SSO"
+    },
+    {
+      "name": "sign_in",
+      "value": "Sign in"
+    },
+    {
+      "name": "get_code",
+      "value": "Get code"
+    },
+    {
+      "name": "new_code",
+      "value": "Resend code"
+    },
+    {
+      "name": "use_phone",
+      "value": "Use phone number"
+    },
+    {
+      "name": "use_sso",
+      "value": "Use enterprise SSO"
+    },
+    {
+      "name": "sso_wait",
+      "value": "Waiting for authorization"
+    },
+    {
+      "name": "sso_cancel",
+      "value": "Cancel sign-in"
+    },
+    {
+      "name": "verify",
+      "value": "Verify"
+    },
+    {
+      "name": "verify_for",
+      "value": "Verify %s"
+    },
+    {
+      "name": "code",
+      "value": "Verification code"
+    },
+    {
+      "name": "choose_account",
+      "value": "Choose an account"
+    },
+    {
+      "name": "back",
+      "value": "Back"
+    },
+    {
+      "name": "sign_out",
+      "value": "Sign out"
+    },
+    {
+      "name": "account_options",
+      "value": "Account and actions"
+    },
+    {
+      "name": "share_draft",
+      "value": "Add to this draft"
+    },
+    {
+      "name": "share_drop",
+      "value": "Discard share"
+    },
+    {
+      "name": "share_pick",
+      "value": "Choose a task for this share"
+    },
+    {
+      "name": "share_title",
+      "value": "Shared · %s"
+    },
+    {
+      "name": "host",
+      "value": "Computer"
+    },
+    {
+      "name": "hosts",
+      "value": "My computers"
+    },
+    {
+      "name": "task",
+      "value": "Task"
+    },
+    {
+      "name": "tasks",
+      "value": "Tasks"
+    },
+    {
+      "name": "offline",
+      "value": "Offline"
+    },
+    {
+      "name": "reconnect",
+      "value": "Offline · Reconnect"
+    },
+    {
+      "name": "connecting",
+      "value": "Connecting…"
+    },
+    {
+      "name": "older",
+      "value": "Earlier messages"
+    },
+    {
+      "name": "working",
+      "value": "Working"
+    },
+    {
+      "name": "retry_last",
+      "value": "Retry last message"
+    },
+    {
+      "name": "verify_delivery",
+      "value": "Check delivery"
+    },
+    {
+      "name": "remove",
+      "value": "Remove"
+    },
+    {
+      "name": "remove_file",
+      "value": "Remove %s"
+    },
+    {
+      "name": "cancel_file",
+      "value": "Cancel attachment"
+    },
+    {
+      "name": "voice_finish",
+      "value": "Finish recording"
+    },
+    {
+      "name": "voice_cancel",
+      "value": "Cancel recording"
+    },
+    {
+      "name": "image",
+      "value": "Photo"
+    },
+    {
+      "name": "file",
+      "value": "File"
+    },
+    {
+      "name": "voice",
+      "value": "Voice input"
+    },
+    {
+      "name": "add_file",
+      "value": "Add attachment"
+    },
+    {
+      "name": "message",
+      "value": "Message"
+    },
+    {
+      "name": "stop",
+      "value": "Stop"
+    },
+    {
+      "name": "resume",
+      "value": "Resume queue"
+    },
+    {
+      "name": "send",
+      "value": "Send"
+    },
+    {
+      "name": "create_new",
+      "value": "New task"
+    },
+    {
+      "name": "title_optional",
+      "value": "Task title (optional)"
+    },
+    {
+      "name": "cancel",
+      "value": "Cancel"
+    },
+    {
+      "name": "create",
+      "value": "Create task"
+    },
+    {
+      "name": "more_tasks",
+      "value": "More tasks"
+    },
+    {
+      "name": "settings_notifications",
+      "value": "System notification settings"
+    },
+    {
+      "name": "enable_notifications",
+      "value": "Enable task notifications"
+    },
+    {
+      "name": "disable_notifications",
+      "value": "Disable task notifications"
+    },
+    {
+      "name": "refresh",
+      "value": "Refresh computers"
+    },
+    {
+      "name": "answer",
+      "value": "Your answer"
+    },
+    {
+      "name": "submit_answer",
+      "value": "Submit answer"
+    },
+    {
+      "name": "deny",
+      "value": "Deny"
+    },
+    {
+      "name": "allow_once",
+      "value": "Allow once"
+    },
+    {
+      "name": "approve_plan",
+      "value": "Approve plan"
+    },
+    {
+      "name": "tool_request",
+      "value": "Tool call"
+    },
+    {
+      "name": "tool_result",
+      "value": "Tool result"
+    },
+    {
+      "name": "ask",
+      "value": "Question"
+    },
+    {
+      "name": "permission",
+      "value": "Approval"
+    },
+    {
+      "name": "task_record",
+      "value": "Task activity"
+    },
+    {
+      "name": "no_hosts",
+      "value": "No computers available"
+    },
+    {
+      "name": "no_tasks",
+      "value": "No tasks yet"
+    },
+    {
+      "name": "microphone_reason",
+      "value": "Transcribes speech into an editable task draft"
+    },
+    {
+      "name": "operation_failed",
+      "value": "Action failed. Try again."
+    },
+    {
+      "name": "choice_selected",
+      "value": "Selected"
+    },
+    {
+      "name": "choice_unselected",
+      "value": "Not selected"
+    }
+  ]
+}

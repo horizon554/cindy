@@ -1,0 +1,52 @@
+{
+  "color": [
+    {
+      "name": "splash",
+      "value": "#000000"
+    },
+    {
+      "name": "canvas",
+      "value": "#121212"
+    },
+    {
+      "name": "panel",
+      "value": "#1E1E1E"
+    },
+    {
+      "name": "chip",
+      "value": "#2A2A2A"
+    },
+    {
+      "name": "ink",
+      "value": "#EDEDED"
+    },
+    {
+      "name": "muted",
+      "value": "#BDBDBD"
+    },
+    {
+      "name": "faint",
+      "value": "#999999"
+    },
+    {
+      "name": "line",
+      "value": "#383838"
+    },
+    {
+      "name": "action",
+      "value": "#EDEDED"
+    },
+    {
+      "name": "on_action",
+      "value": "#121212"
+    },
+    {
+      "name": "running",
+      "value": "#EA6B17"
+    },
+    {
+      "name": "recording",
+      "value": "#D91F37"
+    }
+  ]
+}

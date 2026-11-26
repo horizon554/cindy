@@ -1,0 +1,312 @@
+{
+  "string": [
+    {
+      "name": "app_login",
+      "value": "登录 Cindy"
+    },
+    {
+      "name": "org_id",
+      "value": "组织标识或企业域名"
+    },
+    {
+      "name": "phone",
+      "value": "+86 手机号"
+    },
+    {
+      "name": "sms",
+      "value": "短信验证码"
+    },
+    {
+      "name": "consent",
+      "value": "同意服务条款和隐私政策"
+    },
+    {
+      "name": "agree",
+      "value": "同意"
+    },
+    {
+      "name": "terms",
+      "value": "服务条款"
+    },
+    {
+      "name": "and",
+      "value": "和"
+    },
+    {
+      "name": "privacy",
+      "value": "隐私政策"
+    },
+    {
+      "name": "sso_continue",
+      "value": "继续企业 SSO 登录"
+    },
+    {
+      "name": "sign_in",
+      "value": "登录"
+    },
+    {
+      "name": "get_code",
+      "value": "获取验证码"
+    },
+    {
+      "name": "new_code",
+      "value": "重新获取验证码"
+    },
+    {
+      "name": "use_phone",
+      "value": "使用手机号登录"
+    },
+    {
+      "name": "use_sso",
+      "value": "使用企业 SSO 登录"
+    },
+    {
+      "name": "sso_wait",
+      "value": "等待企业授权"
+    },
+    {
+      "name": "sso_cancel",
+      "value": "取消登录"
+    },
+    {
+      "name": "verify",
+      "value": "验证"
+    },
+    {
+      "name": "verify_for",
+      "value": "验证 %s"
+    },
+    {
+      "name": "code",
+      "value": "验证码"
+    },
+    {
+      "name": "choose_account",
+      "value": "选择账号"
+    },
+    {
+      "name": "back",
+      "value": "返回"
+    },
+    {
+      "name": "sign_out",
+      "value": "退出登录"
+    },
+    {
+      "name": "account_options",
+      "value": "账号与操作"
+    },
+    {
+      "name": "share_draft",
+      "value": "加入此任务草稿"
+    },
+    {
+      "name": "share_drop",
+      "value": "放弃分享"
+    },
+    {
+      "name": "share_pick",
+      "value": "请选择接收分享的任务"
+    },
+    {
+      "name": "share_title",
+      "value": "收到分享 · %s"
+    },
+    {
+      "name": "host",
+      "value": "电脑"
+    },
+    {
+      "name": "hosts",
+      "value": "我的电脑"
+    },
+    {
+      "name": "task",
+      "value": "任务"
+    },
+    {
+      "name": "tasks",
+      "value": "任务"
+    },
+    {
+      "name": "offline",
+      "value": "离线"
+    },
+    {
+      "name": "reconnect",
+      "value": "离线浏览 · 重新连接"
+    },
+    {
+      "name": "connecting",
+      "value": "正在连接…"
+    },
+    {
+      "name": "older",
+      "value": "更早的消息"
+    },
+    {
+      "name": "working",
+      "value": "执行中"
+    },
+    {
+      "name": "retry_last",
+      "value": "重试上次发送"
+    },
+    {
+      "name": "verify_delivery",
+      "value": "核对发送结果"
+    },
+    {
+      "name": "remove",
+      "value": "移除"
+    },
+    {
+      "name": "remove_file",
+      "value": "移除 %s"
+    },
+    {
+      "name": "cancel_file",
+      "value": "取消附件"
+    },
+    {
+      "name": "voice_finish",
+      "value": "完成录音"
+    },
+    {
+      "name": "voice_cancel",
+      "value": "取消录音"
+    },
+    {
+      "name": "image",
+      "value": "图片"
+    },
+    {
+      "name": "file",
+      "value": "文件"
+    },
+    {
+      "name": "voice",
+      "value": "语音"
+    },
+    {
+      "name": "add_file",
+      "value": "添加附件"
+    },
+    {
+      "name": "message",
+      "value": "发送消息"
+    },
+    {
+      "name": "stop",
+      "value": "停止"
+    },
+    {
+      "name": "resume",
+      "value": "继续队列"
+    },
+    {
+      "name": "send",
+      "value": "发送"
+    },
+    {
+      "name": "create_new",
+      "value": "新建任务"
+    },
+    {
+      "name": "title_optional",
+      "value": "任务标题（可选）"
+    },
+    {
+      "name": "cancel",
+      "value": "取消"
+    },
+    {
+      "name": "create",
+      "value": "创建任务"
+    },
+    {
+      "name": "more_tasks",
+      "value": "更多任务"
+    },
+    {
+      "name": "settings_notifications",
+      "value": "系统通知设置"
+    },
+    {
+      "name": "enable_notifications",
+      "value": "开启任务通知"
+    },
+    {
+      "name": "disable_notifications",
+      "value": "关闭任务通知"
+    },
+    {
+      "name": "refresh",
+      "value": "刷新电脑列表"
+    },
+    {
+      "name": "answer",
+      "value": "输入回答"
+    },
+    {
+      "name": "submit_answer",
+      "value": "提交回答"
+    },
+    {
+      "name": "deny",
+      "value": "拒绝"
+    },
+    {
+      "name": "allow_once",
+      "value": "本次允许"
+    },
+    {
+      "name": "approve_plan",
+      "value": "同意计划"
+    },
+    {
+      "name": "tool_request",
+      "value": "工具调用"
+    },
+    {
+      "name": "tool_result",
+      "value": "工具结果"
+    },
+    {
+      "name": "ask",
+      "value": "提问"
+    },
+    {
+      "name": "permission",
+      "value": "审批"
+    },
+    {
+      "name": "task_record",
+      "value": "任务记录"
+    },
+    {
+      "name": "no_hosts",
+      "value": "暂无可用电脑"
+    },
+    {
+      "name": "no_tasks",
+      "value": "暂无任务"
+    },
+    {
+      "name": "microphone_reason",
+      "value": "用于将你的语音转成可编辑的任务草稿"
+    },
+    {
+      "name": "operation_failed",
+      "value": "操作失败，请重试"
+    },
+    {
+      "name": "choice_selected",
+      "value": "已选中"
+    },
+    {
+      "name": "choice_unselected",
+      "value": "未选中"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "app": {
+    "bundleName": "com.xd.cindy.harmony.dev",
+    "vendor": "Cindy",
+    "versionCode": 1,
+    "versionName": "0.1.0",
+    "icon": "$media:cindy",
+    "label": "$string:app_name"
+  }
+}
