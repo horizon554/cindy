@@ -1553,26 +1553,55 @@ struct Index {
     return item.agentKind || resources.getStringSync($r('app.string.row_engine').id);
   }
 
+  private taskHasPreview(item: Item): boolean {
+    return !!item.summary && item.summary !== item.title;
+  }
+
+  private taskMarkColor(item: Item): Resource {
+    return item.status !== 'archived' && item.running && this.rowStatus(item) === 'running'
+      ? $r('app.color.running') : $r('app.color.faint');
+  }
+
+  private showsCodexMark(item: Item): boolean {
+    return item.agentKind === 'codex' && item.status !== 'archived' && !item.lead && !item.attached;
+  }
+
   @Builder
   taskMark($$: TaskRowContent) {
-    Stack({ alignContent: Alignment.BottomEnd }) {
+    Stack({ alignContent: Alignment.Center }) {
       if ($$.item.status === 'archived' || $$.item.lead || $$.item.attached) {
         SymbolGlyph($$.item.status === 'archived' ? $r('sys.symbol.archivebox') : $$.item.lead ? $r('sys.symbol.person_2') : $r('sys.symbol.link'))
-          .fontSize(21).fontColor([$$.item.running && this.rowStatus($$.item) === 'running' ? $r('app.color.running') : $r('app.color.muted')])
+          .fontSize($$.item.lead && $$.item.status !== 'archived' ? 20 : 18).fontColor([this.taskMarkColor($$.item)])
       } else if ($$.item.agentKind === 'codex' || $$.item.agentKind === 'pi' || $$.item.agentKind === 'cc' || $$.item.agentKind === 'claude-code') {
-        Image($$.item.agentKind === 'codex' ? $r('app.media.agent_codex') : $$.item.agentKind === 'pi' ? $r('app.media.agent_pi') : $r('app.media.agent_claude'))
-          .width(21).height(21).fillColor($$.item.running && this.rowStatus($$.item) === 'running' ? $r('app.color.running') : $r('app.color.muted'))
+        // Tint the painted SVG pixels, preserving open strokes and transparent interiors.
+        Stack() {
+          Image($$.item.agentKind === 'codex' ? $r('app.media.agent_codex') : $$.item.agentKind === 'pi' ? $r('app.media.agent_pi') : $r('app.media.agent_claude'))
+            .width('100%').height('100%')
+          Rect().width('100%').height('100%').fill(this.taskMarkColor($$.item)).blendMode(BlendMode.SRC_IN)
+        }.width($$.item.agentKind === 'cc' || $$.item.agentKind === 'claude-code' ? 19 : 18).aspectRatio(1)
+          .blendMode(BlendMode.SRC_OVER, BlendApplyType.OFFSCREEN)
       } else {
-        SymbolGlyph($r('sys.symbol.square_grid_2x2')).fontSize(20).fontColor([$$.item.running && this.rowStatus($$.item) === 'running' ? $r('app.color.running') : $r('app.color.muted')])
+        SymbolGlyph($r('sys.symbol.square_grid_2x2')).fontSize(18).fontColor([this.taskMarkColor($$.item)])
       }
       if ($$.item.status !== 'archived' && ($$.item.hasDraft || $$.item.localDraft)) {
-        SymbolGlyph($r('sys.symbol.square_and_pencil')).id('draft-' + $$.item.id).fontSize(11).fontColor([$r('app.color.ink')])
-          .backgroundColor($r('app.color.canvas')).borderRadius(6).accessibilityText($r('app.string.row_draft'))
+        SymbolGlyph(this.showsCodexMark($$.item) ? $r('sys.symbol.pencil_line') : $r('sys.symbol.square_and_pencil'))
+          .id('draft-' + $$.item.id).fontSize(9).fontColor([$r('app.color.muted')])
+          .width(12).height(12).position({ x: 15, y: 15 })
+          .backgroundColor(this.showsCodexMark($$.item) ? Color.Transparent : $r('app.color.canvas')).borderRadius(6)
+          .accessibilityText($r('app.string.row_draft'))
       }
       if ($$.item.remote && $$.item.status !== 'archived' && !$$.item.lead && !$$.item.attached) {
-        SymbolGlyph($r('sys.symbol.link')).fontSize(10).position({ x: 14, y: 0 }).backgroundColor($r('app.color.canvas')).accessibilityText($r('app.string.row_remote'))
+        if ($$.item.agentKind === 'codex') {
+          Image($r('app.media.codex_remote_signal')).width(24).height(24).fillColor(this.taskMarkColor($$.item))
+            .accessibilityText($r('app.string.row_remote'))
+        } else {
+          SymbolGlyph($r('sys.symbol.link')).fontSize(10).fontColor([this.taskMarkColor($$.item)])
+            .position({ x: 14, y: 0 }).backgroundColor($r('app.color.canvas')).accessibilityText($r('app.string.row_remote'))
+        }
       }
-    }.width(24).height(24).id('identity-' + $$.item.id).accessibilityText(this.taskIdentity($$.item))
+    }.width(24).height(24)
+      // Android places the mark 5 dp above the row center when a preview is visible.
+      .translate({ y: this.taskHasPreview($$.item) ? -5 : 0 }).id('identity-' + $$.item.id).accessibilityText(this.taskIdentity($$.item))
   }
 
   @Builder
@@ -1583,7 +1612,7 @@ struct Index {
           this.taskMark({ item: $$.item })
           Column({ space: 2 }) {
             Text($$.item.title).fontSize(15).lineHeight(22).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
-            if ($$.item.summary && $$.item.summary !== $$.item.title) {
+            if (this.taskHasPreview($$.item)) {
               Text($$.item.summary).fontSize(13).lineHeight(18).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.muted'))
             }
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
