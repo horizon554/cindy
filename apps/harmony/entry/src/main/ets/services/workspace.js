@@ -14,8 +14,8 @@ const taskView = { legacyPicker: false, agent: '', model: '', provider: '', perm
 const hostView = { ...taskView, device: '', tasks: [], linked: false, moreTasks: false };
 
 // One instance owns one visible account. Only the native page can initiate a send.
-function displayName(uri) {
-  try { return decodeURIComponent(uri.split(/[?#]/)[0].split('/').pop()).replace(/[\u0000-\u001f]/g, '').slice(0, 80); }
+function displayName(uri, limit = 80) {
+  try { return decodeURIComponent(uri.split(/[?#]/)[0].split('/').pop()).replace(/[\u0000-\u001f]/g, '').slice(0, limit); }
   catch { return ''; }
 }
 
@@ -1059,16 +1059,18 @@ export class Workspace {
   async afterUpload(action, creating = false) {
     const transfer = this.transfer;
     if (!transfer) return this.state.failedFile ? false : action();
-    if (!this.state.uploadPending) return false;
+    if (!this.state.uploadPending || this.state.failedFile) return false;
     const version = this.version, target = this.newDraft, draft = this.state.draft, revision = transfer.revision;
     const wait = creating && target ? {} : null;
     if (wait) { this.createWait = wait; this.show({ waitingToCreate: true }); }
     try {
-      const uploaded = await transfer.finished;
+      const interrupted = new Promise(resolve => { transfer.interruptWait = resolve; });
+      const uploaded = await Promise.race([transfer.finished, interrupted]);
       if (wait?.decision) await wait.decision;
       if (!uploaded || transfer.revision !== revision || version !== this.version || target !== this.newDraft ||
           (target && this.state.draft !== draft) || !this.state.linked || this.transfer || this.state.failedFile) return false;
     } finally {
+      transfer.interruptWait = null;
       if (wait && this.createWait === wait) { this.createWait = null; this.show({ waitingToCreate: false }); }
     }
     return action();
@@ -1212,9 +1214,9 @@ export class Workspace {
     };
     return this.pushQueue = (this.pushQueue || Promise.resolve()).then(run, run);
   }
-  async setAttachments(attachments) {
+  async setAttachments(attachments, patch = {}) {
     const key = this.key('attachments');
-    this.show({ attachments });
+    this.show({ ...patch, attachments });
     if (!this.newDraft) {
       await this.cache.write(key, attachments.length ? attachments : null);
       this.markComposerDraft(key);
@@ -1256,7 +1258,8 @@ export class Workspace {
     }
     return result.getUrl;
   }
-  removeFile(id) {
+  async removeFile(id) {
+    if (this.creating && this.newDraft) return;
     this.localMedia.delete(id);
     return this.setAttachments(this.state.attachments.filter(f => f.id !== id));
   }
@@ -1265,7 +1268,9 @@ export class Workspace {
     if (!transfer) return;
     transfer.cancelled = true;
     this.transfer = null;
-    if (transfer.active) { transfer.active.cancelled = true; transfer.active.abort?.(); }
+    for (const item of transfer.items || []) {
+      if (item.active) { item.active.cancelled = true; item.active.abort?.(); }
+    }
     transfer.abort?.();
     if (transfer.share) { this.show({ transfer: '' }); return; }
     transfer.settle(false);
@@ -1273,13 +1278,13 @@ export class Workspace {
     this.show({ transfer: '', pendingUploads: [], uploadPending: false, pickingFiles: false, failedFile: '' });
   }
   discardFailed() { this.uploadBatch = null; this.show({ pendingUploads: [], failedFile: '' }); }
-  showUploads(batch) {
+  uploadStatus(batch) {
     const pendingUploads = batch.items.filter(item => !item.fileId && !item.removed)
-      .map(item => ({ id: item.id, title: item.name, failed: !!item.error, uploading: batch.active?.item === item }));
-    const uploadPending = pendingUploads.some(item => !item.failed);
-    this.show({ pendingUploads, pickingFiles: batch.picking, uploadPending,
+      .map(item => ({ id: item.id, title: item.name, previewUri: item.previewUri, failed: !!item.error, uploading: !!item.active }));
+    const uploadPending = pendingUploads.some(item => !item.failed) || batch.items.some(item => item.active && !item.removed && !item.error);
+    return { pendingUploads, pickingFiles: batch.picking, uploadPending,
       transfer: uploadPending ? '正在上传' : batch.picking ? '正在选择' : '',
-      failedFile: pendingUploads.find(item => item.failed)?.title || '' });
+      failedFile: pendingUploads.find(item => item.failed)?.title || '' };
   }
   beginUploads(batch) {
     if (this.transfer !== batch) {
@@ -1288,74 +1293,88 @@ export class Workspace {
     }
     return batch.finished;
   }
-  async drainUploads(batch) {
-    if (batch.running || this.uploadBatch !== batch) return;
-    batch.running = true;
+  drainUploads(batch) {
+    if (this.uploadBatch !== batch) return;
+    const active = batch.items.filter(item => item.active);
+    for (const item of batch.items) {
+      if (active.length >= 2) break;
+      if (item.fileId || item.error || item.removed || item.active) continue;
+      // Identically named selections must see their predecessor's hash/receipt before presigning.
+      if (active.some(other => other.name === item.name)) continue;
+      item.active = { tickets: this.uploadTickets, cancelled: false };
+      active.push(item);
+      this.uploadItem(batch, item);
+    }
+    if (!active.length && !batch.picking) {
+      this.transfer = null;
+      const failed = batch.items.some(item => !item.removed && item.error);
+      if (!failed) this.uploadBatch = null;
+      batch.settle(!failed && !batch.cancelled);
+    }
+    this.show(this.uploadStatus(batch));
+  }
+  async uploadItem(batch, item) {
     try {
-      // Keep original picker order and only stage one potentially large file at a time.
-      for (const item of batch.items) {
-        if (item.fileId || item.error || item.removed) continue;
-        const active = { item, tickets: this.uploadTickets, cancelled: false };
-        batch.active = active;
-        this.showUploads(batch);
+      const file = await this.native.uploadFile(this.context, item.uri, () => this.token(), item.active, this.state.attachments);
+      // Serialize draft writes, so a failed cache transaction rolls back before the next snapshot.
+      const publish = async () => {
+        if (this.uploadBatch !== batch || item.removed) return;
+        item.fileId = file.id;
+        this.localMedia.set(file.id, item.uri);
+        if (this.state.attachments.some(f => f.id === file.id)) return;
+        const later = new Set(batch.items.slice(batch.items.indexOf(item) + 1).filter(other => other.inserted).map(other => other.fileId));
+        const files = this.state.attachments.slice();
+        const next = files.findIndex(f => later.has(f.id));
+        files.splice(next < 0 ? files.length : next, 0, file);
         try {
-          const file = await this.native.uploadFile(this.context, item.uri, () => this.token(), active, this.state.attachments);
-          if (this.uploadBatch !== batch) return;
-          if (item.removed) continue;
-          this.localMedia.set(file.id, item.uri);
-          item.fileId = file.id;
-          if (!this.state.attachments.some(f => f.id === file.id)) {
-            // A retry belongs before any later selection that already finished.
-            const later = new Set(batch.items.slice(batch.items.indexOf(item) + 1).filter(other => other.inserted).map(other => other.fileId));
-            const files = this.state.attachments.slice();
-            const next = files.findIndex(f => later.has(f.id));
-            files.splice(next < 0 ? files.length : next, 0, file);
-            item.inserted = true;
-            await this.setAttachments(files);
-          }
+          await this.setAttachments(files, this.uploadStatus(batch));
+          item.inserted = true;
         } catch (error) {
-          if (this.uploadBatch !== batch) return;
-          if (item.inserted && item.fileId) {
-            // setAttachments publishes before persisting. Keep a failed write retryable.
-            this.localMedia.delete(item.fileId);
-            this.show({ attachments: this.state.attachments.filter(file => file.id !== item.fileId) });
-            item.inserted = false;
+          if (this.uploadBatch === batch) {
+            this.localMedia.delete(file.id);
+            item.fileId = null;
+            this.show({ ...this.uploadStatus(batch), attachments: this.state.attachments.filter(f => f.id !== file.id) });
           }
-          if (!item.removed) { item.fileId = null; item.error = error; }
-        } finally { batch.active = null; }
-        if (this.uploadBatch !== batch) return;
+          throw error;
+        }
+      };
+      batch.publish = batch.publish.then(publish, publish);
+      await batch.publish;
+    } catch (error) {
+      if (this.uploadBatch === batch && !item.removed) {
+        item.error = error;
+        batch.revision++;
+        batch.interruptWait?.(false);
       }
     } finally {
-      batch.running = false;
-      if (this.uploadBatch === batch) {
-        if (!batch.picking) {
-          this.transfer = null;
-          const failed = batch.items.some(item => !item.removed && item.error);
-          if (!failed) this.uploadBatch = null;
-          batch.settle(!failed && !batch.cancelled);
-        }
-        this.showUploads(batch);
-      }
+      item.active = null;
+      this.drainUploads(batch);
     }
   }
   removeUpload(id) {
     const batch = this.uploadBatch;
     const item = batch?.items.find(entry => entry.id === id);
-    if (!item || item.removed || item.fileId) return;
+    if (!item || item.removed || item.fileId || (this.newDraft && this.creating)) return;
     item.removed = true;
     batch.revision++;
-    if (!batch.picking && batch.items.every(entry => entry.removed || entry.fileId)) {
-      if (this.transfer) this.cancelTransfer();
-      else this.discardFailed();
+    batch.interruptWait?.(false);
+    if (this.transfer !== batch) {
+      const failed = batch.items.find(entry => !entry.removed && entry.error);
+      if (!failed) this.discardFailed();
+      else this.show({ pendingUploads: this.uploadStatus(batch).pendingUploads, failedFile: failed.name });
       return;
     }
-    if (batch.active?.item === item) { batch.active.cancelled = true; batch.active.abort?.(); }
-    this.showUploads(batch);
+    if (!batch.picking && batch.items.every(entry => entry.removed)) {
+      this.cancelTransfer();
+      return;
+    }
+    if (item.active) { item.active.cancelled = true; item.active.abort?.(); }
+    this.drainUploads(batch);
   }
   async retryFile(id) {
     const batch = this.uploadBatch;
     const item = batch?.items.find(entry => !entry.removed && entry.error && (!id || entry.id === id));
-    if (!item || this.transfer || this.sending || this.creating || !this.state.linked) return false;
+    if (!item || item.active || (this.transfer && this.transfer !== batch) || this.sending || this.creating || !this.state.linked) return false;
     item.error = null;
     const finished = this.beginUploads(batch);
     this.drainUploads(batch);
@@ -1370,29 +1389,31 @@ export class Workspace {
   async addFile(kind) {
     if ((!this.newDraft && (!this.ready || !this.state.task)) || !this.state.linked || this.transfer?.share ||
         this.uploadBatch?.picking || this.sending || this.creating) throw new Error('请先打开任务');
-    const batch = this.uploadBatch || { items: [], revision: 0, cancelled: false };
+    const batch = this.uploadBatch || { items: [], revision: 0, cancelled: false, publish: Promise.resolve() };
     const remaining = this.remainingAttachmentSlots();
     if (remaining <= 0) throw new Error('每条消息最多可添加 20 个附件');
     this.uploadBatch = batch;
     const finished = this.beginUploads(batch);
     batch.picking = true;
-    this.showUploads(batch);
+    this.show(this.uploadStatus(batch));
     let added = [];
     try {
       if (this.recording && await this.finishVoice() === undefined) return false;
       if (this.uploadBatch !== batch) return false;
       const selection = await this.native.pickFile(this.context, kind === 'image', remaining);
       if (this.uploadBatch !== batch) return false;
-      added = (selection || []).filter(Boolean).slice(0, Math.max(0, Math.min(remaining, this.remainingAttachmentSlots()))).map(uri => ({
-        id: util.generateRandomUUID(true), uri, name: displayName(uri) || (kind === 'image' ? '图片' : '文件')
-      }));
+      added = (selection || []).filter(Boolean).slice(0, Math.max(0, Math.min(remaining, this.remainingAttachmentSlots()))).map(uri => {
+        const name = displayName(uri, 255) || (kind === 'image' ? '图片' : '文件');
+        const previewUri = /\.(png|jpe?g|webp|gif|heic|heif|bmp|avif)$/i.test(name) ? uri : '';
+        return { id: util.generateRandomUUID(true), uri, name, previewUri };
+      });
       batch.items.push(...added);
     } catch (error) {
       if (this.uploadBatch !== batch || error?.code === 13900042) return false;
       throw error;
     } finally {
       batch.picking = false;
-      if (this.uploadBatch === batch) { this.showUploads(batch); this.drainUploads(batch); }
+      if (this.uploadBatch === batch) this.drainUploads(batch);
     }
     if (!added.length) return false;
     await finished;

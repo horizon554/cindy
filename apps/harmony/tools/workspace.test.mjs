@@ -478,6 +478,9 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   loseCreation = true;
   const firstTaps = [app.create('', '/fixture'), app.create('', '/fixture')].map(promise => assert.rejects(promise, /reply lost/));
   assert.equal(created, createdBefore);
+  // Waiting to create freezes removal even if an accessibility action reaches the controller.
+  app.removeUpload(app.state.pendingUploads[0].id);
+  assert.equal(app.state.pendingUploads.length, 1);
   // Back opens once; upload completion while the dialog is up cannot dispatch create.
   let answer;
   const leave = app.leaveNew(() => new Promise(resolve => { answer = resolve; }));
@@ -749,42 +752,58 @@ test('route a notification, accept a share and recover one attachment-only messa
   const existing = Array.from({length:17}, (_, i) => ({id:'existing'+i,name:'existing'+i,path:'existing'+i}));
   await app.setAttachments(existing);
   app.native.pickFile = async (_, image, slots) => { assert.ok(image); limits.push(slots); return selected.shift(); };
-  let finishGallery, failMiddle = true;
-  app.native.uploadFile = async (_, uri) => {
+  // Hold actual adapter completions separately; the order of network replies is user-independent.
+  const flights = new Map();
+  app.native.uploadFile = (_, uri, token, active) => new Promise((resolve, reject) => {
     calls.push(uri);
-    if (uri === 'a.png') await new Promise(resolve => { finishGallery = resolve; });
-    if (uri === 'b.png' && failMiddle) { failMiddle = false; throw new Error('middle upload failed'); }
-    return {id:uri,name:uri,path:uri,mimeType:'image/png'};
-  };
+    assert.ok(!flights.has(uri) && flights.size < 2);
+    flights.set(uri, {
+      finish() { flights.delete(uri); resolve({id:uri,name:uri,path:uri,mimeType:'image/png'}); },
+      fail() { flights.delete(uri); reject(new Error('middle upload failed')); }
+    });
+    active.abort = () => { flights.delete(uri); reject(new Error('cancelled')); };
+  });
   const firstGallery = app.addFile('image');
-  await until(() => !!finishGallery);
+  await until(() => flights.size === 2);
   const nextGallery = app.addFile('image');
   await until(() => app.state.pendingUploads.length === 3);
   assert.deepEqual(limits, [3,1]);
+  assert.deepEqual(calls, ['a.png','b.png']);
+  assert.deepEqual(app.state.pendingUploads.map(p => [p.previewUri, p.uploading]),
+    [['a.png',true], ['b.png',true], ['c.png',false]]);
   const beforeBatch = sent.length;
   const sendGallery = app.send('');
-  const failure = assert.rejects(firstGallery, /middle upload failed/);
-  finishGallery();
-  await Promise.all([failure,nextGallery,sendGallery]);
-  assert.equal(sent.length, beforeBatch);
-  assert.deepEqual(calls, ['a.png','b.png','c.png']);
-  assert.equal(app.state.pendingUploads.length, 1);
+  flights.get('b.png').fail();
+  await sendGallery;
+  await until(() => flights.has('c.png'));
   assert.equal(app.state.failedFile, 'b.png');
   await app.send('');
   assert.equal(sent.length, beforeBatch);
-  await app.retryFile(app.state.pendingUploads[0].id);
+  const retry = app.retryFile(app.state.pendingUploads.find(p => p.title === 'b.png').id);
+  assert.equal(flights.size, 2);
+  flights.get('c.png').finish();
+  await until(() => calls.length === 4);
+  assert.deepEqual(calls, ['a.png','b.png','c.png','b.png']);
+  flights.get('b.png').finish();
+  await until(() => app.state.attachments.length === 19);
+  assert.deepEqual(app.state.attachments.slice(-2).map(f => f.id), ['b.png','c.png']);
+  flights.get('a.png').finish();
+  await Promise.all([firstGallery,nextGallery,retry]);
+  assert.equal(sent.length, beforeBatch);
   assert.deepEqual(app.state.attachments.slice(-3).map(f => f.id), ['a.png','b.png','c.png']);
   await assert.rejects(app.addFile('image'), /20/);
   await app.send('');
   assert.equal(sent.length, beforeBatch + 1);
   assert.deepEqual(sent.at(-1).files.map(f => f.id), [...existing.map(f=>f.id),'a.png','b.png','c.png']);
-  // Removing a queued item after Send must not dispatch the remaining subset.
-  app.native.pickFile = async () => ['a.png','removed.png'];
+  // Removing one in-flight item after Send cancels only its transfer and cannot dispatch a subset.
+  app.native.pickFile = async () => ['a.png','removed.mp4'];
   const cancellation = app.addFile('image');
-  await until(() => app.state.pendingUploads.length === 2);
+  await until(() => flights.size === 2);
   const partialSend = app.send('');
+  assert.equal(app.state.pendingUploads[1].previewUri, '');
   app.removeUpload(app.state.pendingUploads[1].id);
-  finishGallery();
+  assert.deepEqual([...flights.keys()], ['a.png']);
+  flights.get('a.png').finish();
   await Promise.all([partialSend,cancellation]);
   assert.equal(sent.length, beforeBatch + 1);
   assert.deepEqual(app.state.attachments.map(f=>f.id), ['a.png']);

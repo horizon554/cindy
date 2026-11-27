@@ -4,7 +4,7 @@ export interface Choice { label: string; detail: string; selected: boolean }
 export interface Question { key: string; valid?: boolean; label: string; multi: boolean; free: boolean; value: string; options: Choice[] }
 export interface Card { id: string; revision: number; kind: string; title: string; detail: string; questions: Question[]; complete?: boolean; approvalKey?: string; risk?: string; code?: string }
 export interface MediaInfo { path?: string; name: string; size?: number; mimeType?: string }
-export interface PendingUpload { id: string; title: string; failed: boolean; uploading: boolean }
+export interface PendingUpload { id: string; previewUri?: string; title: string; failed: boolean; uploading: boolean }
 export interface Attachment extends MediaInfo { id: string }
 export interface FolderList { path: string; parent: string; rows: Row[] }
 export interface NewTaskDraft { owner: string; text: string; attachments: Attachment[]; media: Map<string, string> }

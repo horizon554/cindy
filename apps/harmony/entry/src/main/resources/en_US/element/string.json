@@ -505,6 +505,14 @@
       "value": "Clear search"
     },
     {
+      "name": "preview_image_named",
+      "value": "Preview %s"
+    },
+    {
+      "name": "retry_upload_named",
+      "value": "Retry uploading %s"
+    },
+    {
       "name": "retry_upload",
       "value": "Retry upload"
     },

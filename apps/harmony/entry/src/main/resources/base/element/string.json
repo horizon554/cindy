@@ -505,6 +505,14 @@
       "value": "清除搜索"
     },
     {
+      "name": "preview_image_named",
+      "value": "预览 %s"
+    },
+    {
+      "name": "retry_upload_named",
+      "value": "重新上传 %s"
+    },
+    {
       "name": "retry_upload",
       "value": "重试上传"
     },

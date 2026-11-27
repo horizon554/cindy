@@ -129,6 +129,11 @@ struct Index {
       this.folders = { path: '', parent: '', rows: [] }; this.project = ''; this.renaming = '';
       this.resetEditorSelection();
     }
+    if (this.selectedFile && this.view.pendingUploads?.some((p: PendingUpload) => p.id === this.selectedFile?.path) &&
+      !state.pendingUploads?.some((p: PendingUpload) => p.id === this.selectedFile?.path)) {
+      this.selectedFile = state.attachments.find((a: Attachment) => this.workspace.localPreview(a.id) === this.previewSource);
+      if (!this.selectedFile) this.previewSource = '';
+    }
     if (!state.linked) { this.selectedFile = undefined; this.previewSource = ''; }
     if (this.cardIndex >= state.cards.length) this.cardIndex = 0;
     if (state.paused && !this.view.paused) this.inputOpen = true;
@@ -290,16 +295,22 @@ struct Index {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     if (await filePreview.canPreview(context, source)) {
       await filePreview.openPreview(context, { uri: source, title: file.name, mimeType: file.mimeType || '' });
-    } else if (file.path) {
+    } else if (file.path && !this.view.pendingUploads?.some((p: PendingUpload) => p.id === file.path)) {
       const url = await this.workspace.previewUrl(file.path);
       if (this.selectedFile?.path === file.path) await this.openPolicy(url);
     }
   }
 
+  private pendingImage(item: PendingUpload): MediaInfo {
+    return { path: item.id, name: item.title, mimeType: 'image/*' };
+  }
+
   private gallery(): MediaInfo[] {
-    if (this.view.attachments.some((a: Attachment) => a === this.selectedFile || (!!a.path && a.path === this.selectedFile?.path))) {
-      return this.view.attachments.filter((a: Attachment) => !!a.mimeType?.startsWith('image/'));
-    }
+    const drafts: MediaInfo[] = this.view.attachments.filter((a: Attachment) => !!a.mimeType?.startsWith('image/'));
+    (this.view.pendingUploads || []).forEach((item: PendingUpload) => {
+      if (item.previewUri) drafts.push(this.pendingImage(item));
+    });
+    if (drafts.some((a: MediaInfo) => !!a.path && a.path === this.selectedFile?.path)) return drafts;
     const result: MediaInfo[] = [];
     this.view.messages.forEach((row: Item) => (row.media || []).forEach((a: MediaInfo) => {
       if (a.path && a.mimeType?.startsWith('image/') && !result.some((f: MediaInfo) => f.path === a.path)) result.push(a);
@@ -312,7 +323,8 @@ struct Index {
     const next = this.gallery()[this.imageIndex() + offset];
     if (next) {
       const draft = this.view.attachments.find((a: Attachment) => a.path === next.path);
-      await this.showPreview(next, this.workspace.localPreview(draft?.id || next.path || ''));
+      const pending = this.view.pendingUploads?.find((p: PendingUpload) => p.id === next.path);
+      await this.showPreview(next, pending?.previewUri || this.workspace.localPreview(draft?.id || next.path || ''));
     }
   }
 
@@ -386,7 +398,7 @@ struct Index {
   }
 
   private attachmentCount(): number {
-    return this.view.attachments.length + (this.view.pendingUploads?.length || (this.view.transfer ? 1 : 0));
+    return this.view.attachments.length + (this.view.pendingUploads?.length || (this.view.transfer && !this.view.uploadPending ? 1 : 0));
   }
 
   private async sendFromComposer(): Promise<void> {
@@ -438,20 +450,63 @@ struct Index {
       available: !this.busy && this.view.linked, onTap: () => this.run(() => this.workspace.control(false)) })
   }
 
+  private firstAttachmentPreview(): string {
+    for (const file of this.view.attachments) {
+      const local = file.mimeType?.startsWith('image/') && this.workspace.localPreview(file.id);
+      if (local) return local;
+    }
+    return this.view.pendingUploads?.find((item: PendingUpload) => !!item.previewUri)?.previewUri || '';
+  }
+
+  @Builder
+  photoRemove(name: string, control: string, pending: boolean, remove: () => void) {
+    Button({ type: ButtonType.Normal }) {
+      SymbolGlyph($r('sys.symbol.xmark')).fontSize(12).fontColor([$r('app.color.on_action')]).padding(4)
+        .backgroundColor($r('app.color.action')).borderRadius(12)
+    }.width(44).height(44).position({ x: 40, y: 0 }).align(Alignment.TopEnd).padding(2).backgroundColor(Color.Transparent)
+      .id(control).accessibilityText($r('app.string.remove_file', name)).enabled(!this.busy || (pending && !this.creating)).onClick(remove)
+  }
+
   @Builder
   pendingFile(item: PendingUpload, index: number) {
-    Row({ space: 4 }) {
-      if (item.uploading) { LoadingProgress().width(16).height(16).color($r('app.color.muted')) }
-      Text(item.title).fontSize(13).fontColor($r('app.color.ink'))
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 100 })
-      if (item.failed) {
-        Button($r('app.string.retry_upload'), { type: ButtonType.Capsule }).id(index ? 'retry-' + item.id : 'retry-upload').height(44)
-          .fontSize(13).backgroundColor($r('app.color.chip')).fontColor($r('app.color.ink'))
-          .enabled(!this.busy && this.view.linked && !this.view.transfer).onClick(() => this.uploadAttachment('', item.id))
-      }
-      IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.remove_file', item.title),
-        controlId: index ? 'cancel-' + item.id : 'cancel-upload', onTap: () => this.workspace.removeUpload(item.id) })
-    }.id(index ? 'upload-' + item.id : 'pending-upload').padding({ left: 6 }).borderRadius(10).backgroundColor($r('app.color.chip'))
+    if (item.previewUri) {
+      Stack({ alignContent: Alignment.BottomStart }) {
+        Button({ type: ButtonType.Normal }) {
+          Stack() {
+            Image(item.previewUri).width(72).height(72).objectFit(ImageFit.Cover)
+            if (item.failed) {
+              Text($r('app.string.retry_upload')).fontSize(13).fontColor($r('app.color.on_action'))
+                .padding(4).backgroundColor($r('app.color.action')).borderRadius(8)
+            } else {
+              LoadingProgress().width(22).height(22).padding(2).color($r('app.color.on_action')).backgroundColor($r('app.color.action')).borderRadius(11)
+            }
+          }
+        }.width(72).height(72).padding(0).borderRadius(12).backgroundColor($r('app.color.chip'))
+          .id(item.failed ? (index ? 'retry-' + item.id : 'retry-upload') : 'preview-' + item.id)
+          .accessibilityText(item.failed ? $r('app.string.retry_upload_named', item.title) : $r('app.string.preview_image_named', item.title))
+          .enabled(!item.failed || (!this.busy && this.view.linked))
+          .onClick(() => {
+            if (item.failed) this.uploadAttachment('', item.id);
+            else this.showPreview(this.pendingImage(item), item.previewUri);
+          })
+        this.photoRemove(item.title, index ? 'cancel-' + item.id : 'cancel-upload', true,
+          () => this.workspace.removeUpload(item.id))
+      }.width(84).height(84).id(index ? 'upload-' + item.id : 'pending-upload')
+    } else {
+      Row({ space: 4 }) {
+        if (!item.failed) { LoadingProgress().width(16).height(16).color($r('app.color.muted')) }
+        Text(item.title).fontSize(13).fontColor($r('app.color.ink'))
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 100 })
+        if (item.failed) {
+          Button($r('app.string.retry_upload'), { type: ButtonType.Capsule }).id(index ? 'retry-' + item.id : 'retry-upload').height(44)
+            .fontSize(13).backgroundColor($r('app.color.chip')).fontColor($r('app.color.ink'))
+            .accessibilityText($r('app.string.retry_upload_named', item.title))
+            .enabled(!this.busy && this.view.linked).onClick(() => this.uploadAttachment('', item.id))
+        }
+        IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.remove_file', item.title),
+          controlId: index ? 'cancel-' + item.id : 'cancel-upload', available: !(this.creating && this.busy), onTap: () => this.workspace.removeUpload(item.id) })
+      }.id(index ? 'upload-' + item.id : 'pending-upload').padding({ left: 6 }).borderRadius(10).backgroundColor($r('app.color.chip'))
+    }
   }
 
   @Builder
@@ -471,31 +526,14 @@ struct Index {
       if (this.expanded() && this.attachmentCount() > 0) {
         Scroll() {
           Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center, space: { main: LengthMetrics.vp(6), cross: LengthMetrics.vp(6) } }) {
-            if (this.view.transfer && !this.view.pendingUploads?.length) {
-              Row({ space: 4 }) {
-                LoadingProgress().width(16).height(16).color($r('app.color.muted'))
-                Text(this.view.transfer).fontSize(13).fontColor($r('app.color.ink'))
-                IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.cancel_file'), controlId: 'cancel-upload',
-                  onTap: () => this.workspace.cancelTransfer() })
-              }.id('pending-upload')
-            }
-            ForEach(this.view.pendingUploads || [], (item: PendingUpload, index: number) => {
-              this.pendingFile(item, index)
-            }, (item: PendingUpload, index: number) => JSON.stringify([item.id, item.failed, item.uploading, index]))
             ForEach(this.view.attachments, (f: Attachment) => {
-              if (f.mimeType?.startsWith('image/')) {
+              if (f.mimeType?.startsWith('image/') && this.workspace.localPreview(f.id)) {
                 Stack({ alignContent: Alignment.BottomStart }) {
                   Button({ type: ButtonType.Normal }) {
-                    if (this.workspace.localPreview(f.id)) { Image(this.workspace.localPreview(f.id)).width(72).height(72).objectFit(ImageFit.Cover) }
-                    else { SymbolGlyph($r('sys.symbol.picture')).fontSize(26) }
-                  }.id('preview-' + f.id).width(72).height(72).borderRadius(12).backgroundColor($r('app.color.chip')).accessibilityText(f.name)
+                    Image(this.workspace.localPreview(f.id)).width(72).height(72).objectFit(ImageFit.Cover)
+                  }.id('preview-' + f.id).width(72).height(72).padding(0).borderRadius(12).backgroundColor($r('app.color.chip')).accessibilityText(f.name)
                     .onClick(() => this.run(() => this.showPreview(f, this.workspace.localPreview(f.id))))
-                  Button({ type: ButtonType.Normal }) {
-                    SymbolGlyph($r('sys.symbol.xmark')).fontSize(12).fontColor([$r('app.color.on_action')]).padding(4)
-                      .backgroundColor($r('app.color.action')).borderRadius(12)
-                  }.width(44).height(44).position({ x: 40, y: 0 }).align(Alignment.TopEnd).padding(2).backgroundColor(Color.Transparent)
-                    .id('remove-' + f.id).accessibilityText($r('app.string.remove_file', f.name)).enabled(!this.busy)
-                    .onClick(() => this.run(() => this.workspace.removeFile(f.id)))
+                  this.photoRemove(f.name, 'remove-' + f.id, false, () => this.run(() => this.workspace.removeFile(f.id)))
                 }.width(84).height(84)
               } else {
                 Row() {
@@ -511,6 +549,17 @@ struct Index {
                 }.backgroundColor($r('app.color.chip')).borderRadius(10)
               }
             }, (f: Attachment) => f.id)
+            if (this.view.transfer && !this.view.uploadPending && !this.view.pendingUploads?.length) {
+              Row({ space: 4 }) {
+                LoadingProgress().width(16).height(16).color($r('app.color.muted'))
+                Text(this.view.transfer).fontSize(13).fontColor($r('app.color.ink'))
+                IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.cancel_file'), controlId: 'cancel-upload',
+                  available: !(this.creating && this.busy), onTap: () => this.workspace.cancelTransfer() })
+              }.id('pending-upload')
+            }
+            ForEach(this.view.pendingUploads || [], (item: PendingUpload, index: number) => {
+              this.pendingFile(item, index)
+            }, (item: PendingUpload, index: number) => JSON.stringify([item.id, item.failed, item.uploading, index]))
           }.width('100%')
         }.id('attachment-tray').align(Alignment.TopStart).width('100%')
           .constraintSize({ maxHeight: Math.max(84, Math.min(204, this.availableHeight * 0.28)) })
@@ -522,9 +571,16 @@ struct Index {
             available: !this.busy && this.view.linked && !this.view.pickingFiles && (!this.view.transfer || !!this.view.uploadPending), onTap: () => { this.panel = 'attachments'; } })
           if (this.attachmentCount() > 0) {
             Button({ type: ButtonType.Capsule }) {
-              Row({ space: 3 }) {
-                SymbolGlyph($r('sys.symbol.paperclip')).fontSize(14).fontColor([$r('app.color.muted')])
-                Text(this.attachmentCount().toString()).fontSize(13).fontColor($r('app.color.ink'))
+              Stack({ alignContent: Alignment.BottomEnd }) {
+                if (this.firstAttachmentPreview()) {
+                  Image(this.firstAttachmentPreview()).width(34).height(34).borderRadius(8).objectFit(ImageFit.Cover)
+                  if (this.attachmentCount() > 1) {
+                    Text('+' + (this.attachmentCount() - 1).toString()).fontSize(11).fontColor($r('app.color.on_action'))
+                      .padding({ left: 3, right: 3 }).backgroundColor($r('app.color.action')).borderRadius(6)
+                  }
+                } else {
+                  Text(this.attachmentCount().toString()).fontSize(13).fontColor($r('app.color.ink'))
+                }
               }
             }.id('attachment-badge').height(44).constraintSize({ minWidth: 44 }).padding({ left: 5, right: 5 })
               .backgroundColor($r('app.color.chip')).accessibilityText($r('app.string.show_attachments', this.attachmentCount()))
