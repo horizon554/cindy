@@ -27,11 +27,11 @@ interface DirectoryEntry {
   kind: 'device' | 'heading' | 'task' | 'moreGroup' | 'empty' | 'more';
   group?: HomeGroup;
   task?: Item;
-  indent?: number;
   attention?: string;
 }
 
-interface TaskRowContent { item: Item; indent: number }
+const DIRECTORY_ROW_INSETS: Padding = { left: 12, right: 22 };
+interface TaskRowContent { item: Item }
 interface HeadingContent { group: HomeGroup; attention: string }
 interface StatusContent { status: string; key: string }
 
@@ -664,7 +664,10 @@ struct Index {
             .onAreaChange((_: Area, area: Area) => { this.measuredInputHeight = Number(area.height); })
             .fontSize(16).fontColor($r('app.color.ink')).backgroundColor(Color.Transparent)
             .accessibilityLevel(this.view.voice ? 'no' : 'auto')
-            .padding({ left: 10, right: 10, top: 7, bottom: 3 })
+            .align(this.expanded() ? Alignment.TopStart : Alignment.Start)
+            .maxLines(this.expanded() ? undefined : 1)
+            .textOverflow(this.expanded() ? TextOverflow.Clip : TextOverflow.Ellipsis)
+            .padding({ left: 10, right: 10, top: this.expanded() ? 7 : 0, bottom: this.expanded() ? 3 : 0 })
             .onFocus(() => { this.inputOpen = true; })
             .onBlur(() => { if (!this.panel) { this.inputOpen = false; } })
             .onTextSelectionChange((start: number, end: number) => {
@@ -708,7 +711,8 @@ struct Index {
           this.trailingActions()
         }.width('100%')
       }
-    }.width('100%').alignItems(HorizontalAlign.Center).padding(this.expanded() ? 8 : 4).constraintSize({ minHeight: 55 }).borderWidth(1)
+    }.width('100%').alignItems(HorizontalAlign.Center).justifyContent(FlexAlign.Center)
+      .padding(this.expanded() ? 8 : 4).constraintSize({ minHeight: 55 }).borderWidth(1)
       .borderColor($r('app.color.line')).borderRadius(this.expanded() ? 18 : 30).backgroundColor($r('app.color.panel'))
   }
 
@@ -997,7 +1001,7 @@ struct Index {
         if (this.collapsed.includes(group.key) && !this.query.trim()) continue;
       }
       for (const task of group.rows) {
-        entries.push({ key: this.homeTaskKey(task), kind: 'task', task, indent: group.kind === 'project' ? 24 : 6 });
+        entries.push({ key: this.homeTaskKey(task), kind: 'task', task });
       }
       if (group.rows.length < group.total) entries.push({ key: 'more-' + group.key, kind: 'moreGroup', group });
     }
@@ -1154,15 +1158,19 @@ struct Index {
 
   @Builder
   taskTitle() {
-    Text(this.headerTitle()).id('task-title').fontSize(18).fontWeight(FontWeight.Medium)
-      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
+    Row() {
+      Text(this.headerTitle()).id('task-title').fontSize(18).fontWeight(FontWeight.Medium)
+        .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
+    }.height('100%').padding({ left: 8, right: 8 })
       .gesture(TapGesture({ count: 2 }).onAction(() => this.openRename()))
   }
 
   @Builder
   taskMenu() {
-    IconAction({ icon: $r('sys.symbol.ellipsis_circle'), controlId: 'account-menu', label: $r('app.string.task_info'),
-      onTap: () => { this.panel = 'detail'; } })
+    Row() {
+      IconAction({ icon: $r('sys.symbol.ellipsis_circle'), controlId: 'account-menu', label: $r('app.string.task_info'),
+        onTap: () => { this.panel = 'detail'; } })
+    }.height('100%').padding({ right: 12 })
   }
 
   @Builder
@@ -1406,17 +1414,17 @@ struct Index {
               Button({ type: ButtonType.Normal }) {
                 Row({ space: 8 }) {
                   SymbolGlyph(this.collapsed.includes(entry.key) ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_down'))
-                    .fontSize(14).fontColor([$r('app.color.muted')])
+                    .fontSize(14).width(22).fontColor([$r('app.color.muted')])
                   Text(this.hostName(entry.group!.head.host || '')).fontSize(16)
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink'))
-                }.width('100%').padding({ left: 22, right: 22 })
-              }.id('device-section-' + entry.group!.head.host).height(44).width('100%').backgroundColor(Color.Transparent)
+                }.width('100%')
+              }.id('device-section-' + entry.group!.head.host).height(44).width('100%').padding(DIRECTORY_ROW_INSETS).backgroundColor(Color.Transparent)
                 .onClick(() => this.toggleHomeGroup(entry.key))
             }
           } else if (entry.kind === 'heading') {
-            ListItem() { this.projectHeading({ group: entry.group!, attention: entry.attention || '' }) }.padding({ left: 16, right: 16 })
+            ListItem() { this.projectHeading({ group: entry.group!, attention: entry.attention || '' }) }
           } else if (entry.kind === 'task') {
-            this.taskListItem({ item: this.currentTask(entry), indent: entry.indent! })
+            this.taskListItem({ item: this.currentTask(entry) })
           } else if (entry.kind === 'moreGroup') {
             ListItem() {
               Button($r('app.string.view_group', entry.group!.total)).id('view-all-' + entry.group!.key).height(44)
@@ -1447,7 +1455,7 @@ struct Index {
         }, (entry: DirectoryEntry) => {
           if (entry.kind === 'heading') return JSON.stringify([entry.key, entry.group!.total, entry.attention]);
           if (entry.kind === 'moreGroup') return JSON.stringify([entry.key, entry.group!.total]);
-          return entry.kind === 'task' ? entry.key + '/' + entry.indent : entry.key;
+          return entry.key;
         })
       }.width('100%').height('100%').contentEndOffset(76)
       if (page === 'home' && this.view.devices.length) {
@@ -1554,8 +1562,8 @@ struct Index {
   taskListItem($$: TaskRowContent) {
     ListItem() {
       Button({ type: ButtonType.Normal }) {
-        Row({ space: 9 }) {
-          this.taskMark({ item: $$.item, indent: $$.indent })
+        Row({ space: 12 }) {
+          this.taskMark({ item: $$.item })
           Column({ space: 2 }) {
             Text($$.item.title).fontSize(15).lineHeight(22).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
             if ($$.item.summary && $$.item.summary !== $$.item.title) {
@@ -1563,7 +1571,7 @@ struct Index {
             }
           }.alignItems(HorizontalAlign.Start).layoutWeight(1)
           Column({ space: 2 }) {
-            this.taskStatus({ item: $$.item, indent: $$.indent })
+            this.taskStatus({ item: $$.item })
             if ($$.item.scheduled || $$.item.pinnedAt) {
               Row({ space: 4 }) {
                 if ($$.item.scheduled) {
@@ -1580,13 +1588,13 @@ struct Index {
               }
             }
           }.alignItems(HorizontalAlign.End)
-        }.padding({ left: $$.indent, right: 6, top: 4, bottom: 4 }).width('100%')
+        }.padding({ top: 4, bottom: 4 }).width('100%')
       }.id(!this.scope && this.view.devices.length > 1 ? JSON.stringify(['task', $$.item.host, $$.item.id]) : $$.item.id)
-        .constraintSize({ minHeight: 44 }).width('100%').backgroundColor(Color.Transparent).enabled(this.rowAvailable($$.item))
+        .constraintSize({ minHeight: 44 }).width('100%').padding(DIRECTORY_ROW_INSETS).backgroundColor(Color.Transparent).enabled(this.rowAvailable($$.item))
         .priorityGesture(LongPressGesture({ repeat: false }).onAction(() => this.chooseRowAction($$.item, 'more')))
         .accessibilityDescription(this.statusDescription($$.item))
         .onClick(() => { if (!this.panel) this.run(() => this.openRow($$.item)); })
-    }.padding({ left: 16, right: 16 }).swipeAction({
+    }.swipeAction({
       start: this.homeActionsAvailable($$.item) && ($$.item.status !== 'archived' || !!$$.item.pinnedAt) ?
         () => { this.swipeTaskAction($$.item, true); } : undefined,
       end: this.homeActionsAvailable($$.item) ? () => { this.swipeTaskAction($$.item, false); } : undefined
@@ -1649,16 +1657,16 @@ struct Index {
   projectHeading($$: HeadingContent) {
     Button({ type: ButtonType.Normal }) {
       Row({ space: 8 }) {
-        SymbolGlyph(this.collapsed.includes($$.group.key) ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_down')).fontSize(12).fontColor([$r('app.color.muted')])
-        SymbolGlyph($$.group.kind === 'pinned' ? $r('sys.symbol.pin') : this.collapsed.includes($$.group.key) ? $r('sys.symbol.folder') : $r('sys.symbol.folder_fill')).fontSize(17).fontColor([$r('app.color.muted')])
+        SymbolGlyph(this.collapsed.includes($$.group.key) ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_down')).fontSize(12).width(22).fontColor([$r('app.color.muted')])
+        SymbolGlyph($$.group.kind === 'pinned' ? $r('sys.symbol.pin') : this.collapsed.includes($$.group.key) ? $r('sys.symbol.folder') : $r('sys.symbol.folder_fill')).fontSize(17).width(22).fontColor([$r('app.color.muted')])
         Text($$.group.kind === 'pinned' ? $r('app.string.pinned_tasks') : this.basename($$.group.head.project || '')).fontSize(15).fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.ink')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         if ($$.group.kind === 'project' && !this.scope && (!this.groupDevices || !!this.query.trim()) && this.view.devices.length > 1) { Text(this.hostName($$.group.head.host || '')).fontSize(12).fontColor($r('app.color.muted')).maxLines(1) }
         Blank()
         Text($$.group.total.toString()).fontSize(13).fontColor($r('app.color.muted'))
         if ($$.attention) { this.statusMark({ status: $$.attention, key: $$.group.key }) }
-      }.width('100%').padding({ left: 6, right: 6 })
-    }.width('100%').height(44).backgroundColor(Color.Transparent).onClick(() => this.toggleHomeGroup($$.group.key))
+      }.width('100%')
+    }.width('100%').height(44).padding(DIRECTORY_ROW_INSETS).backgroundColor(Color.Transparent).onClick(() => this.toggleHomeGroup($$.group.key))
   }
 
   private toggleHomeGroup(key: string): void {
@@ -1739,7 +1747,8 @@ struct Index {
   destination(page: string) {
     if (page === 'task') {
       NavDestination() { this.screen(page) }
-        .title(this.taskTitle()).menus(this.taskMenu()).onBackPressed(() => this.onBackPress())
+        .title(this.taskTitle(), { backgroundColor: $r('app.color.canvas') })
+        .menus(this.taskMenu()).onBackPressed(() => this.onBackPress())
     } else if (page === 'preview') {
       NavDestination() { this.screen(page) }
         .title(this.selectedFile?.name || '').menus(this.previewMenu()).hideTitleBar(!this.previewChrome)
