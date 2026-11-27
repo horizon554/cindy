@@ -16,7 +16,8 @@ await build({
       export { permissionModeOrAsk } from './packages/maker-shared/src/permissionMode.ts';
       export { normalizeAskQuestions, answerKey, askQuestionOptions, askAnswerError, encodeMultiSelectAnswer, selectionFromAnswer, buildPermissionReviewPresentation } from './packages/maker-shared/src/interaction.ts';
       export { isTurnContinuationBoundaryEvent } from './packages/maker-shared/src/turnContinuation.ts';
-      export { PROTOCOL_VERSION } from './packages/device-link/src/protocol.ts';
+      export { buildMobileModelSections, flattenProviderSections } from './apps/mobile/src/session/providerModelSections.ts';
+      export { PROTOCOL_VERSION, providerPickerListArgs } from './packages/device-link/src/protocol.ts';
       export { authApiBaseUrl, deviceLinkApiBaseUrl } from './config/endpoint.json';
     `,
   },

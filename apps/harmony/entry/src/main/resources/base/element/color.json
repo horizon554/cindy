@@ -67,6 +67,10 @@
     {
       "name": "brand_splash",
       "value": "#DF0C27"
+    },
+    {
+      "name": "scrim",
+      "value": "#66000000"
     }
   ]
 }

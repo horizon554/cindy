@@ -1,15 +1,16 @@
 import { common } from '@kit.AbilityKit';
 export interface Row { host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
 export interface Choice { label: string; detail: string; selected: boolean }
-export interface Question { key: string; label: string; multi: boolean; free: boolean; value: string; options: Choice[] }
+export interface Question { key: string; valid?: boolean; label: string; multi: boolean; free: boolean; value: string; options: Choice[] }
 export interface Card { id: string; revision: number; kind: string; title: string; detail: string; questions: Question[]; complete?: boolean; approvalKey?: string; risk?: string; code?: string }
 export interface MediaInfo { path?: string; name: string; size?: number; mimeType?: string }
 export interface Attachment extends MediaInfo { id: string }
+export interface FolderList { path: string; parent: string; rows: Row[] }
 export interface ViewState {
   homeIndex?: Row[]; attachments: Attachment[]; transfer: string; voice: string; pushEnabled: boolean; pushStatus: string; shareLabel: string;
   ssoWaiting: boolean; ssoMethods: Row[]; verification: string; accounts: Row[]; account: string; relay: string; devices: Row[]; tasks: Row[]; messages: Row[];
   linked: boolean; moreTasks: boolean; hasOlder: boolean; paused: boolean; running: boolean;
-  retryable: boolean; activity: string; draft: string; delivery: string; pendingLabel?: string; taskContext?: string; cards: Card[];
+  retryable: boolean; activity: string; draft: string; delivery: string; pendingLabel?: string; agent?: string; model?: string; provider?: string; permission?: string; voicePreview?: string; uploadName?: string; failedFile?: string; shareVersion?: number; shareFiles?: string[]; shareText?: string; cards: Card[];
   device: string; task: string; live: string; error: string;
 }
 export class Workspace {
@@ -27,7 +28,14 @@ export class Workspace {
   devices(): Promise<void>;
   openDevice(id: string): Promise<void>;
   openTask(id: string): Promise<void>;
-  create(title: string, project?: string, firstText?: string): Promise<boolean | undefined>;
+  create(title: string, project?: string, firstText?: string, engine?: string): Promise<boolean | undefined>;
+  browse(path: string): Promise<FolderList>;
+  shareImage(index: number): string;
+  engines(): Promise<string[]>;
+  preferences(kind: string): Promise<Row[]>;
+  applyPreference(kind: string, value: string): Promise<void>;
+  retryFile(): Promise<boolean | undefined>;
+  discardFailed(): void;
   reconnect(): Promise<void>;
   more(): Promise<void>;
   older(): Promise<void>;

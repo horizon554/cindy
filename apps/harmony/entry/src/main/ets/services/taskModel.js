@@ -41,7 +41,7 @@ export function taskPage(rows, task) {
       if (row.role === 'ask_user') title = normalizeAskQuestions(data?.questions).map(q => q.question).join('\n');
       if (row.role === 'permission') title = data?.title || data?.toolName || '操作审批';
       if (row.role === 'tool_use') {
-        title = '工具 · ' + (data?.toolName || data?.name || row.toolName || '调用');
+        title = data?.toolName || data?.name || row.toolName || '调用';
         detail = [data?.input?.description, data?.input?.command, data?.input?.file_path, data?.input?.path]
           .filter(v => typeof v === 'string' && v).join('\n').slice(0, 8192);
       }
@@ -94,10 +94,11 @@ export function presentCards(entries, edits, revisions) {
       result.questions = normalizeAskQuestions(r.questions).map(q => {
         const key = answerKey(q);
         const answer = edits.get(r.requestId)?.get(key) || '';
-        if (askAnswerError(q, answer) || (!q.answerConstraints && (!answer.trim() || answer === '[]'))) complete = false;
+        const valid = !askAnswerError(q, answer) && (!!q.answerConstraints || (!!answer.trim() && answer !== '[]'));
+        if (!valid) complete = false;
         const { selectedLabels, customInput } = selectionFromAnswer(q, answer);
         const choices = askQuestionOptions(q);
-        return { key, label: q.question, multi: !!q.multiSelect, free: !q.answerConstraints?.choices,
+        return { key, valid, label: q.question, multi: !!q.multiSelect, free: !q.answerConstraints?.choices,
           value: q.multiSelect ? customInput : answer,
           options: choices.map(opt => ({ label: opt.label, detail: opt.description || '', selected: selectedLabels.has(opt.label) })) };
       });
@@ -149,12 +150,27 @@ export function messageBlocks(text) {
     if (lines.length) blocks.push({ kind, text: lines.join('\n') });
     lines = [];
   }
-  for (const line of text.split('\n')) {
+  const source = text.split('\n');
+  const cells = line => line.trim().replace(/^\||\|$/g, '').split(/(?<!\\)\|/).map(s => s.trim().replace(/\\\|/g, '|'));
+  for (let i = 0; i < source.length; i++) {
+    const line = source[i];
     const marker = /^\s*(`{3,}|~{3,})/.exec(line);
     if (marker && (!fence || (marker[1][0] === fence[0] && marker[1].length >= fence.length))) {
       flush(fence ? 'code' : 'text'); fence = fence ? null : marker[1]; continue;
     }
     if (fence) { lines.push(line); continue; }
+    if (line.includes('|') && source[i + 1]?.includes('|') && cells(source[i + 1]).every(s => /^:?-{3,}:?$/.test(s))) {
+      flush('text');
+      const rows = [cells(line)]; i++;
+      while (i + 1 < source.length && source[i + 1].includes('|') && source[i + 1].trim()) rows.push(cells(source[++i]));
+      blocks.push({ kind: 'table', rows, text: rows.map(row => row.join('\t')).join('\n') }); continue;
+    }
+    if (/^\s*>/.test(line)) {
+      flush('text');
+      const quote = [line.replace(/^\s*>\s?/, '')];
+      while (i + 1 < source.length && /^\s*>/.test(source[i + 1])) quote.push(source[++i].replace(/^\s*>\s?/, ''));
+      blocks.push({ kind: 'quote', text: quote.join('\n') }); continue;
+    }
     const heading = /^(#{1,6})\s+(.+)/.exec(line);
     if (heading) { flush('text'); blocks.push({ kind: 'heading', text: heading[2] }); }
     else if (!line.trim()) flush('text');

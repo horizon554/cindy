@@ -2,16 +2,21 @@ import { messageMedia } from './media';
 import { openCache } from './cache';
 import { approvalKey, taskPage, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
 import util from '@ohos.util';
-import { deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
+import { buildMobileModelSections, flattenProviderSections, providerPickerListArgs, deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
 import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, readSession, saveSession, createSocket } from './platform';
 
 import { authorize, cancelAuthorization, consumeAuthorization, listenForWant, pendingAuthorization } from './sso';
 
-const taskView = { taskContext: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
+const taskView = { agent: '', model: '', provider: '', permission: '', voicePreview: '', uploadName: '', failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
   attachments: [], transfer: '', voice: '', activity: '', hasOlder: false, paused: false, retryable: false, delivery: '' };
 const hostView = { ...taskView, device: '', tasks: [], linked: false, moreTasks: false };
 
 // One instance owns one visible account. Only the native page can initiate a send.
+function displayName(uri) {
+  try { return decodeURIComponent(uri.split(/[?#]/)[0].split('/').pop()).replace(/[\u0000-\u001f]/g, '').slice(0, 80); }
+  catch { return ''; }
+}
+
 export class Workspace {
   constructor(changed, taskHome = false) {
     this.taskHome = taskHome;
@@ -20,9 +25,10 @@ export class Workspace {
     this.thumbnailQueue = Promise.resolve();
     this.changed = changed;
     this.version = 0;
+    this.voiceTake = 0;
     this.authEpoch = 0;
     this.sessionWrite = Promise.resolve();
-    this.state = { ...hostView, shareLabel: '', pushStatus: '', pushEnabled: false, ssoWaiting: false, ssoMethods: [], verification: '', accounts: [], account: '', relay: '', devices: [], error: '' };
+    this.state = { ...hostView, shareLabel: '', shareText: '', shareFiles: [], pushStatus: '', pushEnabled: false, ssoWaiting: false, ssoMethods: [], verification: '', accounts: [], account: '', relay: '', devices: [], error: '' };
   }
   show(patch) {
     if (this.taskHome && patch.devices) {
@@ -99,6 +105,7 @@ export class Workspace {
     await request(accountUrl + '/api/auth/sso/verification/request-code', { verificationTicket: this.verificationTicket, deviceId: this.id });
   }
   async verifyOrganization(code) {
+    if (!/^[0-9]{6}$/.test(code)) throw new Error('请输入六位验证码');
     await this.completeLogin(await request(accountUrl + '/api/auth/sso/verification/verify', {
       verificationTicket: this.verificationTicket, code, deviceId: this.id
     }));
@@ -111,6 +118,7 @@ export class Workspace {
     if (response.status !== 'sent') throw new Error('验证码未发送');
   }
   async login(phone, code) {
+    if (!/^[0-9]{6}$/.test(code)) throw new Error('请输入六位验证码');
     const reply = await request(accountUrl + '/api/auth/phone/verify-code', {
       phone, code, deviceId: this.id, clientType: 'mobile', locale: 'zh-CN'
     });
@@ -212,6 +220,7 @@ export class Workspace {
       this.ready = false;
       this.cancelVoice();
       this.cancelTransfer();
+      this.discardFailed();
       this.show({ relay: status, linked: false, cards: [], running: false, activity: '', paused: false });
       if (status === 'online') this.recover().catch(e => { if (this.client === client) this.report(e); });
     });
@@ -223,6 +232,7 @@ export class Workspace {
         } else if (env.src === this.state.device) {
           this.version++;
           this.ready = false;
+          this.cancelVoice(); this.cancelTransfer(); this.discardFailed();
           this.show({ linked: false, cards: [], running: false, paused: false, activity: '', live: '', error: '电脑连接已断开' });
           if (env.payload?.reason === 'transport-timeout' && !this.reopening) {
             this.reopening = this.recover().catch(e => { if (this.client === client) this.report(e); }).finally(() => { this.reopening = null; });
@@ -403,6 +413,8 @@ export class Workspace {
     this.thumbnailQueue = Promise.resolve();
     this.cancelTransfer();
     this.cancelVoice();
+    this.recording = null;
+    this.failedUpload = null;
     this.uploadTickets = new Map();
     clearTimeout(this.timer);
     this.timer = null;
@@ -413,6 +425,7 @@ export class Workspace {
     this.requests = [];
     this.runtimeTick = 0;
     this.cardTick = 0;
+    this.preferenceList = null;
     this.ready = false;
     this.hydrated = false;
     this.cachedCount = 0;
@@ -443,7 +456,7 @@ export class Workspace {
     try {
       const row = await this.invoke('local-db:sessions:get', [id], version);
       if (!row || row.id !== id || row.status === 'deleted' || row.hiddenAt) throw Object.assign(new Error('任务已不可访问'), { code: 'NOT_FOUND' });
-      this.show({ taskContext: [row.agentKind, row.model, row.permissionMode].filter(Boolean).join(' · ') });
+      this.show({ agent: row.agentKind || '', model: row.model || '', provider: row.providerId || '', permission: row.permissionMode || '' });
       if (subscribe) await this.invoke('device-link:subscribe', [{ topics: ['session:' + id], controllerName: 'Cindy HarmonyOS', capabilities: [] }], version);
       const tick = this.runtimeTick;
       await Promise.all([
@@ -508,6 +521,14 @@ export class Workspace {
     }
   }
   setCards(rows) {
+    for (const entry of rows) {
+      const request = entry?.request;
+      const old = this.requests.find(row => row.request.requestId === request?.requestId)?.request;
+      if (old && request.kind === 'ask_user_question' && JSON.stringify(old.questions) !== JSON.stringify(request.questions)) {
+        this.edits.delete(request.requestId);
+        this.choiceRevision.delete(request.requestId);
+      }
+    }
     this.requests = rows.filter(row => row?.request?.requestId);
     for (const id of this.edits.keys()) if (!this.requests.some(r => r.request.requestId === id)) {
       this.edits.delete(id);
@@ -632,33 +653,91 @@ export class Workspace {
     this.cancelDraftTimer();
     if (draft) await this.cache.write(draft.key, draft.text || null);
   }
-  async create(title, project = '', firstText = '') {
+  async engines() {
+    const list = await this.invoke('maker:list-available-agents', [], this.version);
+    return list.filter(id => ['codex', 'claude-code', 'pi'].includes(id));
+  }
+  async browse(path) {
+    const result = await this.invoke('fs:list-dir', [{ path: path || '~' }], this.version);
+    if (!result?.resolvedPath || !Array.isArray(result.entries)) throw new Error('电脑无法读取此目录');
+    const dirs = result.entries.filter(e => e.path && ['dir','symlink'].includes(e.kind) && !e.name.startsWith('.'));
+    return { path: result.resolvedPath, parent: result.parent || '', rows: [
+      ...(result.drives || []).filter(d => !d.current), ...dirs
+    ].map(e => ({ id: e.path, title: e.name })) };
+  }
+  async preferences(kind) {
+    const v = this.version, agent = this.state.agent;
+    let options;
+    if (kind === 'model') {
+      let directory;
+      try {
+        directory = await this.invoke('maker:provider:list', providerPickerListArgs({
+          agent, providerId: this.state.provider || null, modelId: this.state.model
+        }), v);
+      } catch (e) { if (!['CHANNEL_NOT_ALLOWED', 'NOT_FOUND'].includes(e.code)) throw e; }
+      if (directory?.providers?.length) {
+        const sections = buildMobileModelSections({ providers: directory.providers, agentKind: agent,
+          selectedProviderId: this.state.provider, selectedModelId: this.state.model,
+          existingSessionRoute: true, visibilityOverrides: directory.modelVisibilityOverrides });
+        options = flattenProviderSections(sections.sections).map(({ provider, model }) => ({
+          id: JSON.stringify([provider.id, model.id]), title: model.displayName || model.id,
+          summary: provider.name, model: model.id, provider: provider.id
+        }));
+      }
+    }
+    if (!options) {
+      const caps = await this.invoke('maker:get-capabilities', [agent], v);
+      const reported = kind === 'model' ? caps?.availableModels : caps?.permissionModes;
+      options = (reported || []).filter(o => o?.id).map(o => ({
+        id: o.id, title: o.label || o.id, summary: o.description || '', model: o.id
+      }));
+    }
+    this.guard(v);
+    this.preferenceList = { v, kind, options };
+    return options;
+  }
+  async applyPreference(kind, value) {
+    const v = this.version, task = this.state.task;
+    const choices = this.preferenceList;
+    if (!this.ready || !this.state.linked || !task || this.state.running || choices?.v !== v ||
+        choices.kind !== kind || !choices.options.some(o => o.id === value)) throw new Error('请重新选择当前任务的选项');
+    const option = choices.options.find(o => o.id === value);
+    const args = [task, kind === 'model' ? option.model : value];
+    if (kind === 'model' && option.provider) args.push(option.provider);
+    const result = await this.invoke(kind === 'model' ? 'maker:set-model' : 'maker:set-permission-mode', args, v);
+    if (result?.superseded || result?.deferred) throw new Error('电脑正在处理变更，请稍后查看任务信息');
+    const row = await this.invoke('local-db:sessions:get', [task], v);
+    if (row?.id === task) this.show({ model: row.model || '', provider: row.providerId || '', permission: row.permissionMode || '' });
+  }
+  async create(title, project = '', firstText = '', engine = '') {
     if (this.creating) return this.creating;
-    this.creating = this.createTask(title.trim(), project, firstText).finally(() => { this.creating = null; });
+    this.creating = this.createTask(title.trim(), project, firstText, engine).finally(() => { this.creating = null; });
     return this.creating;
   }
-  async createTask(title, project, firstText) {
+  async createTask(title, project, firstText, engine) {
     const version = this.version;
     if (!this.state.linked || this.state.task) throw new Error('请选择执行电脑');
     const key = this.key('creation');
     let intent = await this.cache.read(key);
     this.guard(version);
     if (!intent) {
-      intent = { id: util.generateRandomUUID(true), title, project, firstText };
+      intent = { id: util.generateRandomUUID(true), title, project, firstText, engine };
       await this.cache.write(key, intent);
     }
-    const sameInput = (intent.firstText || '') === firstText && (intent.project || '') === project && (intent.title || '') === title;
+    const sameInput = (intent.firstText || '') === firstText && (intent.project || '') === project && (intent.title || '') === title && (intent.engine || '') === engine;
     const existing = await this.invoke('local-db:sessions:get-many', [[intent.id]], version);
     const row = existing.find(r => r.id === intent.id);
     if (!row) {
-      let defaults = await this.invoke('maker:get-new-maker-defaults', ['codex'], version);
-      let agentKind = defaults.selectedAgentKind;
+      const requested = intent.engine || '';
+      if (requested && !(await this.engines()).includes(requested)) throw new Error('所选引擎在当前电脑上不可用');
+      let defaults = await this.invoke('maker:get-new-maker-defaults', [requested || 'codex'], version);
+      let agentKind = requested || defaults.selectedAgentKind;
       if (!agentKind) {
         const available = await this.invoke('maker:list-available-agents', [], version);
         agentKind = available.find(agent => ['codex','claude-code','pi'].includes(agent));
         if (!agentKind) throw new Error('电脑上没有可用于新任务的引擎');
       }
-      if (agentKind !== 'codex') defaults = await this.invoke('maker:get-new-maker-defaults', [agentKind], version);
+      if (!requested && agentKind !== 'codex') defaults = await this.invoke('maker:get-new-maker-defaults', [agentKind], version);
       const model = defaults.model;
       if (!model) throw new Error('请先在这台电脑上选择新任务的默认模型');
       const result = await this.invoke('maker:create-session', [{ id: intent.id, workspaceKind: intent.project ? 'project' : 'dialogue', ...(intent.project ? { workingDir: intent.project } : {}), agentKind,
@@ -800,12 +879,9 @@ export class Workspace {
     if (event.error) { this.show({ error: event.error }); return; }
     if (event.share) {
       this.share = event.share;
-      const files = event.share.uris.slice(0, 2).map(uri => {
-        try { return decodeURIComponent(uri.split('?')[0].split('/').pop()).replace(/[\u0000-\u001f]/g, '').slice(0, 60); }
-        catch { return ''; }
-      }).filter(Boolean);
-      this.show({ shareLabel: [event.share.text.slice(0, 60), files.join('、'),
-        event.share.uris.length ? event.share.uris.length + ' 个附件' : ''].filter(Boolean).join(' · ') });
+      const files = event.share.uris.map(uri => displayName(uri) || '附件');
+      this.show({ shareVersion: (this.state.shareVersion || 0) + 1, shareText: event.share.text || '', shareFiles: files,
+        shareLabel: event.share.text.slice(0, 60) || files[0] || '' });
       return;
     }
     if (!event.target) return;
@@ -933,7 +1009,12 @@ export class Workspace {
   }
   cancelTransfer() {
     const t = this.transfer;
-    if (t) { t.cancelled = true; t.abort?.(); this.transfer = null; this.show({ transfer: '' }); }
+    if (t) { t.cancelled = true; t.abort?.(); this.transfer = null; this.show({ transfer: '', uploadName: '' }); }
+  }
+  discardFailed() { this.failedUpload = null; this.show({ failedFile: '' }); }
+  async retryFile() {
+    const f = this.failedUpload;
+    if (f && f.version === this.version) return this.addFile(f.kind, f.uri);
   }
   async addFile(kind, supplied) {
     if (!this.ready || this.transfer || this.sending || !this.state.task) throw new Error('请先打开任务');
@@ -941,21 +1022,32 @@ export class Workspace {
     const v = this.version, t = { cancelled: false, tickets: this.uploadTickets };
     this.transfer = t;
     this.show({ transfer: supplied ? '正在上传' : '正在选择' });
+    let uri, name;
     try {
-      const uri = supplied || await this.native.pickFile(this.context, kind === 'image');
+      uri = supplied || await this.native.pickFile(this.context, kind === 'image');
       if (!uri || t.cancelled) return false;
       this.guard(v);
-      this.show({ transfer: '正在上传' });
+      name = displayName(uri) || (kind === 'image' ? '图片' : '文件');
+      this.discardFailed();
+      this.show({ transfer: '正在上传', uploadName: name });
       const f = await this.native.uploadFile(this.context, uri, () => this.token(), t, this.state.attachments);
       if (t.cancelled) return false;
       this.guard(v);
       this.localMedia.set(f.id, uri);
       if (!this.state.attachments.some(a => a.id === f.id)) await this.setAttachments([...this.state.attachments, f]);
       return true;
-    } catch (e) { if (!t.cancelled && e.code !== 13900042) throw e; return false; }
-    finally { if (this.transfer === t) { this.transfer = null; this.show({ transfer: '' }); } }
+    } catch (e) {
+      if (t.cancelled || e.code === 13900042 || v !== this.version) return false;
+      if (uri) { this.failedUpload = { kind, uri, version: v }; this.show({ failedFile: name || '附件' }); }
+      throw e;
+    }
+    finally { if (this.transfer === t) { this.transfer = null; this.show({ transfer: '', uploadName: '' }); } }
   }
-  dismissShare() { if (this.share && this.transfer?.share === this.share) this.cancelTransfer(); this.share = null; this.show({ shareLabel: '' }); }
+  shareImage(index) {
+    const uri = this.share?.uris[index];
+    return uri && /\.(png|jpe?g|webp|gif|heic)$/i.test(displayName(uri)) ? uri : '';
+  }
+  dismissShare() { if (this.share && this.transfer?.share === this.share) this.cancelTransfer(); this.share = null; this.show({ shareLabel: '', shareText: '', shareFiles: [] }); }
   async acceptShare() {
     const share = this.share;
     if (!share || !this.ready || !this.state.task) throw new Error('请先选择接收分享的任务');
@@ -985,7 +1077,7 @@ export class Workspace {
         await this.setAttachments(files);
         this.guard(v);
       } finally {
-        if (this.transfer === transfer) { this.transfer = null; this.show({ transfer: '' }); }
+        if (this.transfer === transfer) { this.transfer = null; this.show({ transfer: '', uploadName: '' }); }
       }
     }
     if (this.share !== share) return;
@@ -996,19 +1088,27 @@ export class Workspace {
   startVoice() {
     if (!this.ready || !this.state.task || this.recording) return;
     const v = this.version;
+    const take = ++this.voiceTake;
     this.show({ voice: '准备录音' });
-    this.recording = this.native.dictation(this.context, voice => {
-      if (v === this.version) this.show({ voice });
+    this.recording = this.native.dictation(this.context, (voice, preview) => {
+      if (v === this.version && take === this.voiceTake) this.show({ voice, ...(preview === undefined ? {} : { voicePreview: preview }) });
     }, (text, error) => {
+      if (v !== this.version || take !== this.voiceTake) return;
       this.recording = null;
-      this.show({ voice: '' });
-      if (v !== this.version) return;
+      this.show({ voice: '', voicePreview: '' });
       if (text) this.editDraft([this.state.draft, text].filter(Boolean).join(' '));
       if (error) this.report(new Error(error));
     });
   }
   finishVoice() { this.recording?.finish(); }
-  cancelVoice() { this.recording?.cancel(); }
+  cancelVoice() {
+    const recording = this.recording;
+    if (!recording) return;
+    this.voiceTake++;
+    this.recording = null;
+    recording.cancel();
+    this.show({ voice: '', voicePreview: '' });
+  }
   async back() {
     await this.flushDraft();
     const { task, device, linked } = this.state;
@@ -1037,7 +1137,7 @@ export class Workspace {
     this.cancelDraftTimer();
     this.resetTask();
     client?.stop();
-    this.show({ ...hostView, shareLabel: '', pushEnabled: false, pushStatus: '', accounts: [], account: '', relay: '', devices: [], error: '' });
+    this.show({ ...hostView, shareLabel: '', shareText: '', shareFiles: [], pushEnabled: false, pushStatus: '', accounts: [], account: '', relay: '', devices: [], error: '' });
     await Promise.all([this.storeSession(null), owner && this.cache.forget(owner)]);
     if (owner && this.native) {
       const disable = () => this.native.disablePush(owner, access);

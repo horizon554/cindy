@@ -11,6 +11,12 @@ export default class EntryAbility extends UIAbility {
   onBackground(): void { foreground(false); }
 
   onWindowStageCreate(stage: window.WindowStage): void {
-    stage.loadContent('pages/Index');
+    this.loadWindow(stage);
+  }
+
+  private async loadWindow(stage: window.WindowStage): Promise<void> {
+    try { await stage.getMainWindowSync().setWindowLayoutFullScreen(true); }
+    catch { /* Safe-area layout also works in a non-fullscreen window. */ }
+    await stage.loadContent('pages/Index');
   }
 }

@@ -116,7 +116,8 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
   t.after(() => { app.client?.stop(); delete globalThis.harmonyPorts; });
   await app.init({});
   await app.code('fixture');
-  await app.login('fixture','test');
+  await assert.rejects(app.login('fixture', '12345'), /六位/);
+  await app.login('fixture','123456');
   await until(() => state?.relay === 'online' && state?.devices.length);
   await app.openDevice('host');
   await app.openTask('task');
@@ -195,9 +196,13 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
         case 'local-db:sessions:list': result = [...sessions.values()].slice(0,id); break;
         case 'local-db:sessions:get-many': result = id.map(k => sessions.get(k)).filter(Boolean); break;
         case 'maker:get-new-maker-defaults': result = {selectedAgentKind:'pi',model:id === 'pi' ? 'host-model':'other', permissionMode:'ask'}; break;
+        case 'maker:list-available-agents': result = ['pi','codex']; break;
+        case 'maker:provider:list': result = {providers:[]}; break;
+        case 'maker:get-capabilities': result = {availableModels:[{id:'other', label:'Other'}],permissionModes:[{id:'ask',label:'Ask'}]}; break;
+        case 'maker:set-model': sessions.get(id).model = args[1]; break;
         case 'maker:create-session':
           created++;
-          assert.equal(id.agentKind,'pi'); assert.equal(id.model,'host-model');
+          if (created === 1) { assert.equal(id.agentKind,'pi'); assert.equal(id.model,'host-model'); }
           sessions.set(id.id, {...id,workingDir:'/fixture'});
           if (loseCreation) { loseCreation = false; throw new Error('reply lost'); }
           result = {sessionId:id.id}; break;
@@ -238,6 +243,11 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   assert.equal(requests.filter(r => r.channel === 'maker:input:enqueue')[0].args[1].text,'第一条消息');
   assert.equal(app.state.running,true);
   await app.control(false); await app.control(true); assert.equal(stopped,1); assert.equal(resumed,1);
+  app.show({running:false});
+  assert.deepEqual((await app.preferences('model')).map(row => row.id), ['other']);
+  await assert.rejects(app.applyPreference('model','unlisted'), /重新选择/);
+  await app.applyPreference('model','other');
+  assert.equal(app.state.model,'other');
   history = Array.from({length:85},(_,i)=>({id:'m'+i,sessionId:task,createdAt:20,role:'user',content:'行 '+i}));
   history[80] = {...history[80],role:'future',content:{}};
   await app.history(app.version);
@@ -299,6 +309,13 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   await app.decide('risk','allow',app.state.cards[0].approvalKey);
   assert.equal(resolved,beforeConfirm + 1);
 
+  await app.back();
+  loseCreation = true;
+  await assert.rejects(app.create('使用所选引擎', '', '', 'codex'), /reply lost/);
+  await app.create('使用所选引擎', '', '', 'codex');
+  assert.equal(created, 2);
+  assert.equal(sessions.get(app.state.task).agentKind, 'codex');
+  assert.equal(sessions.get(app.state.task).model, 'other');
   await app.back(); await app.back(); app.show({relay:'offline'});
   await app.openDevice('pc'); await app.openTask(task);
   assert.equal(app.state.messages.length,85); assert.equal(app.state.draft,'继续写的新草稿');
@@ -366,8 +383,10 @@ test('route a notification, accept a share and recover one attachment-only messa
       }
       return {ok:true,result};
     } };
+  let failFile = false;
   app.native = {
     uploadFile: async (_,uri,token,transfer) => {
+      if (failFile) { failFile = false; throw new Error('upload interrupted'); }
       if (delayed) { delayed(); await new Promise(r=>{release=r;}); }
       return {id:uri,name:'sample.png',path:'ref',size:12,sha256:'a'.repeat(64),mimeType:'image/png',category:'image'};
     },
@@ -389,6 +408,12 @@ test('route a notification, accept a share and recover one attachment-only messa
   assert.equal(app.state.task,'a');
   app.notification={owner:'owner',host:'mac',task:'hidden'};
   await assert.rejects(app.openNotification(),/不可访问/); assert.equal(app.state.task,'a');
+  failFile = true;
+  await assert.rejects(app.addFile('image'), /interrupted/);
+  assert.equal(app.state.failedFile, 'image');
+  assert.equal(await app.retryFile(), true);
+  assert.equal(app.state.failedFile, '');
+  await app.removeFile('image');
   const entered = new Promise(r=>{delayed=r;});
   const late = app.addFile('image'); await entered;
   app.notification={owner:'owner',host:'mac',task:'outside-first-page'};

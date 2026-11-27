@@ -451,6 +451,114 @@
     {
       "name": "change_number",
       "value": "Change phone number"
+    },
+    {
+      "name": "navigation",
+      "value": "Navigation"
+    },
+    {
+      "name": "all_hosts",
+      "value": "All computers"
+    },
+    {
+      "name": "display_options",
+      "value": "Display options"
+    },
+    {
+      "name": "engine",
+      "value": "Engine"
+    },
+    {
+      "name": "workspace_label",
+      "value": "Workspace"
+    },
+    {
+      "name": "host_default",
+      "value": "Computer default"
+    },
+    {
+      "name": "other_path",
+      "value": "Enter another directory"
+    },
+    {
+      "name": "use_path",
+      "value": "Use directory"
+    },
+    {
+      "name": "model",
+      "value": "Model"
+    },
+    {
+      "name": "computer",
+      "value": "Computer"
+    },
+    {
+      "name": "previous",
+      "value": "Previous"
+    },
+    {
+      "name": "offline_empty",
+      "value": "Computer offline. No tasks cached yet."
+    },
+    {
+      "name": "clear_search",
+      "value": "Clear search"
+    },
+    {
+      "name": "retry_upload",
+      "value": "Retry upload"
+    },
+    {
+      "name": "new_messages",
+      "value": "Jump to new messages ↓"
+    },
+    {
+      "name": "no_choices",
+      "value": "No options available from this computer"
+    },
+    {
+      "name": "account_label",
+      "value": "Account"
+    },
+    {
+      "name": "file_count",
+      "value": "%d attachments"
+    },
+    {
+      "name": "copied",
+      "value": "Copied"
+    },
+    {
+      "name": "copy_failed",
+      "value": "Copy failed"
+    },
+    {
+      "name": "copy_code",
+      "value": "Copy code"
+    },
+    {
+      "name": "copy_table",
+      "value": "Copy table"
+    },
+    {
+      "name": "review_risk",
+      "value": "Allow this operation?"
+    },
+    {
+      "name": "risk_notice",
+      "value": "Review the command and its risk before allowing it once."
+    },
+    {
+      "name": "browse_computer",
+      "value": "Browse computer folders"
+    },
+    {
+      "name": "parent_folder",
+      "value": "Parent folder"
+    },
+    {
+      "name": "permission_mode",
+      "value": "Permission mode"
     }
   ]
 }

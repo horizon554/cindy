@@ -55,6 +55,7 @@ export function dictation(ctx, update, complete) {
         if (sid !== id || ended) return;
         partial = result.result || '';
         if (result.isFinal) { finalText += partial; partial = ''; }
+        update(finishing ? '正在转写' : '录音中', finalText + partial);
       },
       onComplete: sid => { if (sid === id) end(finalText + partial, finalText || partial ? '' : '没有识别到语音'); },
       onError: (sid, code) => { if (sid === id) end('', '语音识别不可用（' + code + '）'); }

@@ -451,6 +451,114 @@
     {
       "name": "change_number",
       "value": "更换手机号"
+    },
+    {
+      "name": "navigation",
+      "value": "导航"
+    },
+    {
+      "name": "all_hosts",
+      "value": "所有电脑"
+    },
+    {
+      "name": "display_options",
+      "value": "显示选项"
+    },
+    {
+      "name": "engine",
+      "value": "引擎"
+    },
+    {
+      "name": "workspace_label",
+      "value": "工作区"
+    },
+    {
+      "name": "host_default",
+      "value": "电脑默认"
+    },
+    {
+      "name": "other_path",
+      "value": "输入其他目录"
+    },
+    {
+      "name": "use_path",
+      "value": "使用此目录"
+    },
+    {
+      "name": "model",
+      "value": "模型"
+    },
+    {
+      "name": "computer",
+      "value": "电脑"
+    },
+    {
+      "name": "previous",
+      "value": "上一步"
+    },
+    {
+      "name": "offline_empty",
+      "value": "电脑离线，本机还没有缓存任务"
+    },
+    {
+      "name": "clear_search",
+      "value": "清除搜索"
+    },
+    {
+      "name": "retry_upload",
+      "value": "重试上传"
+    },
+    {
+      "name": "new_messages",
+      "value": "查看新消息 ↓"
+    },
+    {
+      "name": "no_choices",
+      "value": "当前电脑没有提供可选项"
+    },
+    {
+      "name": "account_label",
+      "value": "账号"
+    },
+    {
+      "name": "file_count",
+      "value": "%d 个附件"
+    },
+    {
+      "name": "copied",
+      "value": "已复制"
+    },
+    {
+      "name": "copy_failed",
+      "value": "复制失败"
+    },
+    {
+      "name": "copy_code",
+      "value": "复制代码"
+    },
+    {
+      "name": "copy_table",
+      "value": "复制表格"
+    },
+    {
+      "name": "review_risk",
+      "value": "确认允许此次操作？"
+    },
+    {
+      "name": "risk_notice",
+      "value": "请核对下方命令和风险，再确认允许一次。"
+    },
+    {
+      "name": "browse_computer",
+      "value": "浏览电脑目录"
+    },
+    {
+      "name": "parent_folder",
+      "value": "上级目录"
+    },
+    {
+      "name": "permission_mode",
+      "value": "权限模式"
     }
   ]
 }

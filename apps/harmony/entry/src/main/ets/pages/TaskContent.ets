@@ -1,4 +1,5 @@
 import { Row as Item, Card, Question, Choice, MediaInfo } from '../services/workspace';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { PillAction } from './Controls';
 
 import { messageBlocks, messageSpans, MessageBlock, MessageSpan } from '../services/taskModel';
@@ -7,13 +8,40 @@ import { messageBlocks, messageSpans, MessageBlock, MessageSpan } from '../servi
 export struct MessageBody {
   @Prop value: string = '';
   openLink: (url: string) => void = () => {};
+  private async copy(value: string): Promise<void> {
+    try {
+      await pasteboard.getSystemPasteboard().setData(pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, value));
+      this.getUIContext().getPromptAction().showToast({ message: $r('app.string.copied') });
+    } catch { this.getUIContext().getPromptAction().showToast({ message: $r('app.string.copy_failed') }); }
+  }
+
   build() {
     Column({ space: 7 }) {
       ForEach(messageBlocks(this.value), (b: MessageBlock) => {
         if (b.kind === 'code') {
+          Column() {
+          Button($r('app.string.copy_code')).height(44).alignSelf(ItemAlign.End).fontSize(13).fontColor($r('app.color.muted'))
+            .backgroundColor(Color.Transparent).onClick(() => this.copy(b.text))
           Text(b.text).fontFamily('monospace').fontSize(14).lineHeight(20).padding(10)
             .width('100%').borderRadius(8).backgroundColor($r('app.color.chip'))
             .fontColor($r('app.color.ink')).copyOption(CopyOptions.InApp)
+          }.width('100%').backgroundColor($r('app.color.chip')).borderRadius(8)
+        } else if (b.kind === 'table') {
+          Column() {
+            Button($r('app.string.copy_table')).height(44).alignSelf(ItemAlign.End).fontSize(13).fontColor($r('app.color.muted'))
+              .backgroundColor(Color.Transparent).onClick(() => this.copy(b.text))
+            Scroll() {
+              Column() {
+                ForEach(b.rows || [], (row: string[], i: number) => {
+                  Row() {
+                    ForEach(row, (cell: string, j: number) => {
+                      Text(cell).width(132).padding(8).fontSize(14).fontColor($r('app.color.ink')).fontWeight(i === 0 ? FontWeight.Bold : FontWeight.Normal)
+                    }, (cell: string, j: number) => j.toString() + cell)
+                  }.alignSelf(ItemAlign.Start).borderWidth({ bottom: 1 }).borderColor($r('app.color.line'))
+                }, (row: string[], i: number) => i.toString() + row.join('|'))
+              }
+            }.scrollable(ScrollDirection.Horizontal).width('100%')
+          }.width('100%').backgroundColor($r('app.color.panel')).borderRadius(8)
         } else {
           Text() {
             ForEach(messageSpans(b.text), (s: MessageSpan) => {
@@ -25,9 +53,10 @@ export struct MessageBody {
               }
             })
           }.fontSize(b.kind === 'heading' ? 19 : 16).lineHeight(b.kind === 'heading' ? 28 : 24)
-            .fontColor($r('app.color.ink')).copyOption(CopyOptions.InApp)
+            .fontColor(b.kind === 'quote' ? $r('app.color.muted') : $r('app.color.ink')).copyOption(CopyOptions.InApp)
+            .padding({ left: b.kind === 'quote' ? 12 : 0 }).borderWidth({ left: b.kind === 'quote' ? 2 : 0 }).borderColor($r('app.color.line'))
         }
-      })
+      }, (block: MessageBlock, index: number) => index.toString() + block.kind + block.text)
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 }
@@ -106,13 +135,16 @@ export struct HistoryMessage {
       }.alignItems(HorizontalAlign.Start).width('100%')
     } else {
       Column({ space: 4 }) {
-        Button(this.activityLabel()).type(ButtonType.Normal).height(36).borderRadius(8)
-          .backgroundColor(Color.Transparent).fontColor($r('app.color.muted')).onClick(() => { this.expanded = !this.expanded; })
+        Button({ type: ButtonType.Normal }) {
+          Row({ space: 8 }) {
+            SymbolGlyph(this.expanded ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right')).fontSize(13)
+            Text(this.activityLabel()).fontSize(13).fontWeight(FontWeight.Medium).fontColor($r('app.color.muted'))
+            Text(this.item.title).maxLines(1).layoutWeight(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+              .fontSize(14).fontColor($r('app.color.ink'))
+          }.width('100%')
+        }.width('100%').height(44).backgroundColor(Color.Transparent).onClick(() => { this.expanded = !this.expanded; })
         if (this.expanded) {
           Text(this.item.detail || this.item.title).fontSize(14).lineHeight(20).fontColor($r('app.color.ink')).copyOption(CopyOptions.InApp)
-        } else {
-          Text(this.item.title).fontSize(13).lineHeight(18).fontColor($r('app.color.muted')).maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis }).onClick(() => { this.expanded = true; })
         }
       }.alignItems(HorizontalAlign.Start).width('100%').padding({ left: 12, top: 3, bottom: 3 })
         .borderWidth({ left: 2 }).borderColor($r('app.color.line'))
@@ -128,26 +160,45 @@ export struct InteractionPanel {
   openLink: (url: string) => void = () => {};
   @State armed: string = '';
   @State showPlan: boolean = false;
+  @State step: number = 0;
   decide: (choice: string, key?: string) => void = () => {};
+
+  @Builder
+  planReader() {
+    Column({ space: 12 }) {
+      Text(this.card.title).fontSize(20).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink'))
+      Scroll() { MessageBody({ value: this.card.detail, openLink: this.openLink }) }
+        .layoutWeight(1).width('100%').align(Alignment.TopStart)
+      Row({ space: 8 }) {
+        PillAction({ label: $r('app.string.deny'), available: this.available, onTap: () => this.decide('deny') })
+        PillAction({ label: $r('app.string.approve_plan'), prominent: true, available: this.available, onTap: () => this.decide('allow') })
+      }
+    }.width('100%').height('100%').padding(16).backgroundColor($r('app.color.canvas'))
+  }
 
   build() {
     Column({ space: 10 }) {
-      Text(this.card.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink'))
+      Text(this.armed && this.card.approvalKey === this.armed ? $r('app.string.review_risk') : this.card.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink'))
       Scroll() {
         Column({ space: 8 }) {
+          if (this.armed && this.card.approvalKey === this.armed) {
+            Text($r('app.string.risk_notice')).fontSize(15).fontWeight(FontWeight.Bold).fontColor($r('app.color.warning'))
+          }
           if (this.card.risk) { Text(this.card.risk).fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.warning')) }
           if (this.card.code) { Text(this.card.code).fontFamily('monospace').fontSize(14).padding(8).backgroundColor($r('app.color.chip')).copyOption(CopyOptions.InApp) }
           if (this.card.kind === 'plan_review') {
-            Button(this.showPlan ? $r('app.string.collapse_plan') : $r('app.string.expand_plan'))
-              .onClick(() => { this.showPlan = !this.showPlan; })
-            if (this.showPlan) { MessageBody({ value: this.card.detail, openLink: this.openLink }) }
-            else { Text(this.card.detail).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis }) }
+            Text(this.card.detail).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
+            PillAction({ label: $r('app.string.expand_plan'), onTap: () => { this.showPlan = true; } })
+              .bindSheet($$this.showPlan, this.planReader, { height: SheetSize.LARGE, showClose: true, dragBar: true })
           } else if (this.card.detail) {
             Text(this.card.detail).width('100%').fontSize(14).fontColor($r('app.color.muted')).copyOption(CopyOptions.InApp)
           }
           if (this.card.kind === 'ask_user_question') {
-            ForEach(this.card.questions, (q: Question) => {
+            ForEach(this.card.questions.slice(this.step, this.step + 1), (q: Question) => {
               Column({ space: 5 }) {
+                if (this.card.questions.length > 1) {
+                  Text((this.step + 1).toString() + ' / ' + this.card.questions.length.toString()).fontSize(13).fontColor($r('app.color.muted'))
+                }
                 Text(q.label).fontSize(15).fontColor($r('app.color.ink'))
                 ForEach(q.options, (o: Choice) => {
                   Button({ type: ButtonType.Normal }) {
@@ -156,7 +207,13 @@ export struct InteractionPanel {
                         Text(o.label).fontSize(15).fontColor($r('app.color.ink'))
                         if (o.detail) { Text(o.detail).fontSize(13).fontColor($r('app.color.muted')) }
                       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                      if (o.selected) { SymbolGlyph($r('sys.symbol.checkmark')).fontSize(16).fontColor([$r('app.color.ink')]) }
+                      Stack() {
+                        if (o.selected) {
+                          if (q.multi) { SymbolGlyph($r('sys.symbol.checkmark')).fontSize(14) }
+                          else { Circle().width(10).height(10).fill($r('app.color.ink')) }
+                        }
+                      }.width(20).height(20).borderWidth(1).borderColor($r('app.color.muted')).borderRadius(q.multi ? 4 : 10)
+
                     }.width('100%').padding({ left: 12, right: 12, top: 7, bottom: 7 })
                   }.width('100%').constraintSize({ minHeight: 44 }).borderRadius(8)
                     .backgroundColor(o.selected ? $r('app.color.chip') : $r('app.color.canvas'))
@@ -172,9 +229,16 @@ export struct InteractionPanel {
             }, (q: Question) => q.key)
           }
         }.width('100%').alignItems(HorizontalAlign.Start)
-      }.constraintSize({ maxHeight: '65%' }).width('100%')
+      }.constraintSize({ maxHeight: this.showPlan ? '80%' : '55%' }).width('100%')
       if (this.card.kind === 'ask_user_question') {
-        PillAction({ label: $r('app.string.submit_answer'), prominent: true, available: this.available && !!this.card.complete, onTap: () => this.decide('answer') })
+        Row({ space: 8 }) {
+          if (this.step > 0) { PillAction({ label: $r('app.string.previous'), onTap: () => { this.step--; } }) }
+          if (this.step < this.card.questions.length - 1) {
+            PillAction({ label: $r('app.string.next_step'), prominent: true, available: this.available && !!this.card.questions[this.step]?.valid, onTap: () => { this.step++; } })
+          } else {
+            PillAction({ label: $r('app.string.submit_answer'), prominent: true, available: this.available && !!this.card.complete, onTap: () => this.decide('answer') })
+          }
+        }
       } else if (this.card.kind === 'permission' || this.card.kind === 'plan_review') {
         Row({ space: 8 }) {
           PillAction({ label: $r('app.string.deny'), available: this.available, onTap: () => this.decide('deny') })
