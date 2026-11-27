@@ -11,7 +11,7 @@ export interface ViewState {
   legacyPicker?: boolean; homeIndex?: Row[]; attachments: Attachment[]; transfer: string; voice: string; pushEnabled: boolean; pushStatus: string; shareLabel: string;
   ssoWaiting: boolean; ssoMethods: Row[]; verification: string; accounts: Row[]; account: string; accountEmail?: string; accountAvatar?: string; relay: string; devices: Row[]; tasks: Row[]; messages: Row[];
   linked: boolean; moreTasks: boolean; hasOlder: boolean; paused: boolean; running: boolean;
-  retryable: boolean; activity: string; draft: string; delivery: string; pendingLabel?: string; agent?: string; model?: string; provider?: string; permission?: string; voicePreview?: string; uploadName?: string; failedFile?: string; shareVersion?: number; shareFiles?: string[]; shareText?: string; cards: Card[];
+  retryable: boolean; activity: string; draft: string; delivery: string; pendingLabel?: string; agent?: string; model?: string; provider?: string; permission?: string; voicePreview?: string; voiceCaret?: number; uploadName?: string; failedFile?: string; shareVersion?: number; shareFiles?: string[]; shareText?: string; cards: Card[];
   device: string; task: string; live: string; error: string;
 }
 export class Workspace {
@@ -60,8 +60,8 @@ export class Workspace {
   previewUrl(path: string): Promise<string>;
   removeFile(id: string): Promise<void>;
   cancelTransfer(): void;
-  startVoice(): void;
-  finishVoice(): void;
+  startVoice(start?: number, end?: number): void;
+  finishVoice(): Promise<boolean | undefined>;
   finishVoiceForSend(): Promise<boolean>;
   cancelVoice(): void;
   dismissShare(): void;

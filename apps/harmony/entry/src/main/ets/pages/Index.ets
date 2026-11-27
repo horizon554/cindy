@@ -1,4 +1,4 @@
-import { window, LengthMetrics, KeyboardAvoidMode as WindowKeyboardAvoidMode } from '@kit.ArkUI';
+import { window, FrameCallback, LengthMetrics, KeyboardAvoidMode as WindowKeyboardAvoidMode } from '@kit.ArkUI';
 import { filePreview } from '@kit.PreviewKit';
 import { common } from '@kit.AbilityKit';
 import { installInputs } from '../services/nativeEntry';
@@ -13,6 +13,12 @@ import { Row as Item, Workspace, ViewState, Attachment, MediaInfo, Card, FolderL
 const PRIVACY_URL = 'https://cindy.cn/privacy';
 const TERMS_URL = 'https://cindy.cn/terms';
 
+// Updating TextArea.text resets the native selection during layout.
+class AfterEditorLayout extends FrameCallback {
+  private apply: () => void;
+  constructor(apply: () => void) { super(); this.apply = apply; }
+  onIdle(): void { this.apply(); }
+}
 
 @Entry
 @Component
@@ -83,6 +89,12 @@ struct Index {
   @State previewSource: string = '';
   @State voiceElapsed: number = 0;
   private voiceTimer: number = -1;
+  private editor: TextAreaController = new TextAreaController();
+  private selectionDraft: string | undefined = undefined;
+  private selectionStart: number = 0;
+  private selectionEnd: number = 0;
+  private resumeTyping: boolean = false;
+  private caretRevision: number = 0;
   @State resend: number = 0;
   @State cardIndex: number = 0;
   private resendTimer: number = -1;
@@ -111,6 +123,7 @@ struct Index {
     if (switched || state.device !== this.view.device || state.account !== this.view.account) {
       this.drawerOpen = false; this.panel = ''; this.selectedFile = undefined; this.previewSource = ''; this.inputOpen = false; this.inputHeight = 48; this.cardIndex = 0; this.unread = false; this.engine = ''; this.engineOptions = []; this.choices = [];
       this.folders = { path: '', parent: '', rows: [] }; this.project = ''; this.renaming = '';
+      this.resetEditorSelection();
     }
     if (!state.linked) { this.selectedFile = undefined; this.previewSource = ''; }
     if (this.cardIndex >= state.cards.length) this.cardIndex = 0;
@@ -124,7 +137,25 @@ struct Index {
       }
     }
     const appearanceChanged = !!state.account !== !!this.view.account;
+    const voiceEnded = !!this.view.voice && !state.voice;
+    const caretChanged = state.voiceCaret !== this.view.voiceCaret || state.voicePreview !== this.view.voicePreview;
     this.view = state;
+    if (!switched && state.voiceCaret !== undefined && (caretChanged || voiceEnded)) {
+      const caret = state.voiceCaret;
+      const focus = voiceEnded && this.resumeTyping;
+      if (voiceEnded) {
+        this.resumeTyping = false;
+        this.selectionDraft = state.draft; this.selectionStart = caret; this.selectionEnd = caret;
+        if (focus || (state.draft && !this.busy)) this.inputOpen = true;
+      }
+      const revision = ++this.caretRevision;
+      this.getUIContext().postFrameCallback(new AfterEditorLayout(() => {
+        if (revision !== this.caretRevision || this.view.task !== state.task || this.view.device !== state.device || this.view.voiceCaret !== caret ||
+          this.view.voice !== state.voice || this.view.draft !== state.draft || this.view.cards.length || this.selectedFile || this.panel) return;
+        if (focus) this.getUIContext().getFocusController().requestFocus(this.creating ? 'first-message' : 'composer');
+        this.editor.caretPosition(caret);
+      }));
+    } else if (voiceEnded) { this.resumeTyping = false; }
     if (appearanceChanged) this.updateBars();
     if (switched) { this.pulledHistory = false; this.followEnd = true; this.composing = false; }
     if (state.task && this.followEnd && (changed || switched)) {
@@ -188,6 +219,7 @@ struct Index {
     if (!this.view.account && (this.codeSent || this.enterprise) && !this.view.ssoWaiting) {
       this.codeSent = false; this.enterprise = false; this.otp = ''; this.notice = ''; this.workspace.clearMethods(); return true;
     }
+    if (this.view.voice) { this.workspace.cancelVoice(); return true; }
     if (this.sharePicker()) { this.workspace.dismissShare(); return true; }
     if (this.creating) {
       this.creating = false; this.workspace.cancelNew(); this.foldComposer();
@@ -202,6 +234,7 @@ struct Index {
   }
 
   onPageHide(): void {
+    this.resumeTyping = false; this.caretRevision++;
     this.workspace.cancelVoice();
     this.workspace.flushDraft().catch((e: Error) => { this.notice = e.message; });
   }
@@ -312,6 +345,25 @@ struct Index {
     this.getUIContext().getFocusController().clearFocus();
   }
 
+  private resetEditorSelection(): void {
+    this.selectionDraft = undefined;
+    this.resumeTyping = false;
+    this.caretRevision++;
+  }
+
+  private startDictation(): void {
+    if (this.composing) return;
+    if (this.selectionDraft === this.view.draft) this.workspace.startVoice(this.selectionStart, this.selectionEnd);
+    else this.workspace.startVoice();
+  }
+
+  @Builder
+  voiceMenu() {
+    Menu() {
+      MenuItem({ content: $r('app.string.voice_cancel') }).id('cancel-voice').onClick(() => this.workspace.cancelVoice())
+    }
+  }
+
   private attachmentCount(): number {
     return this.view.attachments.length + (this.view.transfer || this.view.failedFile ? 1 : 0);
   }
@@ -333,8 +385,6 @@ struct Index {
       this.stopAction()
     }
     if (this.view.voice) {
-      IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.voice_cancel'), controlId: 'cancel-voice',
-        onTap: () => this.workspace.cancelVoice() })
       Button({ type: ButtonType.Capsule }) {
         Row({ space: 4 }) {
           if (this.view.voice === '录音中') {
@@ -344,10 +394,11 @@ struct Index {
         }
       }.id('finish-voice').height(44).constraintSize({ minWidth: 48 }).padding({ left: 6, right: 6 })
         .backgroundColor($r('app.color.chip')).accessibilityText($r('app.string.voice_finish'))
-        .enabled(this.view.voice === '录音中').onClick(() => this.workspace.finishVoice())
+        .accessibilityDescription($r('app.string.voice_cancel_hint')).bindContextMenu(this.voiceMenu, ResponseType.LongPress)
+        .onClick(() => { if (this.view.voice === '录音中') this.workspace.finishVoice(); })
     } else {
       IconAction({ icon: $r('sys.symbol.mic'), label: $r('app.string.voice'), controlId: 'voice',
-        available: !this.busy && this.view.linked && !this.view.transfer, onTap: () => this.workspace.startVoice() })
+        available: !this.busy && !this.composing && this.view.linked && !this.view.transfer, onTap: () => this.startDictation() })
     }
     if (this.view.running && !this.view.voice && !this.view.draft.trim() && !this.view.attachments.length) {
       this.stopAction()
@@ -401,7 +452,7 @@ struct Index {
       }
       if (this.expanded() && this.attachmentCount() > 0) {
         Scroll() {
-          Row({ space: 6 }) {
+          Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center, space: { main: LengthMetrics.vp(6), cross: LengthMetrics.vp(6) } }) {
             if (this.view.transfer || this.view.failedFile) { this.pendingFile() }
             ForEach(this.view.attachments, (f: Attachment) => {
               if (f.mimeType?.startsWith('image/')) {
@@ -432,10 +483,11 @@ struct Index {
                 }.backgroundColor($r('app.color.chip')).borderRadius(10)
               }
             }, (f: Attachment) => f.id)
-          }
-        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start).width('100%').height(86)
+          }.width('100%')
+        }.id('attachment-tray').align(Alignment.TopStart).width('100%')
+          .constraintSize({ maxHeight: Math.max(84, Math.min(204, this.availableHeight * 0.28)) })
+          .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
       }
-      if (this.view.voicePreview) { Text(this.view.voicePreview).fontSize(15).fontColor($r('app.color.ink')).width('100%').maxLines(3) }
       Row({ space: 4 }) {
         if (!this.expanded()) {
           IconAction({ icon: $r('sys.symbol.plus'), label: $r('app.string.add_file'), controlId: 'compact-add',
@@ -451,23 +503,39 @@ struct Index {
               .onClick(() => { this.inputOpen = true; this.getUIContext().getFocusController().requestFocus(this.creating ? 'first-message' : 'composer'); })
           }
         }
-        TextArea({ placeholder: this.creating ? $r('app.string.first_input') : $r('app.string.message'),
-          text: this.view.draft }).id(this.creating ? 'first-message' : 'composer').layoutWeight(1)
-          .height(this.expanded() ? Math.min(this.inputHeight, Math.max(44, this.availableHeight * 0.42)) : 44)
-          .onFocus(() => { this.inputOpen = true; })
-          .onBlur(() => { if (!this.panel) { this.inputOpen = false; this.inputHeight = 48; } })
-          .fontSize(16).fontColor($r('app.color.ink')).backgroundColor(Color.Transparent)
-          .padding({ left: 10, right: 10, top: 7, bottom: 3 })
-          .onChange((value: string, preview?: PreviewText) => {
-            this.composing = !!preview?.value;
-            if (!this.composing) this.workspace.editDraft(value);
-          })
+        Stack() {
+          TextArea({ placeholder: this.creating ? $r('app.string.first_input') : $r('app.string.message'), controller: this.editor,
+            text: this.view.voice ? this.view.voicePreview : this.view.draft }).id(this.creating ? 'first-message' : 'composer')
+            .width('100%').height('100%').fontSize(16).fontColor($r('app.color.ink')).backgroundColor(Color.Transparent)
+            .accessibilityLevel(this.view.voice ? 'no' : 'auto')
+            .padding({ left: 10, right: 10, top: 7, bottom: 3 })
+            .onFocus(() => { this.inputOpen = true; })
+            .onBlur(() => { if (!this.panel) { this.inputOpen = false; this.inputHeight = 48; } })
+            .onTextSelectionChange((start: number, end: number) => {
+              if (!this.view.voice) {
+                this.selectionStart = start; this.selectionEnd = end; this.selectionDraft = this.view.draft;
+              }
+            })
+            .onWillInsert(() => !this.view.voice)
+            .onWillDelete(() => !this.view.voice)
+            .onChange((value: string, preview?: PreviewText) => {
+              if (this.view.voice) return;
+              this.composing = !!preview?.value;
+              if (!this.composing) this.workspace.editDraft(value);
+            })
+          if (this.view.voice) {
+            Button({ type: ButtonType.Normal }) {}.id('voice-edit-draft').width('100%').height('100%')
+              .backgroundColor(Color.Transparent).accessibilityText($r('app.string.voice_resume_typing'))
+              .accessibilityDescription(this.view.voicePreview || '')
+              .onClick(() => { this.resumeTyping = true; this.workspace.finishVoice(); })
+          }
+        }.layoutWeight(1).height(this.expanded() ? Math.min(this.inputHeight, Math.max(44, this.availableHeight * 0.42)) : 44)
         if (!this.expanded()) { this.trailingActions() }
       }.width('100%')
       if (this.expanded()) {
         Row({ space: 2 }) {
           IconAction({ icon: $r('sys.symbol.plus'), label: $r('app.string.add_file'), controlId: 'add-attachment',
-            available: !this.busy && this.view.linked && !this.view.transfer && !this.view.failedFile && !this.view.voice,
+            available: !this.busy && this.view.linked && !this.view.transfer && !this.view.failedFile,
             onTap: () => { this.panel = 'attachments'; } })
           Scroll() {
             Row({ space: 4 }) {
@@ -581,7 +649,7 @@ struct Index {
     }
   }
 
-  aboutToDisappear(): void { this.appWindow?.off('keyboardHeightChange', this.keyboardChanged); this.appWindow?.off('avoidAreaChange', this.areaChanged); this.appWindow = undefined; clearInterval(this.resendTimer); clearInterval(this.voiceTimer); clearTimeout(this.scrollTimer); }
+  aboutToDisappear(): void { this.resetEditorSelection(); this.appWindow?.off('keyboardHeightChange', this.keyboardChanged); this.appWindow?.off('avoidAreaChange', this.areaChanged); this.appWindow = undefined; clearInterval(this.resendTimer); clearInterval(this.voiceTimer); clearTimeout(this.scrollTimer); }
 
   private u(px: number): number { return px * this.loginWidth / 750; }
 
@@ -754,6 +822,7 @@ struct Index {
   private basename(path: string): string { return path.split(/[\\/]/).filter((s: string) => !!s).pop() || path; }
 
   private startNew(loadDefaults: boolean = true): void {
+    this.resetEditorSelection();
     this.project = ''; this.engine = ''; this.inputOpen = false; this.inputHeight = 48;
     this.creating = true; this.panel = this.view.device && (!this.view.shareLabel || !this.hostOffline(this.view.device)) ? '' : 'new-host';
     this.workspace.beginNew();

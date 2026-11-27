@@ -715,6 +715,14 @@
     {
       "name": "voice_send",
       "value": "Stop recording and send"
+    },
+    {
+      "name": "voice_cancel_hint",
+      "value": "Touch and hold to cancel recording"
+    },
+    {
+      "name": "voice_resume_typing",
+      "value": "Finish dictation and continue typing"
     }
   ]
 }

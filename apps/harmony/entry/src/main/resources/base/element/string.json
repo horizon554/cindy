@@ -715,6 +715,14 @@
     {
       "name": "voice_send",
       "value": "结束录音并发送"
+    },
+    {
+      "name": "voice_cancel_hint",
+      "value": "长按可取消录音"
+    },
+    {
+      "name": "voice_resume_typing",
+      "value": "结束听写并继续输入"
     }
   ]
 }

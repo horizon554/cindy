@@ -8,7 +8,7 @@ import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, readSessio
 
 import { authorize, cancelAuthorization, consumeAuthorization, listenForWant, pendingAuthorization } from './sso';
 
-const taskView = { legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', uploadName: '', failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
+const taskView = { legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', voiceCaret: undefined, uploadName: '', failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
   attachments: [], transfer: '', voice: '', activity: '', hasOlder: false, paused: false, retryable: false, delivery: '' };
 const hostView = { ...taskView, device: '', tasks: [], linked: false, moreTasks: false };
 
@@ -1150,6 +1150,12 @@ export class Workspace {
     this.show({ transfer: supplied ? '正在上传' : '正在选择' });
     let uri, name;
     try {
+      // A system picker may background the ability and cancel the microphone.
+      // Finish this take first so switching apps cannot discard its transcript.
+      if (!supplied && this.recording) {
+        const result = await this.finishVoice();
+        if (result === undefined || t.cancelled || v !== this.version) return false;
+      }
       uri = supplied || await this.native.pickFile(this.context, kind === 'image');
       if (!uri || t.cancelled) return false;
       this.guard(v);
@@ -1211,37 +1217,62 @@ export class Workspace {
     this.dismissShare();
     await this.flushDraft();
   }
-  startVoice() {
+  startVoice(start = this.state.draft.length, end = start) {
     if ((!this.newDraft && (!this.ready || !this.state.task)) || !this.state.linked || this.recording) return;
-    const v = this.version;
-    const take = ++this.voiceTake;
-    this.show({ voice: '准备录音' });
+    const v = this.version, take = ++this.voiceTake;
+    const original = this.state.draft;
+    const from = Math.max(0, Math.min(start, end, original.length));
+    const to = Math.max(from, Math.min(Math.max(start, end), original.length));
+    let partial = '';
+    // Offsets belong to this draft. Preserve an intervening edit if the host
+    // reconciles an older send while the recognizer is still delivering text.
+    const insert = text => {
+      const current = this.state.draft;
+      if (!text) return { voicePreview: current, voiceCaret: current === original ? to : current.length };
+      const at = current === original ? from : current.length;
+      const after = current === original ? to : current.length;
+      return { voicePreview: current.slice(0, at) + text + current.slice(after), voiceCaret: at + text.length };
+    };
+    this.show({ voice: '准备录音', ...insert('') });
     this.recording = this.native.dictation(this.context, (voice, preview) => {
-      if (v === this.version && take === this.voiceTake) this.show({ voice, ...(preview === undefined ? {} : { voicePreview: preview }) });
+      if (v !== this.version || take !== this.voiceTake) return;
+      if (preview !== undefined) partial = preview.trim();
+      this.show({ voice, ...insert(partial) });
     }, (text, error) => {
       if (v !== this.version || take !== this.voiceTake) return;
       this.recording = null;
-      this.show({ voice: '', voicePreview: '' });
-      if (text) this.editDraft([this.state.draft, text].filter(Boolean).join(' '));
+      const final = text?.trim() || (error ? partial : '');
+      const result = insert(final);
+      if (final) this.editDraft(result.voicePreview);
+      this.show({ voice: '', voicePreview: '', voiceCaret: result.voiceCaret });
       if (error) this.report(new Error(error));
-      this.voiceFinishReply?.(!!text?.trim() && !error);
-      this.voiceFinishReply = null;
+      this.settleVoice(!!final && !error);
     });
   }
-  finishVoiceForSend() {
-    if (!this.recording || this.voiceFinishReply) return Promise.resolve(false);
-    return new Promise(resolve => { this.voiceFinishReply = resolve; this.recording.finish(); });
+  finishVoice() {
+    if (!this.recording) return Promise.resolve(false);
+    if (this.voiceFinished) return this.voiceFinished;
+    const finished = new Promise(resolve => { this.voiceFinishReply = resolve; });
+    this.voiceFinished = finished;
+    this.recording.finish();
+    return finished;
   }
-  finishVoice() { this.recording?.finish(); }
+  async finishVoiceForSend() {
+    return !this.voiceFinished && (await this.finishVoice()) === true;
+  }
+  settleVoice(result) {
+    this.voiceFinished = null;
+    this.voiceFinishReply?.(result);
+    this.voiceFinishReply = null;
+  }
   cancelVoice() {
     const recording = this.recording;
     if (!recording) return;
     this.voiceTake++;
-    this.voiceFinishReply?.(false);
-    this.voiceFinishReply = null;
     this.recording = null;
+    this.settleVoice(undefined);
     recording.cancel();
-    this.show({ voice: '', voicePreview: '' });
+    this.show({ voice: '', voicePreview: '', voiceCaret: undefined });
   }
   async back() {
     await this.flushDraft();

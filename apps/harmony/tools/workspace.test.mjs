@@ -492,6 +492,34 @@ test('route a notification, accept a share and recover one attachment-only messa
   await app.addFile('image'); assert.equal(app.state.attachments.length,1); assert.equal(sent.length,0);
   app.startVoice();app.cancelVoice();assert.equal(app.state.draft,'');
   app.startVoice();app.finishVoice();assert.equal(app.state.draft,'验收');app.editDraft('');
+  // The composer previews successive partials at the original selection. Only
+  // the accepted final result is added to the draft, before the file picker opens.
+  let partial;
+  app.native.dictation = (_, update, cb) => {
+    partial = text => update('录音中', text);
+    complete = cb;
+    update('录音中');
+    return {finish(){}, cancel(){}};
+  };
+  app.editDraft('左旧右');
+  app.startVoice(1, 2);
+  partial('第一'); partial('第二');
+  assert.equal(app.state.voicePreview, '左第二右');
+  assert.equal(app.state.draft, '左旧右');
+  app.cancelVoice(); complete('迟到','');
+  assert.equal(app.state.draft, '左旧右');
+  app.startVoice(1, 2);
+  const previousPicker = app.native.pickFile;
+  const draftsAtPick = [];
+  app.native.pickFile = async () => { draftsAtPick.push(app.state.draft); };
+  const choosing = app.addFile('file');
+  assert.deepEqual(draftsAtPick, []);
+  complete('新','');
+  assert.equal(await choosing, false);
+  assert.deepEqual(draftsAtPick, ['左新右']);
+  assert.equal(app.state.voiceCaret, 2);
+  app.native.pickFile = previousPicker;
+  app.editDraft('');
   // A late recognition after cancelling the send gesture cannot send or replace the draft.
   app.native.dictation = (_, update, cb) => {
     complete = cb;
