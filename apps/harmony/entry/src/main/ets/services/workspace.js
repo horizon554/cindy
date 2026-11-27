@@ -3,7 +3,7 @@ import { messageMedia } from './media';
 import { openCache } from './cache';
 import { approvalKey, taskPage, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
 import util from '@ohos.util';
-import { buildMobileModelSections, flattenProviderSections, providerPickerListArgs, deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
+import { mobileSessionBulkPatch, normalizeScheduleList, buildMobileModelSections, flattenProviderSections, providerPickerListArgs, deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
 import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, readSession, saveSession, createSocket } from './platform';
 
 import { authorize, cancelAuthorization, consumeAuthorization, listenForWant, pendingAuthorization } from './sso';
@@ -387,7 +387,7 @@ export class Workspace {
     }
   }
   async listTasks(version, limit, subscribe = false) {
-    const read = { version, updates: new Map() };
+    const read = { version, updates: new Map(), metadata: new Map() };
     this.homeRead = read;
     try {
       if (subscribe) {
@@ -413,7 +413,7 @@ export class Workspace {
       if (this.homeRead !== read) return;
       const signals = new Map(active.filter(row => row?.sessionId).map(row => [row.sessionId, { ...row, isTurnRunning: row.isTurnRunning !== false }]));
       const tasks = rows.filter(row => row?.id && row.status !== 'deleted' && !row.hiddenAt)
-        .map(row => homeTask(row, read.updates.get(row.id) || signals.get(row.id)));
+        .map(row => ({ ...homeTask(row, read.updates.get(row.id) || signals.get(row.id)), ...read.metadata.get(row.id) }));
       this.limit = limit;
       if (this.taskHome) this.state.homeIndex = [...(this.state.homeIndex || []).filter(r => r.host !== this.state.device),
         ...tasks.map(row => ({ ...row, host: this.state.device }))];
@@ -739,6 +739,56 @@ export class Workspace {
     const tasks = this.state.tasks.map(item => item.id === task ? { ...item, title: row.title } : item);
     this.show({ tasks });
     await this.cache.write(this.key('tasks', this.state.device, ''), tasks);
+  }
+  async changeHomeTask(host, id, action, title, confirmArchive) {
+    if (!this.session || this.state.task || !this.available(host)) throw new Error('请连接任务所在的电脑');
+    if (!['pin', 'unpin', 'archive', 'restore', 'rename'].includes(action)) throw new Error('不支持的任务操作');
+    if (this.state.device && this.state.device !== host && this.state.linked) this.client.closeLink(this.state.device, 'user');
+    const connecting = this.state.device !== host ? this.openDevice(host) : undefined;
+    const v = this.version;
+    if (connecting) await connecting;
+    this.guard(v);
+    if (host !== this.state.device || !this.state.linked) throw new Error('请连接任务所在的电脑');
+    // A cached row from another computer may have changed since it was displayed.
+    const current = await this.invoke('local-db:sessions:get', [id], v);
+    this.guard(v);
+    if (current?.id !== id || current.status === 'deleted' || current.hiddenAt) throw new Error('任务已不可用');
+    if ((action === 'pin' && (current.status === 'archived' || current.pinnedAt)) ||
+        (action === 'unpin' && !current.pinnedAt) ||
+        (action === 'archive' && current.status === 'archived') ||
+        (action === 'restore' && current.status !== 'archived')) {
+      await this.applyHomeMetadata(host, current);
+      return;
+    }
+    if (action === 'rename' && !title?.trim()) throw new Error('请填写标题');
+    if (action === 'archive') {
+      let timeout;
+      try {
+        const schedules = await Promise.race([
+          this.invoke('maker:schedule:list', [null, { sessionBindings: true }], v).catch(() => []),
+          new Promise(resolve => { timeout = setTimeout(() => resolve([]), 1500); }),
+        ]);
+        this.guard(v);
+        const names = normalizeScheduleList(schedules).filter(s => s.status === 'active' && s.targetSessionId === id).map(s => s.name);
+        if (names.length && !await confirmArchive(names)) return;
+      } finally { clearTimeout(timeout); }
+    }
+    const patch = action === 'rename' ? { title: title.trim() } : mobileSessionBulkPatch(action);
+    const updated = await this.invoke('local-db:sessions:patch-meta', [id, patch], v);
+    const matches = row => row?.id === id && Object.entries(patch).every(([key, value]) => (row[key] ?? null) === value);
+    const confirmed = matches(updated) ? updated : await this.invoke('local-db:sessions:get', [id], v);
+    this.guard(v);
+    if (!matches(confirmed)) throw new Error('无法确认任务操作');
+    await this.applyHomeMetadata(host, { ...current, ...confirmed });
+  }
+  async applyHomeMetadata(host, row) {
+    const metadata = { title: row.title, status: row.status || '', pinnedAt: row.pinnedAt || '' };
+    if (this.homeRead?.version === this.version) this.homeRead.metadata.set(row.id, metadata);
+    const tasks = this.state.tasks.map(item => item.id === row.id ? { ...item, ...metadata } : item);
+    if (!tasks.some(item => item.id === row.id)) tasks.push(homeTask(row));
+    this.show({ tasks, homeIndex: [...(this.state.homeIndex || []).filter(item => item.host !== host),
+      ...tasks.map(item => ({ ...item, host }))] });
+    await this.cache.write(this.key('tasks', host, ''), tasks);
   }
   async engines() {
     const list = await this.invoke('maker:list-available-agents', [], this.version);

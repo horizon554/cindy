@@ -723,6 +723,30 @@
     {
       "name": "voice_resume_typing",
       "value": "结束听写并继续输入"
+    },
+    {
+      "name": "computer_and_project",
+      "value": "电脑、项目"
+    },
+    {
+      "name": "pin_task",
+      "value": "置顶"
+    },
+    {
+      "name": "unpin_task",
+      "value": "取消置顶"
+    },
+    {
+      "name": "archive_task",
+      "value": "归档"
+    },
+    {
+      "name": "restore_task",
+      "value": "恢复任务"
+    },
+    {
+      "name": "archive_schedules",
+      "value": "此任务关联了 %s。自动化再次运行时会恢复任务，仍要归档吗？"
     }
   ]
 }

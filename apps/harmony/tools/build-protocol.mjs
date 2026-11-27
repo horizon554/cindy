@@ -11,6 +11,8 @@ await build({
     resolveDir: root,
     contents: `
       export { resolveMobileSessionRightStatus } from './apps/mobile/src/session/sessionRightStatus.ts';
+      export { mobileSessionBulkPatch } from './packages/maker-shared/src/sessionSelection.ts';
+      export { normalizeScheduleList } from './packages/maker-shared/src/scheduleModel.ts';
       export { getSessionListCollapseView } from './packages/maker-shared/src/sessionListCollapse.ts';
       export { sessionTaskProjectIconDirectory } from './packages/maker-shared/src/worktreePaths.ts';
       export { hasPendingSessionInterruption } from './packages/maker-shared/src/sessionActivity.ts';

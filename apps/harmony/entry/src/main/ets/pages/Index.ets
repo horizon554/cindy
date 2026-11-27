@@ -35,11 +35,14 @@ struct Index {
   @State otp: string = '';
   @State creating: boolean = false;
   @State renaming: string = '';
+  @State actionRow?: Item = undefined;
+  private homeScroller = new ListScroller();
   @State showSearch: boolean = false;
   @State pickingShareTarget: boolean = false;
   @State shareQuery: string = '';
   @State sortBy: string = 'recent';
   @State groupProjects: boolean = true;
+  @State groupDevices: boolean = true;
   @State projectFilter: string = '';
   @State previewChrome: boolean = true;
   @State composing: boolean = false;
@@ -59,7 +62,8 @@ struct Index {
   @State engineOptions: string[] = [];
   @State choices: Item[] = [];
   @State folders: FolderList = { path: '', parent: '', rows: [] };
-  @State inputHeight: number = 48;
+  @State manualInputHeight?: number = undefined;
+  @State measuredInputHeight: number = 48;
   @State availableHeight: number = 640;
   @State topInset: number = 0;
   @State bottomInset: number = 0;
@@ -106,7 +110,7 @@ struct Index {
   private workspace: Workspace = new Workspace((state: ViewState) => {
     const switched = state.task !== this.view.task;
     const changed = state.messages.length !== this.view.messages.length || state.live !== this.view.live;
-    if (state.account !== this.view.account) { this.scope = ''; this.query = ''; this.showSearch = false; this.shareQuery = ''; this.projectFilter = ''; this.sortBy = 'recent'; this.groupProjects = true; this.collapsed = []; this.projectList = undefined; this.statusFilter = 'active'; }
+    if (state.account !== this.view.account) { this.scope = ''; this.query = ''; this.showSearch = false; this.shareQuery = ''; this.projectFilter = ''; this.sortBy = 'recent'; this.groupProjects = true; this.groupDevices = true; this.collapsed = []; this.projectList = undefined; this.statusFilter = 'active'; }
     if (state.shareVersion !== this.view.shareVersion && state.shareLabel) {
       this.projectList = undefined; this.pickingShareTarget = true; this.shareQuery = ''; this.panel = ''; this.drawerOpen = false;
       this.selectedFile = undefined; this.previewSource = '';
@@ -121,7 +125,7 @@ struct Index {
     this.historySource.replace(state.messages);
     if (state.device !== this.view.device || switched) this.creating = false;
     if (switched || state.device !== this.view.device || state.account !== this.view.account) {
-      this.drawerOpen = false; this.panel = ''; this.selectedFile = undefined; this.previewSource = ''; this.inputOpen = false; this.inputHeight = 48; this.cardIndex = 0; this.unread = false; this.engine = ''; this.engineOptions = []; this.choices = [];
+      this.drawerOpen = false; this.panel = ''; this.selectedFile = undefined; this.previewSource = ''; this.inputOpen = false; this.manualInputHeight = undefined; this.actionRow = undefined; this.cardIndex = 0; this.unread = false; this.engine = ''; this.engineOptions = []; this.choices = [];
       this.folders = { path: '', parent: '', rows: [] }; this.project = ''; this.renaming = '';
       this.resetEditorSelection();
     }
@@ -139,6 +143,7 @@ struct Index {
     const appearanceChanged = !!state.account !== !!this.view.account;
     const voiceEnded = !!this.view.voice && !state.voice;
     const caretChanged = state.voiceCaret !== this.view.voiceCaret || state.voicePreview !== this.view.voicePreview;
+    if (!state.draft && this.view.draft) this.manualInputHeight = undefined;
     this.view = state;
     if (!switched && state.voiceCaret !== undefined && (caretChanged || voiceEnded)) {
       const caret = state.voiceCaret;
@@ -341,7 +346,7 @@ struct Index {
   }
 
   private foldComposer(): void {
-    this.inputOpen = false; this.inputHeight = 48;
+    this.inputOpen = false;
     this.getUIContext().getFocusController().clearFocus();
   }
 
@@ -445,9 +450,9 @@ struct Index {
         }.id('resize-composer').height(20).width(68).backgroundColor(Color.Transparent).accessibilityText($r('app.string.collapse_input'))
           .onClick(() => this.foldComposer())
           .gesture(PanGesture({ direction: PanDirection.Vertical })
-            .onActionStart(() => { this.dragStart = this.inputHeight; })
+            .onActionStart(() => { this.dragStart = this.measuredInputHeight; })
             .onActionUpdate((e: GestureEvent) => {
-              this.inputHeight = Math.max(44, Math.min(this.availableHeight * 0.42, this.dragStart - e.offsetY));
+              this.manualInputHeight = Math.max(48, Math.min(this.availableHeight * 0.42, this.dragStart - e.offsetY));
             }).onActionEnd((e: GestureEvent) => { if (this.dragStart <= 48 && e.offsetY > 32) this.foldComposer(); }))
       }
       if (this.expanded() && this.attachmentCount() > 0) {
@@ -503,14 +508,17 @@ struct Index {
               .onClick(() => { this.inputOpen = true; this.getUIContext().getFocusController().requestFocus(this.creating ? 'first-message' : 'composer'); })
           }
         }
-        Stack() {
+        Stack({ alignContent: Alignment.TopStart }) {
           TextArea({ placeholder: this.creating ? $r('app.string.first_input') : $r('app.string.message'), controller: this.editor,
             text: this.view.voice ? this.view.voicePreview : this.view.draft }).id(this.creating ? 'first-message' : 'composer')
-            .width('100%').height('100%').fontSize(16).fontColor($r('app.color.ink')).backgroundColor(Color.Transparent)
+            .width('100%').height(this.expanded() ? this.manualInputHeight : 44)
+            .constraintSize({ minHeight: this.expanded() ? 48 : 44, maxHeight: this.expanded() ? Math.max(48, this.availableHeight * 0.42) : 44 })
+            .onAreaChange((_: Area, area: Area) => { this.measuredInputHeight = Number(area.height); })
+            .fontSize(16).fontColor($r('app.color.ink')).backgroundColor(Color.Transparent)
             .accessibilityLevel(this.view.voice ? 'no' : 'auto')
             .padding({ left: 10, right: 10, top: 7, bottom: 3 })
             .onFocus(() => { this.inputOpen = true; })
-            .onBlur(() => { if (!this.panel) { this.inputOpen = false; this.inputHeight = 48; } })
+            .onBlur(() => { if (!this.panel) { this.inputOpen = false; } })
             .onTextSelectionChange((start: number, end: number) => {
               if (!this.view.voice) {
                 this.selectionStart = start; this.selectionEnd = end; this.selectionDraft = this.view.draft;
@@ -524,12 +532,12 @@ struct Index {
               if (!this.composing) this.workspace.editDraft(value);
             })
           if (this.view.voice) {
-            Button({ type: ButtonType.Normal }) {}.id('voice-edit-draft').width('100%').height('100%')
+            Button({ type: ButtonType.Normal }) {}.id('voice-edit-draft').width('100%').height(this.measuredInputHeight).position({ x: 0, y: 0 })
               .backgroundColor(Color.Transparent).accessibilityText($r('app.string.voice_resume_typing'))
               .accessibilityDescription(this.view.voicePreview || '')
               .onClick(() => { this.resumeTyping = true; this.workspace.finishVoice(); })
           }
-        }.layoutWeight(1).height(this.expanded() ? Math.min(this.inputHeight, Math.max(44, this.availableHeight * 0.42)) : 44)
+        }.layoutWeight(1)
         if (!this.expanded()) { this.trailingActions() }
       }.width('100%')
       if (this.expanded()) {
@@ -805,8 +813,16 @@ struct Index {
 
   private groupKey(item: Item): string { return JSON.stringify([item.host || '', item.project || '']); }
 
+  private homeGroupingLabel(): Resource {
+    if (this.groupDevices && this.view.devices.length > 1) {
+      return this.groupProjects ? $r('app.string.computer_and_project') : $r('app.string.computer');
+    }
+    return this.groupProjects ? $r('app.string.project') : $r('app.string.ungrouped');
+  }
+
   private groups(): HomeGroup[] {
-    return groupHomeRows(this.homeRows(), this.groupProjects, this.sharePicker() || !!this.projectList, !!this.query.trim());
+    return groupHomeRows(this.homeRows(), this.groupProjects, this.sharePicker() || !!this.projectList, !!this.query.trim(),
+      !this.groupDevices || this.scope || this.query.trim() ? [] : this.view.devices.map((device: Item) => device.id), this.collapsed);
   }
 
   private async browse(path: string): Promise<void> {
@@ -823,7 +839,7 @@ struct Index {
 
   private startNew(loadDefaults: boolean = true): void {
     this.resetEditorSelection();
-    this.project = ''; this.engine = ''; this.inputOpen = false; this.inputHeight = 48;
+    this.project = ''; this.engine = ''; this.inputOpen = false; this.manualInputHeight = undefined;
     this.creating = true; this.panel = this.view.device && (!this.view.shareLabel || !this.hostOffline(this.view.device)) ? '' : 'new-host';
     this.workspace.beginNew();
     if (this.view.linked && loadDefaults) this.run(() => this.workspace.configureNew());
@@ -879,6 +895,7 @@ struct Index {
   }
 
   private closePanel(): void {
+    if (this.panel === 'rename' || this.panel === 'row-actions') this.actionRow = undefined;
     if (this.panel === 'new-host' && !this.view.device) { this.creating = false; this.workspace.cancelNew(); }
     if (this.panel === 'browse' || this.panel === 'path') this.panel = 'projects';
     else if (['status', 'sort', 'group', 'filter'].includes(this.panel)) this.panel = 'display';
@@ -890,6 +907,7 @@ struct Index {
 
   private openRename(): void {
     if (!this.view.task || !this.view.linked || this.busy) return;
+    this.actionRow = undefined;
     this.renaming = this.view.tasks.find((row: Item) => row.id === this.view.task)?.title || '';
     this.panel = 'rename';
   }
@@ -908,6 +926,7 @@ struct Index {
       case 'group': return $r('app.string.group_by');
       case 'filter': return $r('app.string.filter_project');
       case 'attachments': return $r('app.string.add_file');
+      case 'row-actions': return this.actionRow?.title || $r('app.string.task');
       case 'rename': return $r('app.string.rename');
       case 'detail': return $r('app.string.task_info');
       case 'engines': return $r('app.string.engine');
@@ -1059,7 +1078,7 @@ struct Index {
       OptionRow({ label: $r('app.string.file'), value: '', action: () => this.pickAttachment('file'), control: 'pick-file' })
     } else if (this.panel === 'display') {
       OptionRow({ label: $r('app.string.task_status'), value: this.filterLabel(this.statusFilter), action: () => { this.panel = 'status'; }, control: 'display-status' })
-      OptionRow({ label: $r('app.string.group_by'), value: this.groupProjects ? $r('app.string.project') : $r('app.string.ungrouped'), action: () => { this.panel = 'group'; }, control: 'display-group' })
+      OptionRow({ label: $r('app.string.group_by'), value: this.homeGroupingLabel(), action: () => { this.panel = 'group'; }, control: 'display-group' })
       OptionRow({ label: $r('app.string.sort_by'), value: this.sortBy === 'created' ? $r('app.string.by_created') : $r('app.string.recent'), action: () => { this.panel = 'sort'; }, control: 'display-sort' })
       OptionRow({ label: $r('app.string.filter_project'), value: this.projectFilter ? this.projectName(this.projectFilter) : $r('app.string.all_projects'), action: () => { this.panel = 'filter'; }, control: 'display-filter' })
       OptionRow({ label: $r('app.string.refresh'), value: '', action: () => { this.panel = ''; this.run(() => this.workspace.reconnect()); }, control: 'refresh-home' })
@@ -1071,8 +1090,12 @@ struct Index {
       OptionRow({ label: $r('app.string.recent'), value: this.sortBy === 'recent' ? '✓' : '', action: () => { this.sortBy = 'recent'; this.panel = ''; }, control: 'recent' })
       OptionRow({ label: $r('app.string.by_created'), value: this.sortBy === 'created' ? '✓' : '', action: () => { this.sortBy = 'created'; this.panel = ''; }, control: 'sort-created' })
     } else if (this.panel === 'group') {
-      OptionRow({ label: $r('app.string.project'), value: this.groupProjects ? '✓' : '', action: () => { this.groupProjects = true; this.panel = ''; }, control: 'group-project' })
-      OptionRow({ label: $r('app.string.ungrouped'), value: this.groupProjects ? '' : '✓', action: () => { this.groupProjects = false; this.panel = ''; }, control: 'group-flat' })
+      if (this.view.devices.length > 1) {
+        OptionRow({ label: $r('app.string.computer'), value: this.groupDevices ? '✓' : '',
+          action: () => { this.groupDevices = !this.groupDevices; this.panel = ''; }, control: 'group-device' })
+      }
+      OptionRow({ label: $r('app.string.project'), value: this.groupProjects ? '✓' : '', action: () => { this.groupProjects = !this.groupProjects; this.panel = ''; }, control: 'group-project' })
+      OptionRow({ label: $r('app.string.ungrouped'), value: this.groupProjects || (this.groupDevices && this.view.devices.length > 1) ? '' : '✓', action: () => { this.groupProjects = false; this.groupDevices = false; this.panel = ''; }, control: 'group-flat' })
     } else if (this.panel === 'filter') {
       OptionRow({ label: $r('app.string.all_projects'), value: this.projectFilter ? '' : '✓', action: () => { this.projectFilter = ''; this.panel = ''; }, control: 'filter-all' })
       List() {
@@ -1096,10 +1119,14 @@ struct Index {
           }
         }.width('100%')
       }.align(Alignment.Top).layoutWeight(1)
+    } else if (this.panel === 'row-actions' && this.actionRow) {
+      this.taskRowMenu(this.actionRow)
     } else if (this.panel === 'rename') {
       TextInput({ text: this.renaming }).id('rename-input').maxLength(200).onChange((v: string) => { this.renaming = v; })
       PillAction({ label: $r('app.string.save'), prominent: true, available: !this.busy && !!this.renaming.trim(), onTap: () => this.run(async () => {
-        await this.workspace.rename(this.renaming); this.panel = '';
+        if (this.actionRow) await this.updateHomeTask(this.actionRow, 'rename', this.renaming);
+        else await this.workspace.rename(this.renaming);
+        this.actionRow = undefined; this.panel = '';
       }) })
     } else if (this.panel === 'model' || this.panel === 'permission') {
       if (this.creating && this.panel === 'model' && !this.view.legacyPicker) {
@@ -1175,26 +1202,30 @@ struct Index {
         OptionRow({ label: $r('app.string.create_new'), value: '', action: () => this.run(() => this.createShareTarget()), control: 'share-new-task' })
       }
       Stack({ alignContent: Alignment.BottomEnd }) {
-        List({ space: 0 }) {
+        List({ space: 0, scroller: this.homeScroller }) {
           ForEach(this.groups(), (group: HomeGroup) => {
-            if (group.kind !== 'task') { ListItem() { this.projectHeading(group) } }
+            if (group.kind === 'device') {
+              ListItem() {
+                Button({ type: ButtonType.Normal }) {
+                  Row({ space: 8 }) {
+                    SymbolGlyph(this.collapsed.includes(group.key) ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_down'))
+                      .fontSize(14).fontColor([$r('app.color.muted')])
+                    Text(this.hostName(group.head.host || '')).fontSize(16)
+                      .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink'))
+                  }.width('100%').padding({ left: 6, right: 6 })
+                }.id('device-section-' + group.head.host).height(44).width('100%').backgroundColor(Color.Transparent)
+                  .onClick(() => this.toggleHomeGroup(group.key))
+              }
+            } else if (group.kind !== 'task') { ListItem() { this.projectHeading(group) } }
             if (group.kind === 'task' || !this.collapsed.includes(group.key) || !!this.query.trim()) {
               ForEach(group.rows, (item: Item) => {
                 ListItem() {
-                  Button({ type: ButtonType.Normal }) {
-                    Row({ space: 9 }) {
-                      Column({ space: 2 }) {
-                        Text(item.title).fontSize(15).lineHeight(22).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
-                        if (item.summary && item.summary !== item.title) {
-                          Text(item.summary).fontSize(13).lineHeight(18).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.muted'))
-                        }
-                      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                      this.taskStatus(item)
-                    }.padding({ left: group.kind === 'project' ? 24 : 6, right: 6, top: 4, bottom: 4 }).width('100%')
-                  }.id(item.id).constraintSize({ minHeight: 44 }).width('100%').backgroundColor(Color.Transparent).enabled(this.rowAvailable(item))
-                    .accessibilityDescription(this.statusDescription(item))
-                    .onClick(() => this.run(() => this.openRow(item)))
-                }
+                  this.taskButton(item, group.kind === 'project' ? 24 : 6)
+                }.swipeAction({
+                  start: this.homeActionsAvailable(item) && (item.status !== 'archived' || !!item.pinnedAt) ?
+                    () => { this.swipeTaskAction(item, true); } : undefined,
+                  end: this.homeActionsAvailable(item) ? () => { this.swipeTaskAction(item, false); } : undefined
+                })
               }, (item: Item) => (item.host || '') + '/' + item.id)
               if (group.rows.length < group.total) {
                 ListItem() {
@@ -1234,6 +1265,83 @@ struct Index {
         }
       }.layoutWeight(1).width('100%')
     }
+  }
+
+  private homeActionsAvailable(item: Item): boolean {
+    return !this.busy && !this.sharePicker() && !!item.host && !this.hostOffline(item.host) && (item.host !== this.view.device || this.view.linked);
+  }
+
+  private updateHomeTask(item: Item, action: string, title: string = ''): Promise<void> {
+    return this.workspace.changeHomeTask(item.host || '', item.id, action, title, (names: string[]) => {
+      return new Promise<boolean>((resolve) => this.getUIContext().showAlertDialog({
+        message: $r('app.string.archive_schedules', names.join('、')), cancel: () => resolve(false),
+        primaryButton: { value: $r('app.string.cancel'), action: () => resolve(false) },
+        secondaryButton: { value: $r('app.string.archive_task'), action: () => resolve(true) }
+      }));
+    });
+  }
+
+  private chooseRowAction(item: Item, action: string): void {
+    if (!this.homeActionsAvailable(item)) return;
+    this.homeScroller.closeAllSwipeActions();
+    if (action === 'more') {
+      this.actionRow = item; this.panel = 'row-actions';
+    } else if (action === 'rename') {
+      this.actionRow = item; this.renaming = item.title; this.panel = 'rename';
+    } else { this.closePanel(); this.run(() => this.updateHomeTask(item, action)); }
+  }
+
+  private pinLabel(item: Item): Resource {
+    return item.pinnedAt ? $r('app.string.unpin_task') : $r('app.string.pin_task');
+  }
+
+  private archiveLabel(item: Item): Resource {
+    return item.status === 'archived' ? $r('app.string.restore_task') : $r('app.string.archive_task');
+  }
+
+  @Builder
+  taskRowMenu(item: Item) {
+    Column() {
+      if (item.status !== 'archived' || item.pinnedAt) {
+        OptionRow({ label: this.pinLabel(item), value: '', control: 'row-menu-pin',
+          action: () => this.chooseRowAction(item, item.pinnedAt ? 'unpin' : 'pin') })
+      }
+      OptionRow({ label: $r('app.string.rename'), value: '', control: 'row-menu-rename', action: () => this.chooseRowAction(item, 'rename') })
+      OptionRow({ label: this.archiveLabel(item), value: '', control: 'row-menu-archive',
+        action: () => this.chooseRowAction(item, item.status === 'archived' ? 'restore' : 'archive') })
+    }.width('100%')
+  }
+
+  @Builder
+  swipeTaskAction(item: Item, leading: boolean) {
+    Row() {
+      if (!leading) {
+        IconAction({ icon: $r('sys.symbol.ellipsis_circle'), label: $r('app.string.more_actions'),
+          controlId: 'row-swipe-more', onTap: () => this.chooseRowAction(item, 'more') })
+      }
+      Button(leading ? this.pinLabel(item) : this.archiveLabel(item)).id(leading ? 'row-swipe-pin' : 'row-swipe-archive')
+        .height(44).fontSize(14).backgroundColor($r('app.color.chip')).fontColor($r('app.color.ink'))
+        .onClick(() => this.chooseRowAction(item, leading ? (item.pinnedAt ? 'unpin' : 'pin') : (item.status === 'archived' ? 'restore' : 'archive')))
+    }
+  }
+
+  @Builder
+  taskButton(item: Item, indent: number) {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 9 }) {
+        Column({ space: 2 }) {
+          Text(item.title).fontSize(15).lineHeight(22).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
+          if (item.summary && item.summary !== item.title) {
+            Text(item.summary).fontSize(13).lineHeight(18).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.muted'))
+          }
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        this.taskStatus(item)
+      }.padding({ left: indent, right: 6, top: 4, bottom: 4 }).width('100%')
+    }.id(!this.scope && this.view.devices.length > 1 ? JSON.stringify(['task', item.host, item.id]) : item.id)
+      .constraintSize({ minHeight: 44 }).width('100%').backgroundColor(Color.Transparent).enabled(this.rowAvailable(item))
+      .priorityGesture(LongPressGesture({ repeat: false }).onAction(() => this.chooseRowAction(item, 'more')))
+      .accessibilityDescription(this.statusDescription(item))
+      .onClick(() => { if (!this.panel) this.run(() => this.openRow(item)); })
   }
 
   private rowStatus(row: Item): string {
@@ -1291,15 +1399,16 @@ struct Index {
         SymbolGlyph(group.kind === 'pinned' ? $r('sys.symbol.pin') : this.collapsed.includes(group.key) ? $r('sys.symbol.folder') : $r('sys.symbol.folder_fill')).fontSize(17).fontColor([$r('app.color.muted')])
         Text(group.kind === 'pinned' ? $r('app.string.pinned_tasks') : this.basename(group.head.project || '')).fontSize(15).fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.ink')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        if (group.kind === 'project' && !this.scope && this.view.devices.length > 1) { Text(this.hostName(group.head.host || '')).fontSize(12).fontColor($r('app.color.muted')).maxLines(1) }
+        if (group.kind === 'project' && !this.scope && (!this.groupDevices || !!this.query.trim()) && this.view.devices.length > 1) { Text(this.hostName(group.head.host || '')).fontSize(12).fontColor($r('app.color.muted')).maxLines(1) }
         Blank()
         Text(group.total.toString()).fontSize(13).fontColor($r('app.color.muted'))
         if (this.collapsed.includes(group.key) && this.groupAttention(group)) { this.statusMark(this.groupAttention(group), group.key) }
       }.width('100%').padding({ left: 6, right: 6 })
-    }.width('100%').height(44).backgroundColor(Color.Transparent).onClick(() => {
-      const key = group.key;
-      this.collapsed = this.collapsed.includes(key) ? this.collapsed.filter((g: string) => g !== key) : this.collapsed.concat(key);
-    })
+    }.width('100%').height(44).backgroundColor(Color.Transparent).onClick(() => this.toggleHomeGroup(group.key))
+  }
+
+  private toggleHomeGroup(key: string): void {
+    this.collapsed = this.collapsed.includes(key) ? this.collapsed.filter((g: string) => g !== key) : this.collapsed.concat(key);
   }
 
   @Builder

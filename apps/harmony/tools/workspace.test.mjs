@@ -10,7 +10,7 @@ import { build } from 'esbuild';
 import './build-protocol.mjs';
 
 const bundled = await build({
-  stdin: { contents: "export { Workspace } from './workspace'; export { receiveWant } from './sso';",
+  stdin: { contents: "export { Workspace } from './workspace'; export { receiveWant } from './sso'; export { groupHomeRows } from './homeList';",
     resolveDir: fileURLToPath(new URL('../entry/src/main/ets/services', import.meta.url)) },
   platform: 'node', format: 'esm', bundle: true, write: false,
   plugins: [{
@@ -186,6 +186,58 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
   assert.equal(state.account, 'Fixture');
   assert.equal(exchanges, 1);
   await app.logout();
+});
+
+// Tier 1: two computers can contain identical task IDs and project paths. Run the
+// home controller against distinct peers, including a cancelled archive preflight.
+test('group home tasks by computer and apply row actions only to their owning peer', async () => {
+  const { Workspace, groupHomeRows } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+  const app = new Workspace(() => {}, true);
+  const peers = new Map(['a', 'b'].map(host => [host, [
+    { id: 'same', title: host, workingDir: '/work', status: 'active' },
+    { id: 'solo', title: host + ' chat', workspaceKind: 'dialogue', status: 'active' },
+  ]]));
+  const saved = new Map();
+  const writes = [];
+  app.session = { id: 'owner' };
+  app.cache = { read: async key => saved.get(JSON.stringify(key)), write: async (key, value) => saved.set(JSON.stringify(key), value) };
+  app.client = { openLink: async () => {}, closeLink() {}, async invoke(host, { channel, args }, _, options) {
+    options.beforeDispatch();
+    const rows = peers.get(host);
+    let result;
+    if (channel === 'local-db:sessions:list') result = rows;
+    if (channel === 'local-db:sessions:get') result = rows.find(row => row.id === args[0]);
+    if (channel === 'maker:schedule:list') result = [{ id: 'schedule', name: 'Daily', status: 'active', targetSessionId: 'same' }];
+    if (channel === 'local-db:sessions:patch-meta') {
+      writes.push(host);
+      result = Object.assign(rows.find(row => row.id === args[0]), args[1]);
+    }
+    return { ok: true, result };
+  } };
+  app.show({ relay: 'online', devices: [...peers.keys()].map(id => ({ id, title: id })) });
+  await app.openDevice('a');
+  await app.back();
+  await app.openDevice('b');
+  const sections = (collapsed = []) => groupHomeRows(app.state.homeIndex, true, false, false, ['a', 'b'], collapsed);
+  assert.deepEqual(sections().filter(group => group.kind === 'device').map(group => group.head.host), ['a', 'b']);
+  assert.deepEqual(sections([sections()[0].key]).filter(group => group.kind === 'project').map(group => group.head.host), ['b']);
+  assert.ok(groupHomeRows(app.state.homeIndex.filter(row => row.host === 'b'), true, false, false, ['a','b']).every(group => group.kind !== 'device'));
+  assert.ok(groupHomeRows(app.state.homeIndex, true, true, false, ['a','b']).every(group => group.kind === 'task'));
+  await app.changeHomeTask('a', 'same', 'pin');
+  assert.equal(sections()[0].kind, 'pinned');
+  assert.equal(sections()[0].head.host, 'a');
+  const archive = confirm => app.changeHomeTask('a', 'same', 'archive', '', async names => {
+    assert.deepEqual(names, ['Daily']); return confirm;
+  });
+  await archive(false);
+  assert.deepEqual(writes, ['a']);
+  await archive(true);
+  await app.changeHomeTask('a', 'same', 'restore');
+  await app.changeHomeTask('a', 'same', 'rename', 'Changed');
+  const result = saved.get(JSON.stringify(['owner', 'a', '', 'tasks'])).find(row => row.id === 'same');
+  assert.deepEqual([result.title, result.status, result.pinnedAt], ['Changed', 'active', '']);
+  assert.deepEqual(peers.get('b')[0], { id: 'same', title: 'b', workingDir: '/work', status: 'active' });
+  assert.deepEqual(writes, ['a', 'a', 'a', 'a']);
 });
 
 // M2 regression through the page controller, replacing only native storage and

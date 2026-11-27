@@ -24,7 +24,7 @@ export function homeTask(row, signal) {
 }
 
 // Keep standalone tasks interleaved with projects in the user's chosen sort order.
-export function groupHomeRows(rows, groupProjects, flat, searching) {
+export function groupHomeRows(rows, groupProjects, flat, searching, deviceOrder = [], collapsed = []) {
   const groups = [], projects = new Map();
   const pinned = [];
   for (const row of rows) {
@@ -51,6 +51,24 @@ export function groupHomeRows(rows, groupProjects, flat, searching) {
     });
     group.total = preview.totalCount;
     group.rows = preview.visibleEntries;
+  }
+  if (!flat && deviceOrder.length > 1) {
+    const byHost = new Map();
+    for (const group of groups) {
+      const host = group.head.host;
+      if (!byHost.has(host)) byHost.set(host, []);
+      byHost.get(host).push(group);
+    }
+    if (byHost.size > 1) {
+      groups.length = 0;
+      for (const host of deviceOrder) {
+        const children = byHost.get(host);
+        if (!children) continue;
+        const key = JSON.stringify(['device', host]);
+        groups.push({ key, kind: 'device', head: children[0].head, rows: [], total: 0 });
+        if (!collapsed.includes(key)) groups.push(...children);
+      }
+    }
   }
   if (pinned.length) {
     pinned.sort((a, b) => Date.parse(b.pinnedAt) - Date.parse(a.pinnedAt));

@@ -34,6 +34,7 @@ export class Workspace {
   beginNew(snapshot?: NewTaskDraft): void;
   cancelNew(): void;
   configureNew(engine?: string): Promise<void>;
+  changeHomeTask(host: string, id: string, action: string, title: string, confirmArchive: (names: string[]) => Promise<boolean>): Promise<void>;
   rename(title: string): Promise<void>;
   browse(path: string): Promise<FolderList>;
   shareImage(index: number): string;

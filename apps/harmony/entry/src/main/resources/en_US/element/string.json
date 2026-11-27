@@ -723,6 +723,30 @@
     {
       "name": "voice_resume_typing",
       "value": "Finish dictation and continue typing"
+    },
+    {
+      "name": "computer_and_project",
+      "value": "Computer, project"
+    },
+    {
+      "name": "pin_task",
+      "value": "Pin"
+    },
+    {
+      "name": "unpin_task",
+      "value": "Unpin"
+    },
+    {
+      "name": "archive_task",
+      "value": "Archive"
+    },
+    {
+      "name": "restore_task",
+      "value": "Restore task"
+    },
+    {
+      "name": "archive_schedules",
+      "value": "This task is linked to %s. The next automation run will restore it. Archive it now?"
     }
   ]
 }
