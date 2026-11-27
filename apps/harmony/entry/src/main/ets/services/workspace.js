@@ -513,6 +513,12 @@ export class Workspace {
     this.guard(v);
     await this.enterTask(id, row);
   }
+  async retryGroupProfile() {
+    const roster = this.companions;
+    if (!roster?.open?.group) return;
+    if (roster.open.host) await roster.readRoom();
+    else await roster.refresh();
+  }
   closeCloudCompanion() { this.companions?.close(); }
   cloudHistory(older) { return this.companions?.readRoom(older); }
   async enterTask(id, companion) {
@@ -1611,7 +1617,7 @@ export class Workspace {
     this.cancelDraftTimer();
     this.resetTask();
     client?.stop();
-    this.show({ ...hostView, companions: [], companionError: false, cloudCompanion: undefined, cloudMessages: [], cloudOlder: false, cloudLoading: false, cloudError: false, shareLabel: '', shareText: '', shareFiles: [], pushEnabled: false, pushStatus: '', accounts: [], account: '', accountEmail: '', accountAvatar: '', relay: '', devices: [], error: '' });
+    this.show({ ...hostView, companions: [], companionError: false, cloudCompanion: undefined, cloudProfile: undefined, cloudMessages: [], cloudOlder: false, cloudLoading: false, cloudError: false, shareLabel: '', shareText: '', shareFiles: [], pushEnabled: false, pushStatus: '', accounts: [], account: '', accountEmail: '', accountAvatar: '', relay: '', devices: [], error: '' });
     await Promise.all([this.storeSession(null), owner && this.cache.forget(owner)]);
     if (owner && this.native) {
       const disable = () => this.native.disablePush(owner, access);

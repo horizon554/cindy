@@ -899,6 +899,50 @@
     {
       "name": "group_readonly",
       "value": "Group history · Read only"
+    },
+    {
+      "name": "group_profile",
+      "value": "Group info"
+    },
+    {
+      "name": "group_settings",
+      "value": "Group settings"
+    },
+    {
+      "name": "group_topic",
+      "value": "Topic"
+    },
+    {
+      "name": "group_description",
+      "value": "Description"
+    },
+    {
+      "name": "group_member_count",
+      "value": "Members (%d)"
+    },
+    {
+      "name": "group_member_search",
+      "value": "Search members"
+    },
+    {
+      "name": "group_no_matches",
+      "value": "No matching members"
+    },
+    {
+      "name": "group_profile_retry",
+      "value": "Reload group info"
+    },
+    {
+      "name": "group_role_owner",
+      "value": "Owner"
+    },
+    {
+      "name": "group_role_admin",
+      "value": "Admin"
+    },
+    {
+      "name": "group_role_guest",
+      "value": "Guest"
     }
   ]
 }

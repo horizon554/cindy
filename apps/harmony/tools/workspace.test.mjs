@@ -52,7 +52,7 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
   const hiddenId = '40000000-0000-4000-8000-000000000004';
   const self = '50000000-0000-4000-8000-000000000005';
   const groupRoom = { id: groupId, name: 'Writer', kind: 'group', state: 'joined', created_at: '2026-01-01T00:00:00Z', head: '52' };
-  let joined = true;
+  let joined = true, snapshotUnavailable = false;
   const unrelatedRooms = Array.from({length: 100}, (_, i) => ({ id: '60000000-0000-4000-8000-' + String(i).padStart(12, '0'), kind: 'direct', state: 'joined' }));
   const ref = { collectionId: 'teammates', kind: 'bot', id: 'writer' };
   let canonical = 'buddy-session', cloudReads = 0, delayedCloud;
@@ -65,7 +65,7 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
   let socket, authorizeUrl, exchanges = 0, count = 0, subscriptions = 0, refreshes = 0;
   globalThis.harmonyPorts = {
     downloadAvatarBytes: async address => {
-      if (address === publicPhoto + '?group') return png;
+      if ([publicPhoto + '?group', publicPhoto + '?sixth'].includes(address)) return png;
       assert.equal(address, publicPhoto); publicFetches++;
       return publicPhotoReady ? png : Buffer.from('<html>not an image</html>');
     },
@@ -77,9 +77,12 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
       if (url.endsWith('/v1/conversations?limit=100')) return unrelatedRooms;
       if (url.endsWith('/v1/conversations?limit=100&after=' + unrelatedRooms.at(-1).id)) return [
         ...(joined ? [groupRoom] : []), { ...groupRoom, id: hiddenId }, { id: room, kind: 'direct', state: 'joined', head: '1' }];
-      if (url.endsWith('/' + groupId + '/snapshot')) return { room: groupRoom, members: [
+      if (url.endsWith('/' + groupId + '/snapshot') && snapshotUnavailable) throw Object.assign(new Error('Offline'), { httpStatus: 503 });
+      if (url.endsWith('/' + groupId + '/snapshot')) return { room: { ...groupRoom, topic: 'Topic', description: 'About the group' }, members: [
         { id: actor, kind: 'bot', name: 'Mimi', state: 'joined', groupAvatar: publicPhoto + '?group', avatar: '🐱' },
-        { id: self, kind: 'human', name: 'Me', state: 'joined', avatar: '🌱' }], messages: [{ seq: '52', deleted: true }, { seq: '51', content: [{type:'text',text:'Latest group post'}], createdAt: '2026-02-01T00:00:00Z' }] };
+        { id: self, kind: 'human', name: 'Me', state: 'joined', role: 'owner', avatar: '🌱' },
+        ...unrelatedRooms.slice(0, 4).map(({ id }, i) => ({ id, kind: 'human', name: 'Reader', state: 'joined', avatar: i === 3 ? publicPhoto + '?sixth' : null })),
+        { id: hiddenId, kind: 'human', name: 'Former member', state: 'left' }], messages: [{ seq: '52', deleted: true }, { seq: '51', content: [{type:'text',text:'Latest group post'}], createdAt: '2026-02-01T00:00:00Z' }] };
       if (url.includes('/' + groupId + '/messages?')) {
         assert.equal(body, undefined);
         if (url.endsWith('&before=2')) return [{ id: 'm1', seq: '1', authorId: actor, author: { name: 'Mimi' }, content: [{ type: 'text', text: 'first' }] }];
@@ -153,7 +156,7 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
                 if (args[0].ref.kind === 'bot-group') {
                   assert.equal(args[0].ref.id, 'legacy');
                   result = { ref: args[0].ref, blocks: [{ primitive: 'bot-group-chat', data: { id: 'legacy', name: 'Writer',
-                    members: [], messages: [{ id: 'local', sequence: 1, kind: 'message', authorKind: 'bot', authorName: 'Bot',
+                    topic: 'Local topic', members: [{ botId: 'writer', name: 'Writer' }, { botId: 'other', name: 'Other', avatar: '🌿' }], messages: [{ id: 'local', sequence: 1, kind: 'message', authorKind: 'bot', authorName: 'Bot',
                       content: 'local history', createdAt: 23 }] } }] }; break;
                 }
                 assert.deepEqual(args[0].ref, ref);
@@ -254,7 +257,7 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
   const localGroup = state.companions.find(row => row.id === 'legacy');
   // Integration: the home row used to discard both the portrait members and the last message.
   assert.equal(group.preview, 'Latest group post');
-  assert.deepEqual(group.faces.map(face => face.cloudImage || face.avatar), [publicPhoto + '?group', '🌱']);
+  assert.deepEqual(group.faces.slice(0, 2).map(face => face.cloudImage || face.avatar), [publicPhoto + '?group', '🌱']);
   assert.equal(await app.companionAvatar(group.faces[0], () => true), 'data:image/png;base64,' + png.toString('base64'));
   assert.equal(localGroup.faces[0].avatarImage, blobAvatar);
   assert.equal(localGroup.preview, 'Local recent message');
@@ -262,19 +265,44 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
   assert.equal(state.companions.find(row => row.id === 'writer').preview, 'Hosted recent message');
   await app.openCompanion(localGroup.key);
   assert.equal(state.cloudMessages[0].title, 'local history');
+  assert.equal(state.cloudProfile.topic, 'Local topic');
+  assert.deepEqual(state.cloudProfile.members.map(member => member.title), ['Writer', 'Other']);
+  assert.equal(state.cloudProfile.members[0].avatarImage, blobAvatar);
+  assert.equal(state.cloudProfile.members[1].avatar, '🌿');
   app.closeCloudCompanion();
   await app.openCompanion(group.key);
+  // The composite portrait shows five people. The profile must include every joined identity,
+  // even when display names repeat, and allow its visible sixth member's photo.
+  assert.equal(group.faces.length, 5);
+  assert.equal(state.cloudProfile.topic, 'Topic');
+  assert.equal(state.cloudProfile.description, 'About the group');
+  assert.deepEqual(state.cloudProfile.members.map(m => m.title), ['Mimi', 'Me', 'Reader', 'Reader', 'Reader', 'Reader']);
+  assert.equal(new Set(state.cloudProfile.members.map(m => m.key)).size, 6);
+  assert.equal(state.cloudProfile.members[1].role, 'owner');
+  const sixth = state.cloudProfile.members[5];
+  assert.equal(await app.companionAvatar(sixth, () => true), 'data:image/png;base64,' + png.toString('base64'));
   assert.equal(state.cloudMessages.length, 100);
   assert.equal(state.cloudMessages.at(-1).role, 'user');
   assert.equal(state.cloudMessages[0].author, 'Mimi');
   await app.cloudHistory(true);
   assert.equal(state.cloudMessages[0].title, 'first');
   assert.equal(state.cloudOlder, false);
+  groupRoom.revision = 2;
+  snapshotUnavailable = true;
+  await app.refreshCompanions();
+  assert.equal(state.cloudCompanion.key, group.key);
+  assert.equal(state.cloudProfile, undefined);
+  assert.equal(await app.companionAvatar(sixth, () => true), '');
+  snapshotUnavailable = false;
+  await app.retryGroupProfile();
+  assert.equal(state.cloudProfile.members.length, 6);
   joined = false;
   await app.refreshCompanions();
   assert.equal(state.cloudCompanion, undefined);
   assert.deepEqual(state.cloudMessages, []);
   assert.ok(!state.companions.some(row => row.id === groupId));
+  assert.equal(state.cloudProfile, undefined);
+  assert.equal(await app.companionAvatar(sixth, () => true), '');
   assert.equal(await app.companionAvatar(group.faces[0], () => true), '');
   const hosted = state.companions.find(row => row.host === 'host' && !row.group);
   const cloud = state.companions.find(row => row.actor === actor);

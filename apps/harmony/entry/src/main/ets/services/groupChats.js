@@ -39,13 +39,14 @@ export async function hostGroupHistory(call, id, locale) {
     resource.ref.id === id && botGroupChatDataFromResource(resource);
   if (group?.serverBacked) throw Object.assign(new Error('群聊由 Chat 服务管理'), { code: 'SERVER_OWNED_GROUP' });
   if (!group || group.id !== id || group.archived) throw Object.assign(new Error('群聊已不可访问'), { code: 'NOT_FOUND' });
-  return group.messages.flatMap(message => {
+  const messages = group.messages.flatMap(message => {
     if (message.deleted || message.threadRootId) return [];
     const files = message.attachments?.length ? message.attachments.map(file => file.name) : message.files || [];
     const title = [botGroupMessageSummaryText(message), ...files].filter(Boolean).join('\n');
     const mine = message.isSelf ?? (message.authorKind === 'user' && !group.serverBacked);
     return title ? [{ id: message.id, title, author: message.authorName, role: mine ? 'user' : 'assistant' }] : [];
   });
+  return { messages, profile: { title: group.name, topic: group.topic, description: group.description, members: group.members } };
 }
 
 export function cloudMessageBody(message) {
@@ -96,7 +97,7 @@ export class ServerGroups {
         const previous = this.rows.get(room.id);
         const row = { key: groupKey('', room.id), host: '', id: room.id, group: true, avatar: '',
           updated: botGroupActivityAt({ createdAt: Date.parse(room.created_at) }), ...previous, title: room.name };
-        if (room.head === undefined || room.head !== previous?.head || room.revision !== previous?.revision) {
+        if (!previous?.profile || room.head === undefined || room.head !== previous?.head || room.revision !== previous?.revision) {
           try {
             const snapshot = await api('/conversations/' + room.id + '/snapshot');
             if (snapshot?.room?.id !== room.id || snapshot.room.kind !== 'group' || !Array.isArray(snapshot.members) ||
@@ -104,18 +105,22 @@ export class ServerGroups {
             if (snapshot.room.archived || (snapshot.room.state && snapshot.room.state !== 'joined')) continue;
             const members = snapshot.members.filter(m => m?.state === 'joined' && typeof m.name === 'string');
             const last = latestBotGroupMessage(snapshot.messages.filter(m => chatCursor(m?.seq)));
-            row.memberNames = new Map(members.filter(m => chatId(m.id)).map(m => [m.id, chatGroupMemberName(m, members)]));
-            row.searchText = [...row.memberNames.values()].join('\n');
-            row.faces = members.filter(m => chatId(m.id)).slice(0, 5).map(m => ({
-              key: JSON.stringify([row.key, m.id]), id: m.id, host: '', title: m.name,
+            const roster = members.filter(m => chatId(m.id)).map(m => ({
+              key: JSON.stringify([row.key, m.id]), id: m.id, host: '', title: chatGroupMemberName(m, members), role: m.role,
               ...portraitFields(m.name, m.groupAvatar ?? m.avatar ?? m.defaultAvatarUrl),
             }));
+            row.profile = { title: snapshot.room.name ?? room.name, topic: snapshot.room.topic,
+              description: snapshot.room.description, members: roster };
+            row.memberNames = new Map(roster.map(member => [member.id, member.title]));
+            row.searchText = roster.map(member => member.title).join('\n');
+            row.faces = roster.slice(0, 5);
             row.preview = last ? singleLinePreview(cloudMessageBody(last)) : '';
             row.updated = botGroupActivityAt({ createdAt: Date.parse(room.created_at), lastMessage: last ? { createdAt: Date.parse(last.createdAt) } : null });
             row.head = room.head;
             row.revision = room.revision;
           } catch (error) {
             if (lostRoom(error)) continue;
+            delete row.profile;
             partial = true;
           }
         }

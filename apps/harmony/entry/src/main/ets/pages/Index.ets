@@ -4,7 +4,8 @@ import { filePreview } from '@kit.PreviewKit';
 import { common } from '@kit.AbilityKit';
 import { installInputs } from '../services/nativeEntry';
 import { ModelBrandIcon } from './ModelBrandIcon';
-import { CompanionAvatar } from './CompanionAvatar';
+import { GroupProfilePage } from './GroupProfilePage';
+import { CompanionAvatar, companionPortraitKey } from './CompanionAvatar';
 import { LoginBrand } from './LoginBrand';
 import { SettingsPage } from './SettingsPage';
 import { groupHomeRows, HomeGroup, matchingCompanions } from '../services/homeList';
@@ -62,6 +63,7 @@ struct Index {
   @State @Watch('scheduleRoutes') creating: boolean = false;
   @State renaming: string = '';
   @State actionRow?: Item = undefined;
+  @State @Watch('scheduleRoutes') groupProfileKey: string = '';
   private paths: NavPathStack = new NavPathStack();
   private routesScheduled: boolean = false;
   // ForEach keeps a task's native row when the workspace replaces its immutable snapshot.
@@ -193,6 +195,7 @@ struct Index {
     const caretChanged = state.voiceCaret !== this.view.voiceCaret || state.voicePreview !== this.view.voicePreview;
     if (!state.draft && this.view.draft) this.manualInputHeight = undefined;
     const routeChanged = state.cloudCompanion?.key !== this.view.cloudCompanion?.key || switched || state.account !== this.view.account || state.shareLabel !== this.view.shareLabel;
+    if (this.groupProfileKey && (this.groupProfileKey !== state.cloudCompanion?.key || state.account !== this.view.account)) this.groupProfileKey = '';
     this.view = state;
     if (routeChanged) this.scheduleRoutes();
     if (!switched && state.voiceCaret !== undefined && (caretChanged || voiceEnded)) {
@@ -281,7 +284,10 @@ struct Index {
       if (this.view.account) {
         if (this.projectList) next.push('project');
         if (this.view.task) next.push('task');
-        else if (this.view.cloudCompanion) next.push('cloud');
+        else if (this.view.cloudCompanion) {
+          next.push('cloud');
+          if (this.view.cloudCompanion.group && this.groupProfileKey === this.view.cloudCompanion.key) next.push('group-profile');
+        }
         else if (this.creating) next.push('new');
         if (this.sharePicker()) next.push('share');
         if (this.panel === 'settings') next.push('settings');
@@ -317,6 +323,7 @@ struct Index {
       return true;
     }
     if (this.view.shareLabel) { this.pickingShareTarget = true; return true; }
+    if (this.groupProfileKey) { this.groupProfileKey = ''; return true; }
     if (this.view.cloudCompanion) { this.workspace.closeCloudCompanion(); return true; }
     if (!this.view.task && this.projectList) { this.projectList = undefined; return true; }
     if (!this.view.task && this.showSearch) { this.showSearch = false; this.query = ''; return true; }
@@ -1190,22 +1197,40 @@ struct Index {
     return this.view.companions?.find((row: Companion) => row.key === selected.key) || selected;
   }
 
-  private companionRowKey(row: Companion): string {
-    return JSON.stringify([row.key, row.title, row.avatar, row.preset, row.avatarImage, row.cloudImage, row.actor, row.faces?.map((m: Companion) => [m.key, m.avatar, m.preset, m.cloudImage, m.avatarImage])]);
-  }
-
   @Builder
   conversationTitle(cloud: boolean) {
     Row({ space: 8 }) {
       if (cloud ? this.view.cloudCompanion : this.view.taskCompanion) {
         ForEach([this.titleCompanion(cloud)!], (row: Companion) => {
           CompanionAvatar({ row, load: (buddy: Companion, visible: () => boolean) => this.workspace.companionAvatar(buddy, visible) })
-        }, (row: Companion) => this.companionRowKey(row))
+        }, (row: Companion) => companionPortraitKey(row))
       }
       Text(cloud ? this.titleCompanion(true)?.title || '' : this.headerTitle()).id(cloud ? 'cloud-title' : 'task-title')
         .fontSize(18).fontWeight(FontWeight.Medium).layoutWeight(1)
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
     }.width('100%').height('100%').padding({ left: 8, right: 8 })
+  }
+
+  @Builder
+  cloudTitle() {
+    if (this.view.cloudCompanion?.group) {
+      Button({ type: ButtonType.Normal }) { this.conversationTitle(true) }
+        .id('group-profile-title-button').width('100%').height('100%').padding(0).backgroundColor(Color.Transparent)
+        .accessibilityText(this.titleCompanion(true)?.title || '').accessibilityDescription($r('app.string.group_profile'))
+        .onClick(() => { this.groupProfileKey = this.view.cloudCompanion?.key || ''; })
+    } else {
+      this.conversationTitle(true)
+    }
+  }
+
+  @Builder
+  groupMenu() {
+    if (this.view.cloudCompanion?.group) {
+      Row() {
+        IconAction({ icon: $r('sys.symbol.gearshape'), controlId: 'group-settings', label: $r('app.string.group_settings'),
+          onTap: () => { this.groupProfileKey = this.view.cloudCompanion?.key || ''; } })
+      }.height('100%').padding({ right: 12 })
+    }
   }
 
   @Builder
@@ -1491,7 +1516,7 @@ struct Index {
               .onDisAppear(() => { if (!row.group && !row.actor) this.workspace.loadCompanionCall(row.key, false); })
               .accessibilityText([row.title, this.companionSummary(row)].join('，')).accessibilityDescription(row.group ? this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.group_chat').id) : '').onClick(() => this.run(() => this.workspace.openCompanion(row.key)))
           }
-        }, (row: Companion) => JSON.stringify([this.companionRowKey(row), row.preview, row.subtitle, row.recentCall]))
+        }, (row: Companion) => JSON.stringify([companionPortraitKey(row), row.preview, row.subtitle, row.recentCall]))
         if (!this.query.trim() && this.matchingCompanions().length > 3) {
           ListItem() {
             Button(this.companionsExpanded ? $r('app.string.companions_less') : $r('app.string.companions_all', this.matchingCompanions().length))
@@ -1932,8 +1957,17 @@ struct Index {
         .menus(this.taskMenu()).onBackPressed(() => this.onBackPress())
     } else if (page === 'cloud') {
       NavDestination() { this.cloudConversation() }
-        .title(this.conversationTitle(true), { backgroundColor: $r('app.color.canvas') })
+        .title(this.cloudTitle(), { backgroundColor: $r('app.color.canvas') }).menus(this.groupMenu())
         .onBackPressed(() => this.onBackPress())
+    } else if (page === 'group-profile') {
+      NavDestination() {
+        if (this.view.cloudCompanion?.group) {
+          GroupProfilePage({ group: this.titleCompanion(true)!, profile: this.view.cloudProfile, loading: this.busy || !!this.view.cloudLoading,
+            load: (member: Companion, visible: () => boolean) => this.workspace.companionAvatar(member, visible),
+            retry: () => this.run(() => this.workspace.retryGroupProfile()) })
+        }
+      }.title(this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.group_profile').id),
+        { backgroundColor: $r('app.color.canvas') }).onBackPressed(() => this.onBackPress())
     } else if (page === 'preview') {
       NavDestination() { this.screen(page) }
         .title(this.selectedFile?.name || '').menus(this.previewMenu()).hideTitleBar(!this.previewChrome)

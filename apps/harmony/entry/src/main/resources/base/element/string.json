@@ -899,6 +899,50 @@
     {
       "name": "group_readonly",
       "value": "群聊记录 · 只读"
+    },
+    {
+      "name": "group_profile",
+      "value": "群资料"
+    },
+    {
+      "name": "group_settings",
+      "value": "群设置"
+    },
+    {
+      "name": "group_topic",
+      "value": "群话题"
+    },
+    {
+      "name": "group_description",
+      "value": "群介绍"
+    },
+    {
+      "name": "group_member_count",
+      "value": "群成员（%d）"
+    },
+    {
+      "name": "group_member_search",
+      "value": "搜索群成员"
+    },
+    {
+      "name": "group_no_matches",
+      "value": "没有匹配的成员"
+    },
+    {
+      "name": "group_profile_retry",
+      "value": "重新加载群资料"
+    },
+    {
+      "name": "group_role_owner",
+      "value": "群主"
+    },
+    {
+      "name": "group_role_admin",
+      "value": "管理员"
+    },
+    {
+      "name": "group_role_guest",
+      "value": "访客"
     }
   ]
 }

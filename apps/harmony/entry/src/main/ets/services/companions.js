@@ -51,7 +51,7 @@ export class Companions {
   rows() {
     const homes = new Map(this.actors.map(a => [a.externalId, a]));
     const rows = new Map();
-    for (const row of this.groups.rows.values()) {
+    for (const { profile, memberNames, ...row } of this.groups.rows.values()) {
       if (!this.groups.personal.hidden(row.id)) rows.set(row.key, row);
     }
     const listedGroups = new Set(this.groups.known);
@@ -215,20 +215,35 @@ export class Companions {
     this.groups.ready = error.httpStatus === 404 || (!lostRoom(error) && this.groups.ready);
     this.groups.error = error.httpStatus !== 404;
   }
+  groupProfile(room) {
+    if (!room?.group) return undefined;
+    if (!room.host) return this.groups.rows.get(room.id)?.profile;
+    const detail = room.hostProfile;
+    if (!detail) return undefined;
+    const bots = new Map((this.app.home.peers.get(room.host)?.bots?.rows || []).map(bot => [bot.id, bot]));
+    const members = detail.members.map(member => {
+      const buddy = bots.get(member.botId);
+      const title = member.name;
+      const portrait = member.avatarUrl || member.avatar;
+      return { ...portraitFields(title), ...(buddy || {}), ...(portrait ? portraitFields(title, portrait) : {}),
+        id: member.botId, key: JSON.stringify([room.key, member.botId]), host: room.host, title, role: member.role };
+    });
+    return { ...detail, members };
+  }
   publish() {
     const rows = this.rows();
     if (this.open && !rows.some(row => row.key === this.open.key)) this.close();
-    this.app.show({ companions: rows, companionError: !!(this.error || this.groups.error) ||
+    this.app.show({ companions: rows, cloudProfile: this.groupProfile(this.open), companionError: !!(this.error || this.groups.error) ||
       [...this.app.home.peers.values()].some(peer => peer.bots?.error || peer.groups?.error) });
   }
   close() {
     this.open = null;
-    this.app.show({ cloudCompanion: undefined, cloudMessages: [], cloudOlder: false, cloudLoading: false, cloudError: false });
+    this.app.show({ cloudCompanion: undefined, cloudProfile: undefined, cloudMessages: [], cloudOlder: false, cloudLoading: false, cloudError: false });
   }
   async openRoom(row) {
     const room = { key: row.key, group: !!row.group, host: row.host, id: row.group ? row.id : '', actor: row.actor, messages: new Map() };
     this.open = room;
-    this.app.show({ cloudCompanion: row, cloudMessages: [], cloudOlder: false, cloudLoading: true, cloudError: false });
+    this.app.show({ cloudCompanion: row, cloudProfile: this.groupProfile(room), cloudMessages: [], cloudOlder: false, cloudLoading: true, cloudError: false });
     await this.readRoom();
   }
   async readRoom(older = false) {
@@ -241,8 +256,11 @@ export class Companions {
       if (room.group && room.host) {
         const peer = this.app.home.peers.get(room.host);
         if (!peer?.groupHistory) throw Object.assign(new Error('群聊已不可访问'), { code: 'NOT_FOUND' });
-        const messages = await peer.groupHistory(room.id);
-        if (current()) this.app.show({ cloudMessages: messages, cloudOlder: false });
+        const { messages, profile } = await peer.groupHistory(room.id);
+        if (current()) {
+          room.hostProfile = profile;
+          this.app.show({ cloudMessages: messages, cloudProfile: this.groupProfile(room), cloudOlder: false });
+        }
         return;
       }
       if (!room.id) {

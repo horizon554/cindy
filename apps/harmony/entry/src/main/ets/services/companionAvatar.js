@@ -41,10 +41,11 @@ export class CompanionAvatars {
       const host = isManagedBotAvatarUrl(source) ? row.host : '';
       const key = [owner, host, source, 'companion-avatar'];
       const sameSource = item => item && (!host || host === item.host) && (source === item.avatarImage || source === item.cloudImage);
-      const listed = exact => this.app.state.companions?.some(item => {
+      const listed = exact => {
         const matches = candidate => sameSource(candidate) && (!exact || candidate.key === row.key);
-        return matches(item) || item.faces?.some(matches);
-      });
+        return this.app.state.companions?.some(item => matches(item) || item.faces?.some(matches)) ||
+          this.app.state.cloudProfile?.members.some(matches);
+      };
       const current = () => owner && this.app.session?.id === owner && this.app.companions?.avatars === this;
       const check = () => {
         if (!current() || !listed(false)) throw new Error('Avatar changed');

@@ -1,5 +1,10 @@
 import { Companion } from '../services/workspace';
 
+export function companionPortraitKey(row: Companion): string {
+  return JSON.stringify([row.key, row.title, row.avatar, row.preset, row.avatarImage, row.cloudImage, row.actor,
+    row.faces?.map((member: Companion) => [member.key, member.avatar, member.preset, member.cloudImage, member.avatarImage])]);
+}
+
 @Component
 struct Portrait {
   portraitSize: number = 32;
