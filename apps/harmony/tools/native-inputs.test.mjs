@@ -66,7 +66,7 @@ test('retry an ambiguous PUT against one private object and release staging file
     '@ohos.file.fileuri': "export default {FileUri:class {name='retry.txt'}};",
     '@ohos.file.hash': "export default {hash:async()=>'a'.repeat(64)};",
     '@ohos.util': "export default {generateRandomUUID:()=>crypto.randomUUID()};",
-    '@ohos.file.picker':'export default {};','@ohos.file.photoAccessHelper':'export default {};',
+    '@ohos.file.picker':'export default {};','@ohos.file.photoAccessHelper':'export default globalThis.mediaTest.photos;',
     '@ohos.data.uniformTypeDescriptor':"export default {getUniformDataTypeByFilenameExtension:()=>1,getTypeDescriptor:()=>({mimeTypes:['text/plain']})};",
     '@hms.collaboration.rcp':'export default globalThis.mediaTest.rcp;',
     './protocol.generated':"export const deviceLinkApiBaseUrl='https://test.invalid';",
@@ -91,9 +91,19 @@ test('retry an ambiguous PUT against one private object and release staging file
       assert.deepEqual(req.headers,{'Content-Type':'text/plain','x-oss-object-acl':'private'});
       if (++attempts===1) throw new Error('lost reply');return {statusCode:200};
     }})}};
+  // The native picker must receive the remaining capacity and return every chosen URI.
+  globalThis.mediaTest.photos = {
+    PhotoViewMIMETypes: {IMAGE_VIDEO_TYPE:'*/*'}, PhotoViewPicker: class {
+      async select(options) {
+        assert.deepEqual(options, {MIMEType:'*/*', maxSelectNumber:2});
+        return {photoUris:['second','first']};
+      }
+    }
+  };
   try {
-    const {uploadFile}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
+    const {uploadFile,pickFile}=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
     const ctx={cacheDir:'/cache'},tickets=new Map();
+    assert.deepEqual(await pickFile(ctx,true,2), ['second','first']);
     const pick = files=>uploadFile(ctx,'file://docs/retry.txt',async()=>'secret',{tickets},files);
     await assert.rejects(pick([]),/lost reply/);
     const file=await pick([]);await pick([file]);

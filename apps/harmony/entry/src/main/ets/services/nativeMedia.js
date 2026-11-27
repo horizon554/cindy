@@ -17,13 +17,13 @@ export async function cleanStaging(ctx) {
   for (const name of await fs.listFile(dir)) if (/^[a-f0-9-]{36}$/.test(name)) await fs.unlink(dir + '/' + name);
 }
 
-export async function pickFile(ctx, image) {
+export async function pickFile(ctx, image, remaining) {
   if (image) {
-    const result = await new photo.PhotoViewPicker().select({ MIMEType: photo.PhotoViewMIMETypes.IMAGE_TYPE, maxSelectNumber: 1 });
-    return result.photoUris[0];
+    const result = await new photo.PhotoViewPicker().select({ MIMEType: photo.PhotoViewMIMETypes.IMAGE_VIDEO_TYPE, maxSelectNumber: remaining });
+    return result.photoUris;
   }
   const result = await new picker.DocumentViewPicker(ctx).select({ maxSelectNumber: 1 });
-  return result[0];
+  return result;
 }
 
 export async function uploadFile(ctx, uri, token, transfer, existing) {

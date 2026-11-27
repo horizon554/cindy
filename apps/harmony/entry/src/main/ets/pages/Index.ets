@@ -8,7 +8,7 @@ import { groupHomeRows, HomeGroup } from '../services/homeList';
 import { HistorySource } from './HistorySource';
 import { HistoryMessage, InteractionPanel, MessageBody } from './TaskContent';
 import { DirectoryRow, IconAction, PillAction, OptionRow, PreferenceChip } from './Controls';
-import { Row as Item, Workspace, ViewState, Attachment, MediaInfo, Card, FolderList, Question, Choice } from '../services/workspace';
+import { Row as Item, Workspace, ViewState, PendingUpload, Attachment, MediaInfo, Card, FolderList, Question, Choice } from '../services/workspace';
 
 const PRIVACY_URL = 'https://cindy.cn/privacy';
 const TERMS_URL = 'https://cindy.cn/terms';
@@ -227,8 +227,8 @@ struct Index {
     if (this.view.voice) { this.workspace.cancelVoice(); return true; }
     if (this.sharePicker()) { this.workspace.dismissShare(); return true; }
     if (this.creating) {
-      this.creating = false; this.workspace.cancelNew(); this.foldComposer();
-      this.pickingShareTarget = !!this.view.shareLabel; return true;
+      this.leaveNewTask();
+      return true;
     }
     if (this.view.shareLabel) { this.pickingShareTarget = true; return true; }
     if (!this.view.task && this.projectList) { this.projectList = undefined; return true; }
@@ -236,6 +236,22 @@ struct Index {
     if (!this.view.task) return false;
     this.run(() => this.workspace.back());
     return true;
+  }
+
+  private async leaveNewTask(): Promise<void> {
+    const left = await this.workspace.leaveNew(() => new Promise<boolean>((resolve) => {
+      this.getUIContext().showAlertDialog({
+        title: $r('app.string.discard_send_title'), message: $r('app.string.discard_send_hint'),
+        cancel: () => resolve(false),
+        primaryButton: { value: $r('app.string.keep_waiting'), action: () => resolve(false) },
+        secondaryButton: { value: $r('app.string.discard_send'), action: () => resolve(true) }
+      });
+    }));
+    if (left) {
+      this.creating = false;
+      this.foldComposer();
+      this.pickingShareTarget = !!this.view.shareLabel;
+    }
   }
 
   onPageHide(): void {
@@ -370,7 +386,7 @@ struct Index {
   }
 
   private attachmentCount(): number {
-    return this.view.attachments.length + (this.view.transfer || this.view.failedFile ? 1 : 0);
+    return this.view.attachments.length + (this.view.pendingUploads?.length || (this.view.transfer ? 1 : 0));
   }
 
   private async sendFromComposer(): Promise<void> {
@@ -423,22 +439,19 @@ struct Index {
   }
 
   @Builder
-  pendingFile() {
+  pendingFile(item: PendingUpload, index: number) {
     Row({ space: 4 }) {
-      if (this.view.transfer) { LoadingProgress().width(16).height(16).color($r('app.color.muted')) }
-      Text(this.view.failedFile || this.view.uploadName || this.view.transfer).fontSize(13).fontColor($r('app.color.ink'))
+      if (item.uploading) { LoadingProgress().width(16).height(16).color($r('app.color.muted')) }
+      Text(item.title).fontSize(13).fontColor($r('app.color.ink'))
         .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 100 })
-      if (this.view.failedFile && !this.view.transfer) {
-        Button($r('app.string.retry_upload'), { type: ButtonType.Capsule }).id('retry-upload').height(44)
+      if (item.failed) {
+        Button($r('app.string.retry_upload'), { type: ButtonType.Capsule }).id(index ? 'retry-' + item.id : 'retry-upload').height(44)
           .fontSize(13).backgroundColor($r('app.color.chip')).fontColor($r('app.color.ink'))
-          .enabled(!this.busy && this.view.linked).onClick(() => this.uploadAttachment())
+          .enabled(!this.busy && this.view.linked && !this.view.transfer).onClick(() => this.uploadAttachment('', item.id))
       }
-      IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.cancel_file'), controlId: 'cancel-upload',
-        onTap: () => {
-          if (this.view.transfer) this.workspace.cancelTransfer();
-          else { this.notice = ''; this.workspace.discardFailed(); }
-        } })
-    }.id('pending-upload').padding({ left: 6 }).borderRadius(10).backgroundColor($r('app.color.chip'))
+      IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.remove_file', item.title),
+        controlId: index ? 'cancel-' + item.id : 'cancel-upload', onTap: () => this.workspace.removeUpload(item.id) })
+    }.id(index ? 'upload-' + item.id : 'pending-upload').padding({ left: 6 }).borderRadius(10).backgroundColor($r('app.color.chip'))
   }
 
   @Builder
@@ -458,7 +471,17 @@ struct Index {
       if (this.expanded() && this.attachmentCount() > 0) {
         Scroll() {
           Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center, space: { main: LengthMetrics.vp(6), cross: LengthMetrics.vp(6) } }) {
-            if (this.view.transfer || this.view.failedFile) { this.pendingFile() }
+            if (this.view.transfer && !this.view.pendingUploads?.length) {
+              Row({ space: 4 }) {
+                LoadingProgress().width(16).height(16).color($r('app.color.muted'))
+                Text(this.view.transfer).fontSize(13).fontColor($r('app.color.ink'))
+                IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.cancel_file'), controlId: 'cancel-upload',
+                  onTap: () => this.workspace.cancelTransfer() })
+              }.id('pending-upload')
+            }
+            ForEach(this.view.pendingUploads || [], (item: PendingUpload, index: number) => {
+              this.pendingFile(item, index)
+            }, (item: PendingUpload, index: number) => JSON.stringify([item.id, item.failed, item.uploading, index]))
             ForEach(this.view.attachments, (f: Attachment) => {
               if (f.mimeType?.startsWith('image/')) {
                 Stack({ alignContent: Alignment.BottomStart }) {
@@ -496,7 +519,7 @@ struct Index {
       Row({ space: 4 }) {
         if (!this.expanded()) {
           IconAction({ icon: $r('sys.symbol.plus'), label: $r('app.string.add_file'), controlId: 'compact-add',
-            available: !this.busy && this.view.linked && !this.view.transfer && !this.view.failedFile, onTap: () => { this.panel = 'attachments'; } })
+            available: !this.busy && this.view.linked && !this.view.pickingFiles && (!this.view.transfer || !!this.view.uploadPending), onTap: () => { this.panel = 'attachments'; } })
           if (this.attachmentCount() > 0) {
             Button({ type: ButtonType.Capsule }) {
               Row({ space: 3 }) {
@@ -524,8 +547,8 @@ struct Index {
                 this.selectionStart = start; this.selectionEnd = end; this.selectionDraft = this.view.draft;
               }
             })
-            .onWillInsert(() => !this.view.voice && !(this.creating && this.busy && this.view.uploadPending))
-            .onWillDelete(() => !this.view.voice && !(this.creating && this.busy && this.view.uploadPending))
+            .onWillInsert(() => !this.view.voice && !this.view.waitingToCreate)
+            .onWillDelete(() => !this.view.voice && !this.view.waitingToCreate)
             .onChange((value: string, preview?: PreviewText) => {
               if (this.view.voice) return;
               this.composing = !!preview?.value;
@@ -543,7 +566,7 @@ struct Index {
       if (this.expanded()) {
         Row({ space: 2 }) {
           IconAction({ icon: $r('sys.symbol.plus'), label: $r('app.string.add_file'), controlId: 'add-attachment',
-            available: !this.busy && this.view.linked && !this.view.transfer && !this.view.failedFile,
+            available: !this.busy && this.view.linked && !this.view.pickingFiles && (!this.view.transfer || !!this.view.uploadPending),
             onTap: () => { this.panel = 'attachments'; } })
           Scroll() {
             Row({ space: 4 }) {
@@ -967,7 +990,7 @@ struct Index {
         IconAction({ icon: $r('sys.symbol.xmark'), controlId: 'close', label: $r('app.string.close'), onTap: () => { this.onBackPress(); } })
       } else {
         IconAction({ icon: $r('sys.symbol.chevron_left'), controlId: 'back', label: $r('app.string.back'),
-          available: !this.busy, onTap: () => { this.onBackPress(); } })
+          available: !this.busy || !!this.view.waitingToCreate, onTap: () => { this.onBackPress(); } })
       }
       if (this.atHome()) {
         Button({ type: ButtonType.Normal }) {
@@ -1076,7 +1099,7 @@ struct Index {
       TextInput({ placeholder: $r('app.string.workspace_path'), text: this.pathInput }).id('project-dir').onChange((v: string) => { this.pathInput = v; })
       PillAction({ label: $r('app.string.use_path'), available: !!this.pathInput.trim(), onTap: () => { this.project = this.pathInput.trim(); this.panel = ''; } })
     } else if (this.panel === 'attachments') {
-      OptionRow({ label: $r('app.string.image'), value: '', action: () => this.pickAttachment('image'), control: 'pick-image' })
+      OptionRow({ label: $r('app.string.album'), value: '', action: () => this.pickAttachment('image'), control: 'pick-image' })
       OptionRow({ label: $r('app.string.file'), value: '', action: () => this.pickAttachment('file'), control: 'pick-file' })
     } else if (this.panel === 'display') {
       OptionRow({ label: $r('app.string.task_status'), value: this.filterLabel(this.statusFilter), action: () => { this.panel = 'status'; }, control: 'display-status' })
@@ -1152,11 +1175,11 @@ struct Index {
     this.uploadAttachment(kind);
   }
 
-  private async uploadAttachment(kind?: string): Promise<void> {
+  private async uploadAttachment(kind: string, retryId?: string): Promise<void> {
     this.notice = '';
     try {
       if (kind) await this.workspace.addFile(kind);
-      else await this.workspace.retryFile();
+      else await this.workspace.retryFile(retryId);
     } catch (e) {
       if (!this.view.failedFile) this.notice = (e as Error).message;
     }

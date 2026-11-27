@@ -779,6 +779,26 @@
     {
       "name": "row_engine",
       "value": "Task engine"
+    },
+    {
+      "name": "album",
+      "value": "Photo library"
+    },
+    {
+      "name": "discard_send_title",
+      "value": "Discard this send?"
+    },
+    {
+      "name": "discard_send_hint",
+      "value": "Attachments are still uploading. Leaving now will discard this message."
+    },
+    {
+      "name": "keep_waiting",
+      "value": "Keep waiting"
+    },
+    {
+      "name": "discard_send",
+      "value": "Discard send"
     }
   ]
 }

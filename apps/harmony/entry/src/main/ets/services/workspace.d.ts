@@ -4,6 +4,7 @@ export interface Choice { label: string; detail: string; selected: boolean }
 export interface Question { key: string; valid?: boolean; label: string; multi: boolean; free: boolean; value: string; options: Choice[] }
 export interface Card { id: string; revision: number; kind: string; title: string; detail: string; questions: Question[]; complete?: boolean; approvalKey?: string; risk?: string; code?: string }
 export interface MediaInfo { path?: string; name: string; size?: number; mimeType?: string }
+export interface PendingUpload { id: string; title: string; failed: boolean; uploading: boolean }
 export interface Attachment extends MediaInfo { id: string }
 export interface FolderList { path: string; parent: string; rows: Row[] }
 export interface NewTaskDraft { owner: string; text: string; attachments: Attachment[]; media: Map<string, string> }
@@ -11,7 +12,7 @@ export interface ViewState {
   liveHosts?: string[]; uploadPending?: boolean; legacyPicker?: boolean; homeIndex?: Row[]; attachments: Attachment[]; transfer: string; voice: string; pushEnabled: boolean; pushStatus: string; shareLabel: string;
   ssoWaiting: boolean; ssoMethods: Row[]; verification: string; accounts: Row[]; account: string; accountEmail?: string; accountAvatar?: string; relay: string; devices: Row[]; tasks: Row[]; messages: Row[];
   linked: boolean; moreTasks: boolean; hasOlder: boolean; paused: boolean; running: boolean;
-  retryable: boolean; activity: string; draft: string; delivery: string; pendingLabel?: string; agent?: string; model?: string; provider?: string; permission?: string; voicePreview?: string; voiceCaret?: number; uploadName?: string; failedFile?: string; shareVersion?: number; shareFiles?: string[]; shareText?: string; cards: Card[];
+  retryable: boolean; activity: string; draft: string; delivery: string; pendingLabel?: string; agent?: string; model?: string; provider?: string; permission?: string; voicePreview?: string; voiceCaret?: number; pendingUploads?: PendingUpload[]; pickingFiles?: boolean; waitingToCreate?: boolean; failedFile?: string; shareVersion?: number; shareFiles?: string[]; shareText?: string; cards: Card[];
   device: string; task: string; live: string; error: string;
 }
 export class Workspace {
@@ -32,6 +33,7 @@ export class Workspace {
   create(title: string, project?: string, firstText?: string, engine?: string, draftOnly?: boolean): Promise<boolean | undefined>;
   snapshotNew(): NewTaskDraft | undefined;
   beginNew(snapshot?: NewTaskDraft): void;
+  leaveNew(confirmDiscard: () => Promise<boolean>): Promise<boolean>;
   cancelNew(): void;
   configureNew(engine?: string): Promise<void>;
   changeHomeTask(host: string, id: string, action: string, title: string, confirmArchive: (names: string[]) => Promise<boolean>): Promise<void>;
@@ -41,8 +43,8 @@ export class Workspace {
   engines(): Promise<string[]>;
   preferences(kind: string): Promise<Row[]>;
   applyPreference(kind: string, value: string): Promise<void>;
-  retryFile(): Promise<boolean | undefined>;
-  discardFailed(): void;
+  removeUpload(id: string): void;
+  retryFile(id?: string): Promise<boolean | undefined>;
   reconnect(): Promise<void>;
   setHomeScope(id: string): void;
   more(): Promise<void>;

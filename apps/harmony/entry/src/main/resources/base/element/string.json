@@ -779,6 +779,26 @@
     {
       "name": "row_engine",
       "value": "任务引擎"
+    },
+    {
+      "name": "album",
+      "value": "相册"
+    },
+    {
+      "name": "discard_send_title",
+      "value": "放弃发送？"
+    },
+    {
+      "name": "discard_send_hint",
+      "value": "附件还没上传完，现在离开的话，这条消息不会发送。"
+    },
+    {
+      "name": "keep_waiting",
+      "value": "继续等待"
+    },
+    {
+      "name": "discard_send",
+      "value": "放弃发送"
     }
   ]
 }

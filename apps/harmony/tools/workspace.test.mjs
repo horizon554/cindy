@@ -456,7 +456,7 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   await app.preferences('model'); await app.applyPreference('model','other');
   await app.preferences('permission'); await app.applyPreference('permission','plan');
   const firstFile = {id:'first-file',name:'notes.txt',path:'test-key',category:'text',mimeType:'text/plain'};
-  app.native = {pickFile:async () => 'file://docs/notes.txt',uploadFile:async () => firstFile};
+  app.native = {pickFile:async () => ['file://docs/notes.txt'],uploadFile:async () => firstFile};
   let finishFirst;
   app.native.uploadFile = () => new Promise(resolve => { finishFirst = resolve; });
   app.editDraft('新任务草稿');
@@ -478,8 +478,17 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   loseCreation = true;
   const firstTaps = [app.create('', '/fixture'), app.create('', '/fixture')].map(promise => assert.rejects(promise, /reply lost/));
   assert.equal(created, createdBefore);
+  // Back opens once; upload completion while the dialog is up cannot dispatch create.
+  let answer;
+  const leave = app.leaveNew(() => new Promise(resolve => { answer = resolve; }));
+  assert.equal(await app.leaveNew(() => assert.fail('second dialog')), false);
   finishFirst(firstFile);
-  await Promise.all([pickingFirst, ...firstTaps]);
+  await pickingFirst;
+  assert.equal(created, createdBefore);
+  assert.equal(app.state.waitingToCreate, true);
+  answer(false);
+  assert.equal(await leave, false);
+  await Promise.all(firstTaps);
   assert.equal(created, createdBefore + 1);
   app.native.uploadFile = async () => firstFile;
   await app.create('', '/fixture');
@@ -491,6 +500,26 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   assert.equal(app.state.tasks.find(row => row.id === app.state.task).title, '验收新标题');
   await app.back();
   app.beginNew();
+  const originalUpload = app.native.uploadFile;
+  for (const finishedBeforeDiscard of [false, true]) {
+    let finish, discard;
+    const prior = created;
+    app.native.uploadFile = () => new Promise(resolve => { finish = resolve; });
+    const picking = app.addFile('image');
+    await until(() => !!finish);
+    const sending = app.create('', '', '取消');
+    const leaving = app.leaveNew(() => new Promise(resolve => { discard = resolve; }));
+    if (finishedBeforeDiscard) { finish(firstFile); await picking; }
+    discard(true);
+    assert.equal(await leaving, true);
+    await sending;
+    if (!finishedBeforeDiscard) { finish(firstFile); await picking; }
+    assert.deepEqual(app.state.attachments, []);
+    assert.equal(created, prior);
+    assert.equal(app.state.waitingToCreate, false);
+    app.beginNew();
+  }
+  app.native.uploadFile = originalUpload;
   await app.addFile('file');
   app.editDraft('保留草稿');
   const snapshot = app.snapshotNew();
@@ -578,7 +607,7 @@ test('route a notification, accept a share and recover one attachment-only messa
       if (delayed) { delayed(); await new Promise(r=>{release=r;}); }
       return {id:uri,name:'sample.png',path:'ref',size:12,sha256:'a'.repeat(64),mimeType:'image/png',category:'image'};
     },
-    pickFile: async ()=>'image',
+    pickFile: async ()=>['image'],
     dictation(ctx, update, cb) { complete=cb; update('录音中');return {cancel:()=>cb('',''),finish:()=>cb('验收','')}; }
   };
   app.show({relay:'online'}); await app.devices(); await app.openDevice('mac'); await app.openTask('a');
@@ -675,8 +704,9 @@ test('route a notification, accept a share and recover one attachment-only messa
   let uploaded, rejected;
   app.native.uploadFile = () => new Promise((resolve, reject) => { uploaded = resolve; rejected = reject; });
   const file = {id:'wait', name:'wait.txt', path:'wait', mimeType:'text/plain'};
+  app.native.pickFile = async () => ['file://fixture/wait.txt'];
   async function startUpload() {
-    const promise = app.addFile('file', 'file://fixture/wait.txt');
+    const promise = app.state.failedFile ? app.retryFile() : app.addFile('file');
     await until(() => app.state.uploadPending);
     return { promise };
   }
@@ -712,5 +742,51 @@ test('route a notification, accept a share and recover one attachment-only messa
   await Promise.all([oldSend, switched.promise]);
   assert.equal(sent.length, beforeUpload + 1);
   assert.deepEqual(app.state.attachments, []);
+  // Tier 1: a second gallery selection while the first is in flight sees reserved slots.
+  // A middle upload failure cannot send a partial message or change selection order on retry.
+  const selected = [['a.png','b.png'], ['c.png','overflow.png']];
+  const limits = [], calls = [];
+  const existing = Array.from({length:17}, (_, i) => ({id:'existing'+i,name:'existing'+i,path:'existing'+i}));
+  await app.setAttachments(existing);
+  app.native.pickFile = async (_, image, slots) => { assert.ok(image); limits.push(slots); return selected.shift(); };
+  let finishGallery, failMiddle = true;
+  app.native.uploadFile = async (_, uri) => {
+    calls.push(uri);
+    if (uri === 'a.png') await new Promise(resolve => { finishGallery = resolve; });
+    if (uri === 'b.png' && failMiddle) { failMiddle = false; throw new Error('middle upload failed'); }
+    return {id:uri,name:uri,path:uri,mimeType:'image/png'};
+  };
+  const firstGallery = app.addFile('image');
+  await until(() => !!finishGallery);
+  const nextGallery = app.addFile('image');
+  await until(() => app.state.pendingUploads.length === 3);
+  assert.deepEqual(limits, [3,1]);
+  const beforeBatch = sent.length;
+  const sendGallery = app.send('');
+  const failure = assert.rejects(firstGallery, /middle upload failed/);
+  finishGallery();
+  await Promise.all([failure,nextGallery,sendGallery]);
+  assert.equal(sent.length, beforeBatch);
+  assert.deepEqual(calls, ['a.png','b.png','c.png']);
+  assert.equal(app.state.pendingUploads.length, 1);
+  assert.equal(app.state.failedFile, 'b.png');
+  await app.send('');
+  assert.equal(sent.length, beforeBatch);
+  await app.retryFile(app.state.pendingUploads[0].id);
+  assert.deepEqual(app.state.attachments.slice(-3).map(f => f.id), ['a.png','b.png','c.png']);
+  await assert.rejects(app.addFile('image'), /20/);
+  await app.send('');
+  assert.equal(sent.length, beforeBatch + 1);
+  assert.deepEqual(sent.at(-1).files.map(f => f.id), [...existing.map(f=>f.id),'a.png','b.png','c.png']);
+  // Removing a queued item after Send must not dispatch the remaining subset.
+  app.native.pickFile = async () => ['a.png','removed.png'];
+  const cancellation = app.addFile('image');
+  await until(() => app.state.pendingUploads.length === 2);
+  const partialSend = app.send('');
+  app.removeUpload(app.state.pendingUploads[1].id);
+  finishGallery();
+  await Promise.all([partialSend,cancellation]);
+  assert.equal(sent.length, beforeBatch + 1);
+  assert.deepEqual(app.state.attachments.map(f=>f.id), ['a.png']);
   app.startVoice();await app.back();complete('迟到的语音','');assert.equal(app.state.draft,'');
 });
