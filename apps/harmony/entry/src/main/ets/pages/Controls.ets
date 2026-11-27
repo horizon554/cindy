@@ -15,9 +15,9 @@ export struct PillAction {
 
 @Component
 export struct IconAction {
-  icon: Resource = $r('sys.symbol.plus');
+  @Prop icon: Resource = $r('sys.symbol.plus');
   @Prop label: Resource = $r('app.string.add_file');
-  controlId: string = '';
+  @Prop controlId: string = '';
   @Prop prominent: boolean = false;
   @Prop available: boolean = true;
   menuItems: MenuElement[] = [];
@@ -69,5 +69,39 @@ export struct DirectoryRow {
       }.width('100%').padding({ left: 14, right: 12, top: 12, bottom: 12 })
     }.id(this.targetId).width('100%').constraintSize({ minHeight: 52 }).borderRadius(12)
       .backgroundColor($r('app.color.panel')).enabled(this.available).onClick(this.open)
+  }
+}
+
+@Component
+export struct OptionRow {
+  @Prop label: ResourceStr = '';
+  @Prop value: ResourceStr = '';
+  control: string = '';
+  action: () => void = () => {};
+
+  build() {
+    Button({ type: ButtonType.Normal }) {
+      Row({ space: 12 }) {
+        Text(this.label).fontSize(15).fontColor($r('app.color.ink'))
+        Blank()
+        Text(this.value).fontSize(14).fontColor($r('app.color.muted')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: '60%' })
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('app.color.faint')])
+      }.width('100%').padding({ left: 12, right: 12 })
+    }.id(this.control).height(48).width('100%').borderRadius(8).backgroundColor($r('app.color.panel')).onClick(this.action)
+  }
+}
+
+@Component
+export struct PreferenceChip {
+  @Prop value: string = '';
+  @Prop available: boolean = true;
+  control: string = '';
+  open: () => void = () => {};
+
+  build() {
+    Button({ type: ButtonType.Normal }) {
+      Text(this.value).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontSize(13).fontColor($r('app.color.ink'))
+    }.id(this.control).height(44).constraintSize({ maxWidth: 140 }).padding({ left: 7, right: 7 }).borderRadius(12)
+      .backgroundColor($r('app.color.chip')).enabled(this.available).accessibilityText(this.value).onClick(this.open)
   }
 }

@@ -42,7 +42,7 @@ async function until(predicate) {
 
 test('stream, reconnect after accepted input, and restore login on relaunch', async t => {
   const jwt = 'test.' + Buffer.from(JSON.stringify({exp: Date.now()/1000 + 3600})).toString('base64url') + '.test';
-  const login = { status: 'ok', accessToken: jwt, refreshToken: 'fixture', membership: { id: 'account', displayName: 'Fixture' } };
+  const login = { status: 'ok', accessToken: jwt, refreshToken: 'fixture', membership: { id: 'account', displayName: 'Fixture', email: 'fixture@example.invalid', avatarUrl: 'https://fixture.invalid/avatar' } };
   const host = { id: 'task', workingDir: '/fixture', title: 'Fixture task', agentKind: 'codex', model: 'fixture' };
   const rows = [{ id: 'first', sessionId: 'task', content: {text: 'existing'} }];
   const secrets = new Map();
@@ -137,10 +137,15 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
   await app.openDevice('host');
   await app.openTask('task');
   assert.equal(refreshes,1);
+  assert.equal(state.accountEmail, login.membership.email);
+  assert.equal(state.accountAvatar, login.membership.avatarUrl);
+  assert.equal(secrets.get('session').email, undefined);
   assert.equal(state.messages.at(-1).title,'finished while offline');
   assert.equal(count,1);
   await app.logout();
   assert.equal(secrets.get('session'),null);
+  assert.equal(state.accountEmail, '');
+  assert.equal(state.accountAvatar, '');
 
   // Cold-start callback: same native launch event and a newly created page owner.
   app = new Workspace(s => { state = s; });
@@ -178,7 +183,7 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   const sessions = new Map();
   let history = [], cards = [], created = 0, enqueue = 0, stopped = 0, resumed = 0, resolved = 0;
   let loseCreation = true, loseSend = false, refuse = false, lostDecision = false;
-  let holdHistory, releaseHistory;
+  let holdHistory, releaseHistory, legacyHost = false;
   const requests = [];
   const receipt = new Map();
   const ask = {request: {kind:'ask_user_question',requestId:'q',questions:[
@@ -197,8 +202,10 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
         case 'local-db:sessions:get-many': result = id.map(k => sessions.get(k)).filter(Boolean); break;
         case 'maker:get-new-maker-defaults': result = {selectedAgentKind:'pi',model:id === 'pi' ? 'host-model':'other', permissionMode:'ask'}; break;
         case 'maker:list-available-agents': result = ['pi','codex']; break;
-        case 'maker:provider:list': result = {providers:[]}; break;
-        case 'maker:get-capabilities': result = {availableModels:[{id:'other', label:'Other'}],permissionModes:[{id:'ask',label:'Ask'}]}; break;
+        case 'maker:provider:list':
+          if (legacyHost) return {ok:false,error:{code:'CHANNEL_NOT_ALLOWED'}};
+          result = {providers:[]}; break;
+        case 'maker:get-capabilities': result = {availableModels:[{id:'other', label:'Other'}],permissionModes:[{id:'ask',label:'Ask'},{id:'plan',label:'Plan'}]}; break;
         case 'maker:set-model': sessions.get(id).model = args[1]; break;
         case 'maker:create-session':
           created++;
@@ -316,6 +323,46 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   assert.equal(created, 2);
   assert.equal(sessions.get(app.state.task).agentKind, 'codex');
   assert.equal(sessions.get(app.state.task).model, 'other');
+  // The first-message toolbar runs before a task exists. A lost create reply must
+  // preserve its file and selections, and using the share target must never enqueue.
+  await app.back();
+  app.beginNew();
+  await app.configureNew();
+  assert.equal(app.state.legacyPicker, false);
+  assert.deepEqual(await app.preferences('model'), []);
+  legacyHost = true;
+  await app.configureNew();
+  assert.equal(app.state.legacyPicker, true);
+  await app.preferences('model'); await app.applyPreference('model','other');
+  await app.preferences('permission'); await app.applyPreference('permission','plan');
+  const firstFile = {id:'first-file',name:'notes.txt',path:'test-key',category:'text',mimeType:'text/plain'};
+  app.native = {pickFile:async () => 'file://docs/notes.txt',uploadFile:async () => firstFile};
+  await app.addFile('file');
+  const enqueuesBefore = enqueue;
+  loseCreation = true;
+  await assert.rejects(app.create('', '/fixture'), /reply lost/);
+  await app.create('', '/fixture');
+  assert.equal(enqueue, enqueuesBefore + 1);
+  assert.deepEqual(requests.filter(r => r.channel === 'maker:input:enqueue').at(-1).args[1].files, [firstFile]);
+  assert.equal(sessions.get(app.state.task).permissionMode, 'plan');
+  assert.equal(sessions.get(app.state.task).model, 'other');
+  await app.rename('验收新标题');
+  assert.equal(app.state.tasks.find(row => row.id === app.state.task).title, '验收新标题');
+  await app.back();
+  app.beginNew();
+  await app.addFile('file');
+  app.editDraft('保留草稿');
+  const snapshot = app.snapshotNew();
+  app.cancelNew();
+  assert.deepEqual(app.state.attachments, []);
+  app.beginNew(snapshot);
+  assert.equal(app.state.draft, '保留草稿');
+  await app.create('', '', app.state.draft, '', true);
+  assert.deepEqual(app.state.attachments, [firstFile]);
+  assert.equal(app.state.draft, '保留草稿');
+  assert.equal(enqueue, enqueuesBefore + 1);
+  app.native = undefined;
+  legacyHost = false;
   await app.back(); await app.back(); app.show({relay:'offline'});
   await app.openDevice('pc'); await app.openTask(task);
   assert.equal(app.state.messages.length,85); assert.equal(app.state.draft,'继续写的新草稿');

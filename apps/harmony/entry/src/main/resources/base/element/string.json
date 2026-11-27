@@ -559,6 +559,134 @@
     {
       "name": "permission_mode",
       "value": "权限模式"
+    },
+    {
+      "name": "org_help",
+      "value": "找不到企业登录标识？请联系管理员。"
+    },
+    {
+      "name": "rename",
+      "value": "重命名"
+    },
+    {
+      "name": "save",
+      "value": "保存"
+    },
+    {
+      "name": "more_actions",
+      "value": "更多操作"
+    },
+    {
+      "name": "logout_confirm",
+      "value": "退出当前账号？"
+    },
+    {
+      "name": "sort_by",
+      "value": "排序"
+    },
+    {
+      "name": "task_status",
+      "value": "任务状态"
+    },
+    {
+      "name": "group_by",
+      "value": "分组"
+    },
+    {
+      "name": "filter_project",
+      "value": "筛选项目"
+    },
+    {
+      "name": "ungrouped",
+      "value": "不分组"
+    },
+    {
+      "name": "by_created",
+      "value": "创建时间"
+    },
+    {
+      "name": "recent",
+      "value": "最近活动"
+    },
+    {
+      "name": "all_projects",
+      "value": "全部项目"
+    },
+    {
+      "name": "settings_relay_online",
+      "value": "中转已连接"
+    },
+    {
+      "name": "settings_relay_connecting",
+      "value": "正在连接中转"
+    },
+    {
+      "name": "settings_relay_offline",
+      "value": "中转未连接"
+    },
+    {
+      "name": "settings_relay",
+      "value": "中转服务"
+    },
+    {
+      "name": "settings_current_relay",
+      "value": "当前中转"
+    },
+    {
+      "name": "settings_official_relay",
+      "value": "官方中转"
+    },
+    {
+      "name": "settings_version",
+      "value": "版本"
+    },
+    {
+      "name": "settings_current_version",
+      "value": "当前版本"
+    },
+    {
+      "name": "settings_notifications_group",
+      "value": "通知"
+    },
+    {
+      "name": "settings_appearance",
+      "value": "外观"
+    },
+    {
+      "name": "settings_theme",
+      "value": "主题"
+    },
+    {
+      "name": "settings_language",
+      "value": "语言"
+    },
+    {
+      "name": "settings_app_language",
+      "value": "应用语言"
+    },
+    {
+      "name": "settings_system_default",
+      "value": "跟随系统"
+    },
+    {
+      "name": "settings_about",
+      "value": "关于这台手机"
+    },
+    {
+      "name": "settings_phone_model",
+      "value": "设备型号"
+    },
+    {
+      "name": "settings_system",
+      "value": "操作系统"
+    },
+    {
+      "name": "settings_legal",
+      "value": "法律信息"
+    },
+    {
+      "name": "settings_agreement",
+      "value": "用户协议"
     }
   ]
 }

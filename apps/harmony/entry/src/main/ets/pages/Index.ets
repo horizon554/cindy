@@ -3,10 +3,14 @@ import { filePreview } from '@kit.PreviewKit';
 import { common } from '@kit.AbilityKit';
 import { installInputs } from '../services/nativeEntry';
 import { LoginBrand } from './LoginBrand';
+import { SettingsPage } from './SettingsPage';
 import { HistorySource } from './HistorySource';
 import { HistoryMessage, InteractionPanel, MessageBody } from './TaskContent';
-import { DirectoryRow, IconAction, PillAction } from './Controls';
+import { DirectoryRow, IconAction, PillAction, OptionRow, PreferenceChip } from './Controls';
 import { Row as Item, Workspace, ViewState, Attachment, MediaInfo, Card, FolderList, Question, Choice } from '../services/workspace';
+
+const PRIVACY_URL = 'https://cindy.cn/privacy';
+const TERMS_URL = 'https://cindy.cn/terms';
 
 interface HomeGroup { key: string; head: Item; rows: Item[] }
 
@@ -24,14 +28,20 @@ struct Index {
   @State org: string = '';
   @State otp: string = '';
   @State creating: boolean = false;
-  @State title: string = '';
+  @State renaming: string = '';
+  @State showSearch: boolean = false;
+  @State pickingShareTarget: boolean = false;
+  @State shareQuery: string = '';
+  @State sortBy: string = 'recent';
+  @State groupProjects: boolean = true;
+  @State projectFilter: string = '';
+  @State previewChrome: boolean = true;
   @State composing: boolean = false;
   @State initializing: boolean = true;
   @State busy: boolean = false;
   @State notice: string = '';
   @State codeSent: boolean = false;
   @State consent: boolean = false;
-  @State toggleGeneration: number = 0;
   @State panel: string = '';
   @State drawerOpen: boolean = false;
   @State query: string = '';
@@ -79,8 +89,12 @@ struct Index {
   private workspace: Workspace = new Workspace((state: ViewState) => {
     const switched = state.task !== this.view.task;
     const changed = state.messages.length !== this.view.messages.length || state.live !== this.view.live;
-    if (state.account !== this.view.account) { this.scope = ''; this.query = ''; this.collapsed = []; this.statusFilter = 'active'; }
-    if (this.scope && !state.devices.some((d: Item) => d.id === this.scope)) this.scope = '';
+    if (state.account !== this.view.account) { this.scope = ''; this.query = ''; this.showSearch = false; this.shareQuery = ''; this.projectFilter = ''; this.sortBy = 'recent'; this.groupProjects = true; this.collapsed = []; this.statusFilter = 'active'; }
+    if (state.shareVersion !== this.view.shareVersion && state.shareLabel) {
+      this.pickingShareTarget = true; this.shareQuery = ''; this.panel = ''; this.drawerOpen = false;
+      this.selectedFile = undefined; this.previewSource = '';
+    } else if (!state.shareLabel) { this.pickingShareTarget = false; this.shareQuery = ''; }
+    if (this.scope && !state.devices.some((d: Item) => d.id === this.scope)) { this.scope = ''; this.projectFilter = ''; }
     if (!switched && state.task && !this.followEnd && changed) {
       const last = this.view.messages[this.view.messages.length - 1]?.id;
       const index = last ? state.messages.findIndex((r: Item) => r.id === last) : -1;
@@ -90,7 +104,7 @@ struct Index {
     if (state.device !== this.view.device || switched) this.creating = false;
     if (switched || state.device !== this.view.device || state.account !== this.view.account) {
       this.drawerOpen = false; this.panel = ''; this.selectedFile = undefined; this.previewSource = ''; this.inputOpen = false; this.inputHeight = 48; this.cardIndex = 0; this.unread = false; this.engine = ''; this.engineOptions = []; this.choices = [];
-      this.folders = { path: '', parent: '', rows: [] }; this.project = ''; this.title = '';
+      this.folders = { path: '', parent: '', rows: [] }; this.project = ''; this.renaming = '';
     }
     if (!state.linked) { this.selectedFile = undefined; this.previewSource = ''; }
     if (this.cardIndex >= state.cards.length) this.cardIndex = 0;
@@ -161,13 +175,17 @@ struct Index {
   onBackPress(): boolean {
     if (this.drawerOpen) { this.drawerOpen = false; return true; }
     if (this.selectedFile) { this.selectedFile = undefined; this.previewSource = ''; return true; }
-    if (this.panel === 'new-host' && !this.view.device) { this.panel = ''; this.creating = false; return true; }
-    if (this.panel) { this.panel = ['path', 'browse'].includes(this.panel) ? 'projects' : ''; return true; }
+    if (this.panel) { this.closePanel(); return true; }
     if (!this.view.account && (this.codeSent || this.enterprise) && !this.view.ssoWaiting) {
       this.codeSent = false; this.enterprise = false; this.otp = ''; this.notice = ''; this.workspace.clearMethods(); return true;
     }
-    if (this.creating) { this.creating = false; this.title = ''; this.foldComposer(); return true; }
-    if (this.view.shareLabel && !this.view.task) { this.workspace.dismissShare(); return true; }
+    if (this.sharePicker()) { this.workspace.dismissShare(); return true; }
+    if (this.creating) {
+      this.creating = false; this.workspace.cancelNew(); this.foldComposer();
+      this.pickingShareTarget = !!this.view.shareLabel; return true;
+    }
+    if (this.view.shareLabel) { this.pickingShareTarget = true; return true; }
+    if (!this.view.task && this.showSearch) { this.showSearch = false; this.query = ''; return true; }
     if (!this.view.task) return false;
     this.run(() => this.workspace.back());
     return true;
@@ -198,7 +216,7 @@ struct Index {
   }
 
   private async showPreview(file: MediaInfo, local: string = ''): Promise<void> {
-    this.selectedFile = file; this.previewSource = ''; this.zoom = 1; this.panX = 0; this.panY = 0;
+    this.previewChrome = true; this.selectedFile = file; this.previewSource = ''; this.zoom = 1; this.panX = 0; this.panY = 0;
     if (local) { this.previewSource = local; return; }
     if (!file.path) return;
     const url = await this.workspace.previewUrl(file.path);
@@ -241,13 +259,12 @@ struct Index {
 
   @Builder
   filePreview() {
-    Column({ space: 12 }) {
-      Text(this.selectedFile?.name || '').fontSize(18).fontWeight(FontWeight.Medium)
+    Stack({ alignContent: Alignment.Bottom }) {
       if (this.previewSource && this.selectedFile?.mimeType?.startsWith('image/')) {
         Stack() {
           Image(this.previewSource).width('100%').height('100%').objectFit(ImageFit.Contain)
             .scale({ x: this.zoom, y: this.zoom }).translate({ x: this.panX, y: this.panY })
-        }.width('100%').layoutWeight(1).clip(true).gesture(GestureGroup(GestureMode.Parallel,
+        }.width('100%').height('100%').clip(true).onClick(() => { this.previewChrome = !this.previewChrome; }).gesture(GestureGroup(GestureMode.Parallel,
           PinchGesture().onActionStart(() => { this.initialZoom = this.zoom; }).onActionUpdate((e: GestureEvent) => {
             this.zoom = Math.min(4, Math.max(1, this.initialZoom * e.scale));
             if (this.zoom === 1) { this.panX = 0; this.panY = 0; }
@@ -259,7 +276,7 @@ struct Index {
             }).onActionEnd((e: GestureEvent) => {
               if (this.zoom === 1 && Math.abs(e.offsetX) > 60) this.run(() => this.moveImage(e.offsetX < 0 ? 1 : -1));
             })))
-        if (this.gallery().length > 1) {
+        if (this.previewChrome && this.gallery().length > 1) {
           Row({ space: 12 }) {
             IconAction({ icon: $r('sys.symbol.chevron_left'), label: $r('app.string.previous'), available: this.imageIndex() > 0, onTap: () => this.run(() => this.moveImage(-1)) })
             Text((this.imageIndex() + 1).toString() + ' / ' + this.gallery().length.toString()).fontColor($r('app.color.ink'))
@@ -267,23 +284,50 @@ struct Index {
           }
         }
       } else {
-        Text([this.selectedFile?.mimeType, this.selectedFile?.size ? this.selectedFile.size.toString() + ' B' : ''].filter((s: string | undefined) => !!s).join(' · '))
+        Column({ space: 12 }) {
+          Text([this.selectedFile?.mimeType, this.selectedFile?.size ? this.selectedFile.size.toString() + ' B' : ''].filter((s: string | undefined) => !!s).join(' · '))
           .fontSize(14).fontColor($r('app.color.muted'))
         if (this.previewSource) {
           PillAction({ label: $r('app.string.open_file'), onTap: () => this.run(() => this.openSelectedFile()) })
         } else if (!this.busy) { Text($r('app.string.unavailable_preview')).fontSize(14) }
+        }.width('100%').height('100%').justifyContent(FlexAlign.Center)
       }
-      PillAction({ label: $r('app.string.close'), onTap: () => { this.selectedFile = undefined; this.previewSource = ''; } })
-    }.padding(16).width('100%').layoutWeight(1)
+      if (this.previewChrome) {
+        Column() { this.header() }.width('100%').position({ x: 0, y: 0 }).backgroundColor($r('app.color.panel'))
+      }
+    }.width('100%').layoutWeight(1)
   }
 
   private expanded(): boolean {
-    return this.inputOpen || !!this.view.transfer || !!this.view.voice || !!this.view.failedFile;
+    return this.inputOpen || this.view.paused || !!this.view.transfer || !!this.view.voice || !!this.view.failedFile;
   }
 
   private foldComposer(): void {
     this.inputOpen = false; this.inputHeight = 48;
     this.getUIContext().getFocusController().clearFocus();
+  }
+
+  @Builder
+  trailingActions() {
+    if (this.view.running && (this.view.draft.trim() || this.view.attachments.length)) {
+      IconAction({ icon: $r('sys.symbol.square_fill'), label: $r('app.string.stop'), controlId: 'stop', prominent: true,
+        available: !this.busy && this.view.linked, onTap: () => this.run(() => this.workspace.control(false)) })
+    }
+    IconAction({ icon: $r('sys.symbol.mic'), label: $r('app.string.voice'), controlId: 'voice', available: !this.busy && this.view.linked,
+      onTap: () => this.workspace.startVoice() })
+    if (this.view.running && !this.view.draft.trim() && !this.view.attachments.length) {
+      IconAction({ icon: $r('sys.symbol.square_fill'), label: $r('app.string.stop'), controlId: 'stop',
+        prominent: true, available: !this.busy && this.view.linked, onTap: () => this.run(() => this.workspace.control(false)) })
+    }
+    if (this.creating && (this.view.shareLabel || this.view.draft.trim() || this.view.attachments.length)) {
+      IconAction({ icon: $r('sys.symbol.arrow_up'), label: this.view.shareLabel ? $r('app.string.share_new') : $r('app.string.send'),
+        controlId: 'create-send', prominent: true, available: !this.busy && !this.composing && this.view.linked,
+        onTap: () => this.run(() => this.newTask()) })
+    } else if (this.view.draft.trim() || this.view.attachments.length) {
+      IconAction({ icon: $r('sys.symbol.arrow_up'), label: $r('app.string.send'), controlId: 'send',
+        prominent: true, available: this.canSend(), onTap: () => this.run(() => this.workspace.send(this.view.draft)) })
+
+    }
   }
 
   @Builder
@@ -300,7 +344,7 @@ struct Index {
               this.inputHeight = Math.max(44, Math.min(this.availableHeight * 0.42, this.dragStart - e.offsetY));
             }).onActionEnd((e: GestureEvent) => { if (this.dragStart <= 48 && e.offsetY > 32) this.foldComposer(); }))
       }
-      if (this.view.attachments.length && this.expanded()) {
+      if (this.view.attachments.length) {
         Scroll() {
           Row({ space: 6 }) {
             ForEach(this.view.attachments, (f: Attachment) => {
@@ -337,41 +381,23 @@ struct Index {
       }
       if (this.view.voicePreview) { Text(this.view.voicePreview).fontSize(15).fontColor($r('app.color.ink')).width('100%').maxLines(3) }
       Row({ space: 4 }) {
-      if (!this.expanded() && !this.creating) {
-        if (this.view.attachments.length) {
-          Button(this.view.attachments.length.toString()).height(40).onClick(() => { this.inputOpen = true; })
+        if (!this.expanded()) {
+          IconAction({ icon: $r('sys.symbol.plus'), label: $r('app.string.add_file'), controlId: 'compact-add',
+            available: !this.busy && this.view.linked, onTap: () => { this.panel = 'attachments'; } })
         }
-        IconAction({ icon: $r('sys.symbol.plus'), label: $r('app.string.add_file'), controlId: 'compact-add',
-          available: this.view.linked, menuItems: this.attachmentMenu() })
-      }
       TextArea({ placeholder: this.creating ? $r('app.string.first_input') : $r('app.string.message'),
-        text: this.creating ? this.title : this.view.draft }).id(this.creating ? 'first-message' : 'composer').layoutWeight(1)
+        text: this.view.draft }).id(this.creating ? 'first-message' : 'composer').layoutWeight(1)
         .height(this.expanded() ? Math.min(this.inputHeight, Math.max(44, this.availableHeight * 0.42)) : 44)
         .onFocus(() => { this.inputOpen = true; })
         .fontSize(16).fontColor($r('app.color.ink')).backgroundColor(Color.Transparent)
         .padding({ left: 10, right: 10, top: 7, bottom: 3 })
         .onChange((value: string, preview?: PreviewText) => {
           this.composing = !!preview?.value;
-          if (!this.composing) { if (this.creating) this.title = value; else this.workspace.editDraft(value); }
+          if (!this.composing) this.workspace.editDraft(value);
         })
-        if (this.creating) {
-          IconAction({ icon: $r('sys.symbol.arrow_up'), label: this.view.shareLabel ? $r('app.string.share_new') : $r('app.string.send'),
-            controlId: 'create-send', prominent: true, available: !this.busy && !this.composing && this.view.linked && (!!this.title.trim() || !!this.view.shareLabel),
-            onTap: () => this.run(() => this.newTask()) })
-        } else if (!this.expanded()) {
-          if (this.view.running) {
-            IconAction({ icon: $r('sys.symbol.square_fill'), label: $r('app.string.stop'), controlId: 'stop', prominent: true,
-              available: this.view.linked, onTap: () => this.run(() => this.workspace.control(false)) })
-          } else if (this.view.draft.trim() || this.view.attachments.length) {
-            IconAction({ icon: $r('sys.symbol.arrow_up'), label: $r('app.string.send'), controlId: 'send',
-              prominent: true, available: this.canSend(), onTap: () => this.run(() => this.workspace.send(this.view.draft)) })
-          } else {
-            IconAction({ icon: $r('sys.symbol.mic'), label: $r('app.string.voice'), controlId: 'voice', available: !this.busy && this.view.linked,
-              onTap: () => this.workspace.startVoice() })
-          }
-        }
+        if (!this.expanded()) { this.trailingActions() }
       }.width('100%')
-      if (!this.creating && (this.expanded() || this.view.paused)) {
+      if (this.expanded()) {
       Row({ space: 2 }) {
         if (this.view.transfer) {
           Text([this.view.uploadName, this.view.transfer].filter((s: string | undefined) => !!s).join(' · ')).fontSize(14).fontColor($r('app.color.muted')).layoutWeight(1)
@@ -389,44 +415,29 @@ struct Index {
         } else {
           IconAction({ icon: $r('sys.symbol.plus'), label: $r('app.string.add_file'), controlId: 'add-attachment',
             available: !this.busy && this.view.linked,
-            menuItems: this.attachmentMenu() })
-          IconAction({ icon: $r('sys.symbol.mic'), label: $r('app.string.voice'), controlId: 'voice', available: !this.busy && this.view.linked,
-            onTap: () => { this.notice = ''; this.workspace.startVoice(); } })
+            onTap: () => { this.panel = 'attachments'; } })
           Scroll() {
             Row({ space: 4 }) {
-              if (this.view.model) { this.preferenceChip(this.view.model, 'model') }
-              if (this.view.permission) { this.preferenceChip(this.view.permission, 'permission') }
+              if (this.view.permission) {
+                PreferenceChip({ value: this.view.permission, control: 'choose-permission', available: !this.busy && this.view.linked && !this.view.running,
+                  open: () => this.run(() => this.showChoices('permission')) })
+              }
+              if (this.view.model || (this.creating && this.view.agent)) {
+                PreferenceChip({ value: this.view.model || this.view.agent || '', control: 'choose-model', available: !this.busy && this.view.linked && !this.view.running,
+                  open: () => this.run(() => this.showChoices('model')) })
+              }
             }
-          }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).layoutWeight(1)
+          }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).align(Alignment.Start).layoutWeight(1)
           if (this.view.paused) {
             PillAction({ label: $r('app.string.resume'), available: !this.busy && this.view.linked,
               onTap: () => this.run(() => this.workspace.control(true)) })
           }
-          if (this.view.running) {
-            IconAction({ icon: $r('sys.symbol.square_fill'), label: $r('app.string.stop'), controlId: 'stop',
-              prominent: true, available: !this.busy && this.view.linked, onTap: () => this.run(() => this.workspace.control(false)) })
-          }
-          if (!this.view.running || this.view.draft.trim() || this.view.attachments.length) {
-            IconAction({ icon: $r('sys.symbol.arrow_up'), label: $r('app.string.send'), controlId: 'send',
-              prominent: true, available: this.canSend(), onTap: () => this.run(() => this.workspace.send(this.view.draft)) })
-          }
+          this.trailingActions()
         }
       }.width('100%')
       }
     }.width('100%').alignItems(HorizontalAlign.Center).padding(this.expanded() ? 8 : 4).constraintSize({ minHeight: 55 }).borderWidth(1)
       .borderColor($r('app.color.line')).borderRadius(this.expanded() ? 18 : 30).backgroundColor($r('app.color.panel'))
-  }
-
-  @Builder
-  preferenceChip(value: string, kind: string) {
-    Button(value).id('choose-' + kind).height(44).padding({ left: 7, right: 7 }).fontSize(13)
-      .fontColor($r('app.color.ink')).backgroundColor($r('app.color.chip')).borderRadius(12)
-      .enabled(!this.busy && this.view.linked && !this.view.running).onClick(() => this.run(() => this.showChoices(kind)))
-  }
-
-  private attachmentMenu(): MenuElement[] {
-    return [{ value: $r('app.string.image'), action: () => this.run(async () => { if (await this.workspace.addFile('image')) this.inputOpen = true; }) },
-      { value: $r('app.string.file'), action: () => this.run(async () => { if (await this.workspace.addFile('file')) this.inputOpen = true; }) }];
   }
 
   @Builder
@@ -491,10 +502,10 @@ struct Index {
         .selectedColor($r('app.color.action')).onChange((value: boolean) => { this.consent = value; })
       Text($r('app.string.agree')).fontSize(13).fontColor($r('app.color.muted'))
       Text($r('app.string.terms')).fontSize(13).fontColor($r('app.color.ink')).height(44)
-        .decoration({ type: TextDecorationType.Underline }).onClick(() => this.run(() => this.openPolicy('https://cindy.cn/terms')))
+        .decoration({ type: TextDecorationType.Underline }).onClick(() => this.run(() => this.openPolicy(TERMS_URL)))
       Text($r('app.string.and')).fontSize(13).fontColor($r('app.color.muted'))
       Text($r('app.string.privacy')).fontSize(13).fontColor($r('app.color.ink')).height(44)
-        .decoration({ type: TextDecorationType.Underline }).onClick(() => this.run(() => this.openPolicy('https://cindy.cn/privacy')))
+        .decoration({ type: TextDecorationType.Underline }).onClick(() => this.run(() => this.openPolicy(PRIVACY_URL)))
     }.width('100%').justifyContent(FlexAlign.Center)
   }
 
@@ -551,6 +562,7 @@ struct Index {
         if (this.enterprise) {
           TextInput({ placeholder: $r('app.string.org_id'), text: this.org }).id('org').height(this.u(80)).enabled(!this.busy)
             .onChange((value: string) => { this.org = value; this.workspace.clearMethods(); })
+          Text($r('app.string.org_help')).fontSize(this.u(22)).fontColor($r('app.color.muted')).margin({ top: 4 }).alignSelf(ItemAlign.Start)
         } else if (this.codeSent) { this.otpInput() }
         else {
           Row({ space: 5 }) {
@@ -625,15 +637,19 @@ struct Index {
 
   private async chooseHost(id: string): Promise<void> {
     const restoring = this.panel === 'new-host';
-    const note = this.title;
+    const draft = restoring ? this.workspace.snapshotNew() : undefined;
+    const sameHost = this.view.device === id;
     const project = this.view.device === id ? this.project : '';
     const owner = this.view.account;
     const selectingScope = this.panel === 'hosts';
     await this.selectHost(id);
-    if (selectingScope && this.view.account === owner) this.scope = id;
+    if (selectingScope && this.view.account === owner) { this.scope = id; this.projectFilter = ''; }
     if (restoring && this.view.account === owner && this.view.device === id) {
       this.creating = true;
-      this.title = note;
+      if (!sameHost || !this.view.agent) {
+        this.workspace.beginNew(draft);
+        await this.workspace.configureNew();
+      }
       this.project = project;
     }
   }
@@ -642,16 +658,26 @@ struct Index {
     return this.view.relay !== 'online' || !!this.view.devices.find((r: Item) => r.id === id)?.offline;
   }
 
-  private homeRows(): Item[] {
+  private scopedRows(): Item[] {
     const allowed = this.view.devices.map((r: Item) => r.id);
     const current: Item[] = this.view.tasks.map((r: Item) => {
       const item: Item = { id: r.id, title: r.title, project: r.project, summary: r.summary,
-        updated: r.updated, running: r.running, status: r.status, host: this.view.device };
+        updated: r.updated, created: r.created, running: r.running, status: r.status, host: this.view.device };
       return item;
     });
-    const rows = current.concat((this.view.homeIndex || []).filter((r: Item) => r.host !== this.view.device && allowed.includes(r.host || '')));
-    return rows.filter((r: Item) => (!this.view.shareLabel || !this.hostOffline(r.host || '')) && (!this.scope || this.scope === r.host) && (this.statusFilter === 'all' || (r.status === 'archived') === (this.statusFilter === 'archived')) &&
-      (r.title + ' ' + (r.project || '') + ' ' + (r.summary || '')).toLowerCase().includes(this.query.trim().toLowerCase()));
+    return current.concat((this.view.homeIndex || []).filter((r: Item) => r.host !== this.view.device && allowed.includes(r.host || '')))
+      .filter((r: Item) => this.view.shareLabel ? !this.hostOffline(r.host || '') && r.status !== 'archived' : !this.scope || this.scope === r.host);
+  }
+
+  private homeRows(): Item[] {
+    const sharing = !!this.view.shareLabel;
+    const query = (sharing ? this.shareQuery : this.query).trim().toLowerCase();
+    return this.scopedRows().filter((r: Item) => (sharing || ((!this.projectFilter || this.projectFilter === this.groupKey(r)) &&
+      (this.statusFilter === 'all' || (r.status === 'archived') === (this.statusFilter === 'archived')))) &&
+      (r.title + ' ' + (r.project || '') + ' ' + (r.summary || '')).toLowerCase().includes(query))
+      .sort((a: Item, b: Item) => !sharing && this.sortBy === 'created' ?
+        (Date.parse(b.created || b.updated || '') || 0) - (Date.parse(a.created || a.updated || '') || 0) :
+        (Date.parse(b.updated || '') || 0) - (Date.parse(a.updated || '') || 0));
   }
 
   private rowTime(item: Item): string {
@@ -667,7 +693,7 @@ struct Index {
   private groups(): HomeGroup[] {
     const groups = new Map<string, HomeGroup>();
     this.homeRows().forEach((row: Item) => {
-      const key = this.groupKey(row);
+      const key = this.groupProjects && !this.view.shareLabel ? this.groupKey(row) : '';
       const existing = groups.get(key);
       if (existing) existing.rows.push(row);
       else groups.set(key, { key: key, head: row, rows: [row] });
@@ -687,16 +713,44 @@ struct Index {
 
   private basename(path: string): string { return path.split(/[\\/]/).filter((s: string) => !!s).pop() || path; }
 
-  private startNew(): void {
-    this.title = ''; this.project = ''; this.engine = ''; this.inputOpen = false; this.inputHeight = 48;
-    this.creating = true; this.panel = this.view.device ? '' : 'new-host';
+  private startNew(loadDefaults: boolean = true): void {
+    this.project = ''; this.engine = ''; this.inputOpen = false; this.inputHeight = 48;
+    this.creating = true; this.panel = this.view.device && (!this.view.shareLabel || !this.hostOffline(this.view.device)) ? '' : 'new-host';
+    this.workspace.beginNew();
+    if (this.view.linked && loadDefaults) this.run(() => this.workspace.configureNew());
+  }
+
+  private async openRow(row: Item): Promise<void> {
+    const share = this.view.shareVersion;
+    if (this.creating) { this.workspace.cancelNew(); this.creating = false; }
+    if (this.view.task && this.view.task !== row.id) await this.workspace.back();
+    await this.selectHost(row.host || '');
+    if (this.view.task !== row.id) await this.workspace.openTask(row.id);
+    if (this.view.shareVersion === share) this.pickingShareTarget = false;
+  }
+
+  private async createShareTarget(): Promise<void> {
+    const share = this.view.shareVersion;
+    if (this.view.task) await this.workspace.back();
+    if (this.view.shareVersion !== share || !this.view.shareLabel) return;
+    this.pickingShareTarget = false;
+    if (!this.creating) {
+      this.startNew(false);
+      if (this.view.linked) await this.workspace.configureNew();
+    }
   }
 
   private async showChoices(kind: string): Promise<void> {
+    const origin = this.panel;
     this.choices = [];
     if (kind === 'engines') this.engineOptions = await this.workspace.engines();
     else this.choices = await this.workspace.preferences(kind);
-    if (kind === 'engines' ? this.creating && !this.panel : !!this.view.task && this.inputOpen && !this.panel) this.panel = kind;
+    if ((this.creating || !!this.view.task) && this.panel === origin) this.panel = kind;
+  }
+
+  private async chooseEngine(engine: string): Promise<void> {
+    await this.workspace.configureNew(engine);
+    if (this.creating && this.panel === 'engines') { this.engine = engine; this.panel = ''; }
   }
 
   private hostName(id: string): string {
@@ -705,35 +759,30 @@ struct Index {
   }
 
   private async newTask(): Promise<void> {
-    const text = this.title.trim();
-    if (!this.view.shareLabel && !text) return;
+    const text = this.view.draft.trim();
+    if (!this.view.shareLabel && !text && !this.view.attachments.length) return;
     const sharing = !!this.view.shareLabel;
     const version = this.view.shareVersion;
-    const created = await this.workspace.create('', this.project.trim(), sharing ? '' : text, this.engine);
+    const created = await this.workspace.create('', this.project.trim(), text, this.engine, sharing);
     if (created && sharing && this.view.shareVersion === version && this.view.shareLabel && this.view.task) {
-      if (text) this.workspace.editDraft(text);
       await this.workspace.acceptShare();
     }
   }
 
-  @Builder
-  headerMenu() {
-    Menu() {
-      if (this.view.task) {
-        MenuItem({ content: $r('app.string.task_info') }).onClick(() => { this.panel = 'detail'; })
-        if (this.view.hasOlder && this.view.linked) {
-          MenuItem({ content: $r('app.string.older') }).onClick(() => this.run(async () => {
-            this.followEnd = false; this.scroll.scrollEdge(Edge.Top); await this.workspace.older();
-          }))
-        }
-      } else {
-        ForEach(['active', 'archived', 'all'], (filter: string) => {
-          MenuItem({ content: this.filterLabel(filter), labelInfo: this.statusFilter === filter ? '✓' : '' })
-            .onClick(() => { this.statusFilter = filter; })
-        })
-        MenuItem({ content: $r('app.string.refresh') }).onClick(() => this.run(() => this.workspace.reconnect()))
-      }
-    }
+  private closePanel(): void {
+    if (this.panel === 'new-host' && !this.view.device) { this.creating = false; this.workspace.cancelNew(); }
+    if (this.panel === 'browse' || this.panel === 'path') this.panel = 'projects';
+    else if (['status', 'sort', 'group', 'filter'].includes(this.panel)) this.panel = 'display';
+    else this.panel = '';
+  }
+
+  private isSheet(): boolean { return !!this.panel && this.panel !== 'settings'; }
+  private sharePicker(): boolean { return !!this.view.shareLabel && this.pickingShareTarget; }
+
+  private openRename(): void {
+    if (!this.view.task || !this.view.linked || this.busy) return;
+    this.renaming = this.view.tasks.find((row: Item) => row.id === this.view.task)?.title || '';
+    this.panel = 'rename';
   }
 
   private filterLabel(value: string): ResourceStr {
@@ -744,6 +793,13 @@ struct Index {
     switch (this.panel) {
       case 'hosts': case 'new-host': return $r('app.string.select_host');
       case 'settings': return $r('app.string.settings');
+      case 'display': return $r('app.string.display_options');
+      case 'sort': return $r('app.string.sort_by');
+      case 'status': return $r('app.string.task_status');
+      case 'group': return $r('app.string.group_by');
+      case 'filter': return $r('app.string.filter_project');
+      case 'attachments': return $r('app.string.add_file');
+      case 'rename': return $r('app.string.rename');
       case 'detail': return $r('app.string.task_info');
       case 'engines': return $r('app.string.engine');
       case 'projects': case 'path': case 'browse': return $r('app.string.workspace_label');
@@ -753,12 +809,23 @@ struct Index {
     }
   }
 
-  private headerHint(): string {
-    const resource = this.atHome() ? $r('app.string.select_host') : this.view.task && !this.panel ? $r('app.string.task_info') : undefined;
-    return resource ? this.getUIContext().getHostContext()!.resourceManager.getStringSync(resource.id) : '';
-  }
+  private atHome(): boolean { return !this.selectedFile && !this.view.task && !this.creating && this.panel !== 'settings' && !this.view.shareLabel; }
 
-  private atHome(): boolean { return !this.panel && !this.selectedFile && !this.view.task && !this.creating; }
+  @Builder
+  homeHostMenu() {
+    Menu() {
+      MenuItem({ content: $r('app.string.all_hosts'), labelInfo: this.scope ? '' : '✓' }).id('menu-all-hosts')
+        .onClick(() => { this.scope = ''; this.projectFilter = ''; })
+      ForEach(this.view.devices, (host: Item) => {
+        MenuItem({ content: this.deviceLabel(host), labelInfo: this.scope === host.id ? '✓' : host.offline ? $r('app.string.offline') : '' })
+          .id('menu-host-' + host.id).onClick(() => this.run(async () => {
+            const owner = this.view.account;
+            await this.selectHost(host.id);
+            if (this.view.account === owner && this.view.device === host.id) { this.scope = host.id; this.projectFilter = ''; }
+          }))
+      }, (host: Item) => host.id)
+    }
+  }
 
   @Builder
   header() {
@@ -766,49 +833,38 @@ struct Index {
       if (this.atHome()) {
         IconAction({ icon: $r('sys.symbol.line_3_horizontal'), controlId: 'navigation', label: $r('app.string.navigation'),
           onTap: () => { this.drawerOpen = true; } })
+      } else if (this.sharePicker() || this.selectedFile) {
+        IconAction({ icon: $r('sys.symbol.xmark'), controlId: 'close', label: $r('app.string.close'), onTap: () => { this.onBackPress(); } })
       } else {
         IconAction({ icon: $r('sys.symbol.chevron_left'), controlId: 'back', label: $r('app.string.back'),
           available: !this.busy, onTap: () => { this.onBackPress(); } })
       }
-      Row({ space: 4 }) {
-        Text(this.selectedFile ? $r('app.string.preview') : this.atHome() && !this.view.shareLabel ?
-          (this.scope ? this.hostName(this.scope) : $r('app.string.all_hosts')) : this.panelTitle())
-          .fontSize(18).lineHeight(24).fontWeight(FontWeight.Medium).maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink')).constraintSize({ maxWidth: '88%' })
-        if (this.atHome() && !this.view.shareLabel) { SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(13) }
-      }.id('header-title').accessibilityGroup(true)
-        .accessibilityDescription(this.headerHint())
-        .justifyContent(FlexAlign.Center).height(44).layoutWeight(1)
-        .onClick(() => {
-          if (this.atHome() && !this.view.shareLabel) this.panel = 'hosts';
-          else if (this.view.task && !this.panel && !this.selectedFile) this.panel = 'detail';
-        })
-      if (!this.panel && !this.selectedFile && !this.creating) {
-        Button({ type: ButtonType.Circle }) {
-          if (this.view.task) {
-            Row({ space: 3 }) {
-              Circle().width(3).height(3).fill($r('app.color.ink'))
-              Circle().width(3).height(3).fill($r('app.color.ink'))
-              Circle().width(3).height(3).fill($r('app.color.ink'))
-            }.accessibilityLevel('no')
+      if (this.atHome()) {
+        Button({ type: ButtonType.Normal }) {
+          Row({ space: 4 }) {
+            Text(this.scope ? this.hostName(this.scope) : $r('app.string.all_hosts')).fontSize(18).fontWeight(FontWeight.Medium)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink')).constraintSize({ maxWidth: '85%' })
+            SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(13).fontColor([$r('app.color.muted')])
           }
-          else { SymbolGlyph($r('sys.symbol.slider_horizontal_2')).fontSize(21).fontColor([$r('app.color.ink')]) }
-        }.id('account-menu').width(44).height(44).backgroundColor(Color.Transparent).enabled(!this.busy)
-          .accessibilityText(this.view.task ? $r('app.string.task_info') : $r('app.string.display_options')).bindMenu(this.headerMenu)
+        }.id('header-title').height(44).layoutWeight(1).backgroundColor(Color.Transparent).bindMenu(this.homeHostMenu)
+      } else if (this.creating && !this.selectedFile && !this.sharePicker()) {
+        Blank().layoutWeight(1)
+      } else {
+        Text(this.selectedFile ? this.selectedFile.name : this.view.shareLabel ? $r('app.string.choose_target') :
+          this.panel === 'settings' ? $r('app.string.settings') : this.headerTitle()).id('header-title')
+          .fontSize(18).fontWeight(FontWeight.Medium).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .fontColor($r('app.color.ink')).layoutWeight(1).textAlign(TextAlign.Center)
+          .gesture(TapGesture({ count: 2 }).onAction(() => { if (!this.selectedFile && !this.view.shareLabel) this.openRename(); }))
+      }
+      if (this.selectedFile && this.previewSource) {
+        IconAction({ icon: $r('sys.symbol.ellipsis_circle'), label: $r('app.string.more_actions'), controlId: 'preview-more',
+          menuItems: [{ value: $r('app.string.open_file'), action: () => this.run(() => this.openSelectedFile()) }] })
+      } else if (this.atHome() || (!!this.view.task && !this.selectedFile && !this.view.shareLabel)) {
+        IconAction({ icon: this.view.task ? $r('sys.symbol.ellipsis_circle') : $r('sys.symbol.slider_horizontal_2'),
+          controlId: 'account-menu', label: this.view.task ? $r('app.string.task_info') : $r('app.string.display_options'),
+          onTap: () => { this.panel = this.view.task ? 'detail' : 'display'; } })
       } else { Blank().width(44) }
     }.width('100%').height(48)
-  }
-
-  @Builder
-  option(label: ResourceStr, value: ResourceStr, action: () => void, control: string) {
-    Button({ type: ButtonType.Normal }) {
-      Row({ space: 12 }) {
-        Text(label).fontSize(15).fontColor($r('app.color.ink'))
-        Blank()
-        Text(value).fontSize(14).fontColor($r('app.color.muted')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: '60%' })
-        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('app.color.faint')])
-      }.width('100%').padding({ left: 12, right: 12 })
-    }.id(control).height(48).width('100%').borderRadius(8).backgroundColor($r('app.color.panel')).onClick(action)
   }
 
   @Builder
@@ -830,66 +886,48 @@ struct Index {
           Text(this.view.account).layoutWeight(1).fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink')).maxLines(1)
           IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.close'), onTap: () => { this.drawerOpen = false; } })
         }.width('100%').padding({ left: 12 })
-        this.option($r('app.string.tasks'), '', () => { this.drawerOpen = false; }, 'drawer-home')
-        this.option($r('app.string.select_host'), this.scope ? this.hostName(this.scope) : $r('app.string.all_hosts'), () => {
+        OptionRow({ label: $r('app.string.search'), value: '', action: () => { this.drawerOpen = false; this.showSearch = true; }, control: 'drawer-search' })
+        OptionRow({ label: $r('app.string.select_host'), value: this.scope ? this.hostName(this.scope) : $r('app.string.all_hosts'), action: () => {
           this.drawerOpen = false; this.panel = 'hosts';
-        }, 'scope')
+        }, control: 'scope' })
+        OptionRow({ label: $r('app.string.settings'), value: '', action: () => { this.drawerOpen = false; this.notice = ''; this.panel = 'settings'; }, control: 'settings' })
         Blank().layoutWeight(1)
-        this.option($r('app.string.settings'), '', () => { this.drawerOpen = false; this.panel = 'settings'; }, 'settings')
+        OptionRow({ label: $r('app.string.sign_out'), value: '', action: () => { this.drawerOpen = false; this.confirmLogout(); }, control: 'drawer-logout' })
       }.width('82%').constraintSize({ maxWidth: 340 }).height('100%').backgroundColor($r('app.color.panel'))
         .padding({ top: this.topInset + 8, left: 12, right: 12, bottom: this.bottomInset + 8 })
     }.width('100%').height('100%')
   }
 
-  @Builder
-  settings() {
-    Column({ space: 12 }) {
-      this.infoRow($r('app.string.account_label'), this.view.account)
-      Column({ space: 4 }) {
-        Row({ space: 8 }) {
-          Text($r('app.string.notification_settings')).layoutWeight(1).fontSize(16).fontColor($r('app.color.ink'))
-          ForEach([this.toggleGeneration], (generation: number) => {
-            Toggle({ type: ToggleType.Switch, isOn: this.view.pushEnabled }).id('push-switch').enabled(!this.busy)
-            .selectedColor($r('app.color.action')).accessibilityText($r('app.string.notification_settings'))
-            .onChange((enable: boolean) => {
-              if (enable !== this.view.pushEnabled) this.run(async () => {
-                await this.workspace.changePush(enable); this.toggleGeneration++;
-              });
-            })
-          }, (generation: number) => generation.toString())
-        }.width('100%').height(48).padding({ left: 12, right: 12 })
-        if (this.view.pushStatus) { Text(this.view.pushStatus).fontSize(14).fontColor($r('app.color.muted')).padding(6) }
-        this.option($r('app.string.settings_notifications'), '', () => this.run(() => this.workspace.notificationSettings()), 'system-notifications')
-      }.width('100%').backgroundColor($r('app.color.panel')).borderRadius(12)
-      Blank().layoutWeight(1)
-      PillAction({ label: $r('app.string.sign_out'), onTap: () => this.run(async () => {
+  private confirmLogout(): void {
+    this.getUIContext().showAlertDialog({ message: $r('app.string.logout_confirm'),
+      primaryButton: { value: $r('app.string.cancel'), action: () => {} },
+      secondaryButton: { value: $r('app.string.sign_out'), action: () => this.run(async () => {
         await this.workspace.logout(); this.phone = ''; this.org = ''; this.otp = ''; this.consent = false; this.codeSent = false; this.enterprise = false;
-      }) })
-    }.width('100%').layoutWeight(1).padding(8)
+      }) } });
   }
 
   @Builder
-  directory() {
-    if (this.panel === 'settings') { this.settings() }
-    else if (this.panel === 'hosts' || this.panel === 'new-host') {
+  sheetOptions() {
+    if (this.panel === 'hosts' || this.panel === 'new-host') {
       List() {
         if (this.panel === 'hosts') {
-          ListItem() { this.option($r('app.string.all_hosts'), this.scope ? '' : '✓', () => { this.scope = ''; this.panel = ''; }, 'all-hosts') }
+          ListItem() { OptionRow({ label: $r('app.string.all_hosts'), value: this.scope ? '' : '✓', action: () => { this.scope = ''; this.projectFilter = ''; this.panel = ''; }, control: 'all-hosts' }) }
         }
         ForEach(this.view.devices, (item: Item) => {
           ListItem() { DirectoryRow({ title: this.deviceLabel(item), targetId: item.id, computer: true, offline: !!item.offline,
+            available: !this.busy && (this.panel !== 'new-host' || !this.hostOffline(item.id)),
             open: () => this.run(() => this.chooseHost(item.id)) }) }
         }, (item: Item) => item.id)
       }.layoutWeight(1).width('100%')
     } else if (this.panel === 'engines') {
-      this.option($r('app.string.host_default'), this.engine ? '' : '✓', () => { this.engine = ''; this.panel = ''; }, 'engine-default')
+      OptionRow({ label: $r('app.string.host_default'), value: this.engine ? '' : '✓', action: () => { this.run(() => this.chooseEngine('')); }, control: 'engine-default' })
       ForEach(this.engineOptions, (id: string) => {
-        this.option(id, id === this.engine ? '✓' : '', () => { this.engine = id; this.panel = ''; }, 'engine-' + id)
+        OptionRow({ label: id, value: id === this.engine ? '✓' : '', action: () => { this.run(() => this.chooseEngine(id)); }, control: 'engine-' + id })
       })
     } else if (this.panel === 'projects') {
-      this.option($r('app.string.dialogue'), this.project ? '' : '✓', () => { this.project = ''; this.panel = ''; }, 'dialogue')
-      this.option($r('app.string.browse_computer'), '', () => this.run(() => this.browse(this.project || '~')), 'browse-computer')
-      this.option($r('app.string.other_path'), '', () => { this.pathInput = this.project; this.panel = 'path'; }, 'choose-path')
+      OptionRow({ label: $r('app.string.dialogue'), value: this.project ? '' : '✓', action: () => { this.project = ''; this.panel = ''; }, control: 'dialogue' })
+      OptionRow({ label: $r('app.string.browse_computer'), value: '', action: () => this.run(() => this.browse(this.project || '~')), control: 'browse-computer' })
+      OptionRow({ label: $r('app.string.other_path'), value: '', action: () => { this.pathInput = this.project; this.panel = 'path'; }, control: 'choose-path' })
       List() {
         ForEach(Array.from(new Set(this.view.tasks.map((t: Item) => t.project || '').filter((p: string) => !!p))), (path: string) => {
           ListItem() { DirectoryRow({ title: this.basename(path), subtitle: path, open: () => { this.project = path; this.panel = ''; } }) }
@@ -897,7 +935,7 @@ struct Index {
       }.layoutWeight(1).width('100%')
     } else if (this.panel === 'browse') {
       this.infoRow($r('app.string.workspace_label'), this.folders.path)
-      if (this.folders.parent) { this.option($r('app.string.parent_folder'), '', () => this.run(() => this.browse(this.folders.parent)), 'parent-folder') }
+      if (this.folders.parent) { OptionRow({ label: $r('app.string.parent_folder'), value: '', action: () => this.run(() => this.browse(this.folders.parent)), control: 'parent-folder' }) }
       List() {
         ForEach(this.folders.rows, (dir: Item) => {
           ListItem() { DirectoryRow({ title: dir.title, targetId: dir.id, open: () => this.run(() => this.browse(dir.id)) }) }
@@ -907,30 +945,135 @@ struct Index {
     } else if (this.panel === 'path') {
       TextInput({ placeholder: $r('app.string.workspace_path'), text: this.pathInput }).id('project-dir').onChange((v: string) => { this.pathInput = v; })
       PillAction({ label: $r('app.string.use_path'), available: !!this.pathInput.trim(), onTap: () => { this.project = this.pathInput.trim(); this.panel = ''; } })
-    } else if (this.creating) {
-      this.option($r('app.string.computer'), this.hostName(this.view.device) || $r('app.string.select_host'), () => { this.panel = 'new-host'; }, 'new-task-host')
-      this.option($r('app.string.engine'), this.engine || $r('app.string.host_default'), () => this.run(() => this.showChoices('engines')), 'new-task-engine')
-      this.option($r('app.string.workspace_label'), this.project ? this.basename(this.project) : $r('app.string.dialogue'), () => { this.panel = 'projects'; }, 'new-task-project')
+    } else if (this.panel === 'attachments') {
+      OptionRow({ label: $r('app.string.image'), value: '', action: () => this.pickAttachment('image'), control: 'pick-image' })
+      OptionRow({ label: $r('app.string.file'), value: '', action: () => this.pickAttachment('file'), control: 'pick-file' })
+    } else if (this.panel === 'display') {
+      OptionRow({ label: $r('app.string.task_status'), value: this.filterLabel(this.statusFilter), action: () => { this.panel = 'status'; }, control: 'display-status' })
+      OptionRow({ label: $r('app.string.group_by'), value: this.groupProjects ? $r('app.string.project') : $r('app.string.ungrouped'), action: () => { this.panel = 'group'; }, control: 'display-group' })
+      OptionRow({ label: $r('app.string.sort_by'), value: this.sortBy === 'created' ? $r('app.string.by_created') : $r('app.string.recent'), action: () => { this.panel = 'sort'; }, control: 'display-sort' })
+      OptionRow({ label: $r('app.string.filter_project'), value: this.projectFilter ? this.projectName(this.projectFilter) : $r('app.string.all_projects'), action: () => { this.panel = 'filter'; }, control: 'display-filter' })
+      OptionRow({ label: $r('app.string.refresh'), value: '', action: () => { this.panel = ''; this.run(() => this.workspace.reconnect()); }, control: 'refresh-home' })
+    } else if (this.panel === 'status') {
+      ForEach(['active', 'archived', 'all'], (filter: string) => {
+        OptionRow({ label: this.filterLabel(filter), value: this.statusFilter === filter ? '✓' : '', action: () => { this.statusFilter = filter; this.panel = ''; }, control: 'status-' + filter })
+      })
+    } else if (this.panel === 'sort') {
+      OptionRow({ label: $r('app.string.recent'), value: this.sortBy === 'recent' ? '✓' : '', action: () => { this.sortBy = 'recent'; this.panel = ''; }, control: 'recent' })
+      OptionRow({ label: $r('app.string.by_created'), value: this.sortBy === 'created' ? '✓' : '', action: () => { this.sortBy = 'created'; this.panel = ''; }, control: 'sort-created' })
+    } else if (this.panel === 'group') {
+      OptionRow({ label: $r('app.string.project'), value: this.groupProjects ? '✓' : '', action: () => { this.groupProjects = true; this.panel = ''; }, control: 'group-project' })
+      OptionRow({ label: $r('app.string.ungrouped'), value: this.groupProjects ? '' : '✓', action: () => { this.groupProjects = false; this.panel = ''; }, control: 'group-flat' })
+    } else if (this.panel === 'filter') {
+      OptionRow({ label: $r('app.string.all_projects'), value: this.projectFilter ? '' : '✓', action: () => { this.projectFilter = ''; this.panel = ''; }, control: 'filter-all' })
+      List() {
+        ForEach(Array.from(new Set(this.scopedRows().map((r: Item) => this.groupKey(r)))), (key: string) => {
+          ListItem() { OptionRow({ label: this.projectName(key), value: this.projectFilter === key ? '✓' : '', action: () => { this.projectFilter = key; this.panel = ''; }, control: 'filter-' + key }) }
+        })
+      }.width('100%').layoutWeight(1)
+    } else if (this.panel === 'detail') {
+      Scroll() {
+        Column() {
+          OptionRow({ label: $r('app.string.rename'), value: this.headerTitle(), action: () => this.openRename(), control: 'rename-task' }).enabled(this.view.linked && !this.busy)
+          this.infoRow($r('app.string.computer'), this.hostName(this.view.device))
+          this.infoRow($r('app.string.workspace_label'), this.view.tasks.find((r: Item) => r.id === this.view.task)?.project || $r('app.string.dialogue'))
+          if (this.view.agent) { this.infoRow($r('app.string.engine'), this.view.agent) }
+          if (this.view.model) { this.infoRow($r('app.string.model'), this.view.model) }
+          if (this.view.permission) { this.infoRow($r('app.string.permission_mode'), this.view.permission) }
+          if (this.view.hasOlder && this.view.linked) {
+            OptionRow({ label: $r('app.string.older'), value: '', action: () => { this.panel = ''; this.run(async () => {
+              this.followEnd = false; this.scroll.scrollEdge(Edge.Top); await this.workspace.older();
+            }); }, control: 'task-older' })
+          }
+        }.width('100%')
+      }.align(Alignment.Top).layoutWeight(1)
+    } else if (this.panel === 'rename') {
+      TextInput({ text: this.renaming }).id('rename-input').maxLength(200).onChange((v: string) => { this.renaming = v; })
+      PillAction({ label: $r('app.string.save'), prominent: true, available: !this.busy && !!this.renaming.trim(), onTap: () => this.run(async () => {
+        await this.workspace.rename(this.renaming); this.panel = '';
+      }) })
+    } else if (this.panel === 'model' || this.panel === 'permission') {
+      if (this.creating && this.panel === 'model' && !this.view.legacyPicker) {
+        OptionRow({ label: $r('app.string.engine'), value: this.view.agent || $r('app.string.host_default'), action: () => this.run(() => this.showChoices('engines')), control: 'picker-engine' })
+      }
+      List() {
+        ForEach(this.choices, (opt: Item) => {
+          ListItem() { DirectoryRow({ title: opt.title, subtitle: opt.summary || '', targetId: 'pref-' + opt.id,
+            available: !this.busy && this.view.linked && !this.view.running, open: () => this.run(async () => {
+              await this.workspace.applyPreference(this.panel, opt.id); this.panel = '';
+            }) }) }
+        })
+        if (!this.choices.length) { ListItem() { Text($r('app.string.no_choices')).fontColor($r('app.color.muted')).padding(16) } }
+      }.layoutWeight(1).width('100%')
+    }
+  }
+
+  private pickAttachment(kind: string): void {
+    this.panel = '';
+    this.run(async () => { if (await this.workspace.addFile(kind)) this.inputOpen = true; });
+  }
+
+  private projectName(key: string): ResourceStr {
+    const row = this.scopedRows().find((r: Item) => this.groupKey(r) === key);
+    if (!row) return $r('app.string.all_projects');
+    return row.project ? (this.scope ? this.basename(row.project) : this.hostName(row.host || '') + ' · ' + this.basename(row.project)) : $r('app.string.dialogue');
+  }
+
+  @Builder
+  sheetContent() {
+    Column({ space: 4 }) {
+      Row() {
+        IconAction({ icon: $r('sys.symbol.chevron_left'), label: $r('app.string.back'), controlId: 'sheet-back', available: !this.busy, onTap: () => this.closePanel() })
+        Text(this.panelTitle()).textAlign(TextAlign.Center).fontSize(18).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink')).layoutWeight(1)
+        Blank().width(44)
+      }.width('100%')
+      this.errorNotice()
+      this.sheetOptions()
+    }.width('100%').height('100%').padding({ left: 16, right: 16, bottom: 12 })
+  }
+
+  @Builder
+  directory() {
+    if (this.creating && !this.sharePicker()) {
       Blank().layoutWeight(1)
+      OptionRow({ label: $r('app.string.computer'), value: this.hostName(this.view.device) || $r('app.string.select_host'), action: () => { this.panel = 'new-host'; }, control: 'new-task-host' })
+      if (this.view.legacyPicker) {
+        OptionRow({ label: $r('app.string.engine'), value: this.view.agent || $r('app.string.host_default'), action: () => this.run(() => this.showChoices('engines')), control: 'new-task-engine' })
+      }
+      OptionRow({ label: $r('app.string.workspace_label'), value: this.project ? this.basename(this.project) : $r('app.string.dialogue'), action: () => { this.panel = 'projects'; }, control: 'new-task-project' })
       this.composer()
     } else {
-      Search({ placeholder: $r('app.string.search_task'), value: this.query }).id('search-tasks').height(40)
-        .cancelButton({ style: CancelButtonStyle.INPUT }).onChange((v: string) => { this.query = v; })
+      if (this.showSearch || this.sharePicker()) {
+        Row() {
+          Search({ placeholder: $r('app.string.search_task'), value: this.sharePicker() ? this.shareQuery : this.query }).id('search-tasks').height(40).layoutWeight(1)
+            .cancelButton({ style: CancelButtonStyle.INPUT }).onChange((v: string) => { if (this.sharePicker()) this.shareQuery = v; else this.query = v; })
+          if (!this.sharePicker()) { IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.close'), controlId: 'close-search',
+            onTap: () => { this.showSearch = false; this.query = ''; } }) }
+        }
+      }
+      if (this.sharePicker() && this.view.devices.some((d: Item) => !this.hostOffline(d.id))) {
+        OptionRow({ label: $r('app.string.create_new'), value: '', action: () => this.run(() => this.createShareTarget()), control: 'share-new-task' })
+      }
       Stack({ alignContent: Alignment.BottomEnd }) {
         List({ space: 0 }) {
           ForEach(this.groups(), (group: HomeGroup) => {
-            ListItem() { this.projectHeading(group.head) }
-            if (!this.collapsed.includes(group.key) || !!this.query.trim()) {
+            if (group.key) { ListItem() { this.projectHeading(group) } }
+            if (!group.key || !this.collapsed.includes(group.key) || !!this.query.trim()) {
               ForEach(group.rows, (item: Item) => {
                 ListItem() {
                   Button({ type: ButtonType.Normal }) {
                     Row({ space: 9 }) {
                       Circle().width(6).height(6).fill(item.running && !this.hostOffline(item.host || '') ? $r('app.color.running') : $r('app.color.line'))
-                      Text(item.title).layoutWeight(1).fontSize(15).lineHeight(22).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
+                      Column({ space: 2 }) {
+                        Text(item.title).fontSize(15).lineHeight(22).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
+                        if (item.summary && item.summary !== item.title) {
+                          Text(item.summary).fontSize(13).lineHeight(18).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.muted'))
+                        }
+                      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
                       Text(this.hostOffline(item.host || '') ? $r('app.string.offline') : this.rowTime(item)).fontSize(12).fontColor($r('app.color.muted'))
-                    }.padding({ left: 24, right: 6 }).width('100%')
+                    }.padding({ left: group.key ? 24 : 6, right: 6, top: 4, bottom: 4 }).width('100%')
                   }.id(item.id).constraintSize({ minHeight: 44 }).width('100%').backgroundColor(Color.Transparent).enabled(this.rowAvailable(item))
-                    .onClick(() => this.run(async () => { await this.selectHost(item.host || ''); await this.workspace.openTask(item.id); }))
+                    .onClick(() => this.run(() => this.openRow(item)))
                 }
               }, (item: Item) => (item.host || '') + '/' + item.id)
             }
@@ -938,23 +1081,23 @@ struct Index {
           if (!this.homeRows().length) {
             ListItem() {
               Column({ space: 12 }) {
-                Text(this.query.trim() ? $r('app.string.no_matches') : !this.view.devices.length ? $r('app.string.no_hosts') :
+                Text((this.sharePicker() ? this.shareQuery : this.query).trim() ? $r('app.string.no_matches') : !this.view.devices.length ? $r('app.string.no_hosts') :
                   this.view.device && this.hostOffline(this.view.device) ? $r('app.string.offline_empty') : $r('app.string.no_tasks')).fontSize(15).fontColor($r('app.color.muted'))
-                if (this.query.trim()) {
-                  PillAction({ label: $r('app.string.clear_search'), onTap: () => { this.query = ''; } })
+                if ((this.sharePicker() ? this.shareQuery : this.query).trim()) {
+                  PillAction({ label: $r('app.string.clear_search'), onTap: () => { if (this.sharePicker()) this.shareQuery = ''; else this.query = ''; } })
                 } else if (!this.view.devices.length) {
                   PillAction({ label: $r('app.string.refresh'), onTap: () => this.run(() => this.workspace.devices()) })
-                } else if (this.statusFilter !== 'active') {
+                } else if (!this.sharePicker() && this.statusFilter !== 'active') {
                   PillAction({ label: $r('app.string.ready_tasks'), onTap: () => { this.statusFilter = 'active'; } })
                 }
               }.width('100%').padding(24)
             }
           }
-          if (this.view.moreTasks && this.view.linked && (!this.scope || this.scope === this.view.device)) {
+          if (this.view.moreTasks && this.view.linked && (this.sharePicker() || !this.scope || this.scope === this.view.device)) {
             ListItem() { PillAction({ label: $r('app.string.more_tasks'), available: !this.busy, onTap: () => this.run(() => this.workspace.more()) }) }
           }
         }.width('100%').height('100%').contentEndOffset(76)
-        if (this.view.devices.length) {
+        if (!this.sharePicker() && this.view.devices.length) {
           Button({ type: ButtonType.Circle }) { SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(23).fontColor([$r('app.color.on_action')]) }
             .id('new-task').width(56).height(56).margin({ right: 4, bottom: 12 }).backgroundColor($r('app.color.action'))
             .accessibilityText($r('app.string.create_new')).onClick(() => this.startNew())
@@ -964,25 +1107,29 @@ struct Index {
   }
 
   @Builder
-  projectHeading(group: Item) {
+  projectHeading(group: HomeGroup) {
     Button({ type: ButtonType.Normal }) {
       Row({ space: 8 }) {
-        SymbolGlyph($r('sys.symbol.folder')).fontSize(17).fontColor([$r('app.color.muted')])
-        Text(group.project ? this.basename(group.project) : $r('app.string.dialogue')).fontSize(15).fontWeight(FontWeight.Medium)
+        SymbolGlyph(this.collapsed.includes(group.key) ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_down')).fontSize(12)
+        SymbolGlyph(this.collapsed.includes(group.key) ? $r('sys.symbol.folder') : $r('sys.symbol.folder_fill')).fontSize(17).fontColor([$r('app.color.muted')])
+        Text(group.head.project ? this.basename(group.head.project) : $r('app.string.dialogue')).fontSize(15).fontWeight(FontWeight.Medium)
           .fontColor($r('app.color.ink')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        if (!this.scope && this.view.devices.length > 1) { Text(this.hostName(group.host || '')).fontSize(12).fontColor($r('app.color.muted')).maxLines(1) }
+        if (!this.scope && this.view.devices.length > 1) { Text(this.hostName(group.head.host || '')).fontSize(12).fontColor($r('app.color.muted')).maxLines(1) }
         Blank()
-        SymbolGlyph(this.collapsed.includes(this.groupKey(group)) ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_down')).fontSize(12)
+        if (!this.hostOffline(group.head.host || '') && group.rows.some((r: Item) => !!r.running)) {
+          Circle().width(6).height(6).fill($r('app.color.running')).accessibilityText($r('app.string.working'))
+        }
+        Text(group.rows.length.toString()).fontSize(13).fontColor($r('app.color.muted'))
       }.width('100%').padding({ left: 6, right: 6 })
     }.width('100%').height(44).backgroundColor(Color.Transparent).onClick(() => {
-      const key = this.groupKey(group);
+      const key = group.key;
       this.collapsed = this.collapsed.includes(key) ? this.collapsed.filter((g: string) => g !== key) : this.collapsed.concat(key);
     })
   }
 
   @Builder
   errorNotice() {
-    if (this.notice || this.view.error) {
+    if (this.notice || (this.panel !== 'settings' && this.view.error)) {
       Text(this.notice || this.view.error).fontSize(14).lineHeight(20).fontColor($r('app.color.danger')).width('100%')
         .padding(8).backgroundColor($r('app.color.chip')).borderRadius(8).copyOption(CopyOptions.InApp)
     }
@@ -1001,8 +1148,8 @@ struct Index {
       } else if (!this.view.account) {
         this.login()
       } else {
-        this.header()
-        if (this.view.shareLabel && !this.panel) {
+        if (!this.selectedFile) { this.header() }
+        if (this.view.shareLabel && (this.sharePicker() || !this.creating) && !this.selectedFile) {
           Column({ space: 4 }) {
             if (this.view.shareText) { Text(this.view.shareText).maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis }).fontSize(15).fontColor($r('app.color.ink')) }
             if (this.view.shareFiles?.length) {
@@ -1021,47 +1168,44 @@ struct Index {
               }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
             }
             Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center, space: { main: LengthMetrics.vp(6) } }) {
-              if (this.view.task) {
-                PillAction({ label: $r('app.string.choose_target'), onTap: () => this.run(() => this.workspace.back()) })
+              if (this.view.task && !this.sharePicker()) {
+                PillAction({ label: $r('app.string.choose_target'), onTap: () => { this.pickingShareTarget = true; } })
                 PillAction({ label: $r('app.string.share_draft'), available: !this.busy && this.view.linked, onTap: () => this.run(() => this.workspace.acceptShare()) })
-              } else { Text($r('app.string.share_pick')).fontSize(14).fontColor($r('app.color.muted')).layoutWeight(1) }
-              PillAction({ label: $r('app.string.share_drop'), onTap: () => this.workspace.dismissShare() })
+                PillAction({ label: $r('app.string.share_drop'), onTap: () => this.workspace.dismissShare() })
+              }
             }
           }.width('100%').alignItems(HorizontalAlign.Start).padding(8).backgroundColor($r('app.color.panel')).borderRadius(12)
         }
-        if (this.view.device && !this.view.linked) {
+        if (this.panel !== 'settings' && this.view.device && !this.view.linked) {
           PillAction({ label: $r('app.string.reconnect'), available: !this.busy && this.view.relay === 'online',
             onTap: () => this.run(() => this.workspace.reconnect()) })
-        } else if (this.view.relay !== 'online') {
+        } else if (this.panel !== 'settings' && this.view.relay !== 'online') {
           Text($r('app.string.connecting')).fontSize(13).fontColor($r('app.color.muted'))
         }
         this.errorNotice()
-        if (this.view.shareLabel && this.view.task && !this.panel) {
+        if (this.sharePicker()) { this.directory() }
+        else if (this.view.shareLabel && this.view.task) {
           this.infoRow($r('app.string.choose_target'), this.headerTitle())
         } else if (this.selectedFile) { this.filePreview() }
-        else if (this.panel === 'detail') {
-          this.infoRow($r('app.string.task'), this.headerTitle())
-          this.infoRow($r('app.string.computer'), this.hostName(this.view.device))
-          this.infoRow($r('app.string.workspace_label'), this.view.tasks.find((r: Item) => r.id === this.view.task)?.project || $r('app.string.dialogue'))
-          if (this.view.agent) { this.infoRow($r('app.string.engine'), this.view.agent) }
-          if (this.view.model) { this.infoRow($r('app.string.model'), this.view.model) }
-          if (this.view.permission) { this.infoRow($r('app.string.permission_mode'), this.view.permission) }
-        } else if (this.panel === 'model' || this.panel === 'permission') {
-          List() {
-            ForEach(this.choices, (opt: Item) => {
-              ListItem() { DirectoryRow({ title: opt.title, subtitle: opt.summary || '', targetId: 'pref-' + opt.id,
-                available: !this.busy && this.view.linked && !this.view.running, open: () => this.run(async () => {
-                  await this.workspace.applyPreference(this.panel, opt.id); this.panel = '';
-                }) }) }
-            })
-            if (!this.choices.length) { ListItem() { Text($r('app.string.no_choices')).fontColor($r('app.color.muted')).padding(16) } }
-          }.layoutWeight(1).width('100%')
+        else if (this.panel === 'settings') {
+          SettingsPage({ account: this.view.account, email: this.view.accountEmail || '', avatar: this.view.accountAvatar || '',
+            relay: this.view.relay, pushEnabled: this.view.pushEnabled, pushStatus: this.view.pushStatus, busy: this.busy,
+            changePush: (enabled: boolean) => this.run(() => this.workspace.changePush(enabled)),
+            openNotifications: () => this.run(() => this.workspace.notificationSettings()),
+            openPrivacy: () => this.run(() => this.openPolicy(PRIVACY_URL)), openTerms: () => this.run(() => this.openPolicy(TERMS_URL)),
+            logout: () => this.confirmLogout() }).layoutWeight(1)
         } else if (this.view.task) { this.taskContent() } else { this.directory() }
       }
-    }.padding({ left: this.view.account ? 16 : 0, right: this.view.account ? 16 : 0,
+    }.padding({ left: this.view.account && !this.selectedFile ? 16 : 0, right: this.view.account && !this.selectedFile ? 16 : 0,
       top: this.topInset + (this.view.account ? 4 : 0), bottom: (this.keyboardShown ? 0 : this.bottomInset) + (this.view.account ? 8 : 0) }).width('100%').height('100%').onAreaChange((_: Area, area: Area) => { this.availableHeight = Number(area.height); if (this.initializing) this.loginWidth = Math.min(440, Number(area.width)); })
       if (this.drawerOpen && this.view.account) { this.drawer() }
-    }.width('100%').height('100%').backgroundColor(this.view.account ? $r('app.color.canvas') : $r('app.color.login_bg'))
+    }.bindSheet(this.isSheet(), this.sheetContent(), {
+      height: this.panel === 'browse' ? SheetSize.LARGE : SheetSize.MEDIUM, dragBar: true, showClose: false,
+      backgroundColor: $r('app.color.panel'), onWillDismiss: (event: DismissSheetAction) => {
+        if (['browse', 'path', 'sort', 'filter', 'status', 'group'].includes(this.panel)) this.closePanel();
+        else { this.closePanel(); event.dismiss(); }
+      }
+    }).width('100%').height('100%').backgroundColor(this.view.account ? $r('app.color.canvas') : $r('app.color.login_bg'))
   }
 }
 

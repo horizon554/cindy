@@ -559,6 +559,134 @@
     {
       "name": "permission_mode",
       "value": "Permission mode"
+    },
+    {
+      "name": "org_help",
+      "value": "Contact your administrator if you need your organization ID."
+    },
+    {
+      "name": "rename",
+      "value": "Rename"
+    },
+    {
+      "name": "save",
+      "value": "Save"
+    },
+    {
+      "name": "more_actions",
+      "value": "More actions"
+    },
+    {
+      "name": "logout_confirm",
+      "value": "Sign out of this account?"
+    },
+    {
+      "name": "sort_by",
+      "value": "Sort"
+    },
+    {
+      "name": "task_status",
+      "value": "Task status"
+    },
+    {
+      "name": "group_by",
+      "value": "Group"
+    },
+    {
+      "name": "filter_project",
+      "value": "Filter projects"
+    },
+    {
+      "name": "ungrouped",
+      "value": "No grouping"
+    },
+    {
+      "name": "by_created",
+      "value": "Creation time"
+    },
+    {
+      "name": "recent",
+      "value": "Recent activity"
+    },
+    {
+      "name": "all_projects",
+      "value": "All projects"
+    },
+    {
+      "name": "settings_relay_online",
+      "value": "Connected to relay"
+    },
+    {
+      "name": "settings_relay_connecting",
+      "value": "Connecting to relay"
+    },
+    {
+      "name": "settings_relay_offline",
+      "value": "Relay disconnected"
+    },
+    {
+      "name": "settings_relay",
+      "value": "Relay service"
+    },
+    {
+      "name": "settings_current_relay",
+      "value": "Current relay"
+    },
+    {
+      "name": "settings_official_relay",
+      "value": "Official relay"
+    },
+    {
+      "name": "settings_version",
+      "value": "Version"
+    },
+    {
+      "name": "settings_current_version",
+      "value": "Current version"
+    },
+    {
+      "name": "settings_notifications_group",
+      "value": "Notifications"
+    },
+    {
+      "name": "settings_appearance",
+      "value": "Appearance"
+    },
+    {
+      "name": "settings_theme",
+      "value": "Theme"
+    },
+    {
+      "name": "settings_language",
+      "value": "Language"
+    },
+    {
+      "name": "settings_app_language",
+      "value": "App language"
+    },
+    {
+      "name": "settings_system_default",
+      "value": "System default"
+    },
+    {
+      "name": "settings_about",
+      "value": "About this phone"
+    },
+    {
+      "name": "settings_phone_model",
+      "value": "Device model"
+    },
+    {
+      "name": "settings_system",
+      "value": "Operating system"
+    },
+    {
+      "name": "settings_legal",
+      "value": "Legal"
+    },
+    {
+      "name": "settings_agreement",
+      "value": "User agreement"
     }
   ]
 }
