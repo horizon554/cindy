@@ -687,6 +687,34 @@
     {
       "name": "settings_agreement",
       "value": "User agreement"
+    },
+    {
+      "name": "pinned_tasks",
+      "value": "Pinned"
+    },
+    {
+      "name": "view_group",
+      "value": "View all %d tasks"
+    },
+    {
+      "name": "task_error",
+      "value": "Unread task error"
+    },
+    {
+      "name": "task_awaiting",
+      "value": "Waiting for you"
+    },
+    {
+      "name": "task_done",
+      "value": "Completed, unread"
+    },
+    {
+      "name": "show_attachments",
+      "value": "Show %d attachments"
+    },
+    {
+      "name": "voice_send",
+      "value": "Stop recording and send"
     }
   ]
 }

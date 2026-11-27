@@ -1,3 +1,4 @@
+import { activityFields, homeTask } from './homeList';
 import { messageMedia } from './media';
 import { openCache } from './cache';
 import { approvalKey, taskPage, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
@@ -246,9 +247,12 @@ export class Workspace {
         }
         return;
       }
-      if (env.src !== this.state.device || env.kind !== 'push' || !this.state.task || !this.state.linked) return;
+      if (env.src !== this.state.device || env.kind !== 'push') return;
       const { channel, payload } = env.payload || {};
-      if (payload?.sessionId === this.state.task) this.push(channel, payload);
+      if (this.taskHome && channel === 'local-db:sessions:activity' && (this.state.linked || this.homeRead?.version === this.version)) {
+        this.applyHomeActivity(payload);
+      }
+      if (this.state.task && this.state.linked && payload?.sessionId === this.state.task) this.push(channel, payload);
     });
     client.start();
     this.refreshPush();
@@ -366,34 +370,56 @@ export class Workspace {
       throw error;
     }
     this.guard(version);
-    await this.listTasks(version, this.limit || 40);
+    await this.listTasks(version, this.limit || 40, this.taskHome);
     this.guard(version);
     this.show({ linked: true, error: '' });
   }
-  async listTasks(version, limit) {
-    const rows = await this.invoke('local-db:sessions:list', [limit, 'all'], version);
-    let active = [];
-    if (this.taskHome) {
-      try {
-        const snapshot = await this.invoke('maker:list-active', [{ summary: true, snapshotVersion: 2 }], version);
-        active = Array.isArray(snapshot) ? snapshot : snapshot?.sessions || [];
-      } catch (error) {
-        this.guard(version);
-        if (!['CHANNEL_NOT_ALLOWED', 'NOT_FOUND'].includes(error.code)) throw error;
-      }
+  applyHomeActivity(payload) {
+    if (!payload?.sessionId || !['running','needs-interaction','completed','error'].includes(payload.phase)) return;
+    const signal = { activityPhase: payload.phase, activityAttention: payload.attention === true,
+      isTurnRunning: payload.phase === 'running' || payload.phase === 'needs-interaction' };
+    if (this.homeRead?.version === this.version) this.homeRead.updates.set(payload.sessionId, signal);
+    const previous = this.state.tasks.find(row => row.id === payload.sessionId);
+    if (!previous) return;
+    const fields = activityFields(signal, previous.interrupted);
+    if (previous.rightStatus !== fields.rightStatus || previous.running !== fields.running) {
+      this.show({ tasks: this.state.tasks.map(row => row === previous ? { ...row, ...fields } : row) });
     }
-    const running = new Set(active.filter(row => row?.isTurnRunning !== false).map(row => row?.sessionId));
-    const tasks = rows.filter(row => row?.id && row.status !== 'deleted' && !row.hiddenAt).map(row => ({
-      id: row.id, title: row.title || '未命名任务',
-      project: row.projectDir || (row.workspaceKind === 'project' ? row.workingDir : '') || '',
-      summary: row.preview || row.summary || '', created: row.createdAt || '', updated: row.lastActivityAt || row.updatedAt || row.createdAt || '',
-      status: row.status || '', running: running.has(row.id) || !!row.isTurnRunning
-    }));
-    this.limit = limit;
-    if (this.taskHome) this.state.homeIndex = [...(this.state.homeIndex || []).filter(r => r.host !== this.state.device),
-      ...tasks.map(row => ({ ...row, host: this.state.device }))];
-    this.show({ tasks, moreTasks: rows.length >= limit && limit < 1000 });
-    await this.cache.write(this.key('tasks', this.state.device, ''), tasks);
+  }
+  async listTasks(version, limit, subscribe = false) {
+    const read = { version, updates: new Map() };
+    this.homeRead = read;
+    try {
+      if (subscribe) {
+        try {
+          await this.invoke('device-link:subscribe', [{ topics: ['sessions'], controllerName: 'Cindy HarmonyOS', capabilities: [] }], version);
+        } catch (error) {
+          this.guard(version);
+          if (!['CHANNEL_NOT_ALLOWED', 'NOT_FOUND'].includes(error.code)) throw error;
+        }
+      }
+      const args = this.taskHome ? [limit, 'all', { includePinned: true }] : [limit, 'all'];
+      const rows = await this.invoke('local-db:sessions:list', args, version);
+      let active = [];
+      if (this.taskHome) {
+        try {
+          const snapshot = await this.invoke('maker:list-active', [{ summary: true, snapshotVersion: 2 }], version);
+          active = Array.isArray(snapshot) ? snapshot : snapshot?.sessions || [];
+        } catch (error) {
+          this.guard(version);
+          if (!['CHANNEL_NOT_ALLOWED', 'NOT_FOUND'].includes(error.code)) throw error;
+        }
+      }
+      if (this.homeRead !== read) return;
+      const signals = new Map(active.filter(row => row?.sessionId).map(row => [row.sessionId, { ...row, isTurnRunning: row.isTurnRunning !== false }]));
+      const tasks = rows.filter(row => row?.id && row.status !== 'deleted' && !row.hiddenAt)
+        .map(row => homeTask(row, read.updates.get(row.id) || signals.get(row.id)));
+      this.limit = limit;
+      if (this.taskHome) this.state.homeIndex = [...(this.state.homeIndex || []).filter(r => r.host !== this.state.device),
+        ...tasks.map(row => ({ ...row, host: this.state.device }))];
+      this.show({ tasks, moreTasks: rows.length >= limit && limit < 1000 });
+      await this.cache.write(this.key('tasks', this.state.device, ''), tasks);
+    } finally { if (this.homeRead === read) this.homeRead = null; }
   }
   async more() {
     if (this.state.moreTasks && this.state.linked) await this.listTasks(this.version, Math.min(1000, this.limit + 40));
@@ -1198,13 +1224,21 @@ export class Workspace {
       this.show({ voice: '', voicePreview: '' });
       if (text) this.editDraft([this.state.draft, text].filter(Boolean).join(' '));
       if (error) this.report(new Error(error));
+      this.voiceFinishReply?.(!!text?.trim() && !error);
+      this.voiceFinishReply = null;
     });
+  }
+  finishVoiceForSend() {
+    if (!this.recording || this.voiceFinishReply) return Promise.resolve(false);
+    return new Promise(resolve => { this.voiceFinishReply = resolve; this.recording.finish(); });
   }
   finishVoice() { this.recording?.finish(); }
   cancelVoice() {
     const recording = this.recording;
     if (!recording) return;
     this.voiceTake++;
+    this.voiceFinishReply?.(false);
+    this.voiceFinishReply = null;
     this.recording = null;
     recording.cancel();
     this.show({ voice: '', voicePreview: '' });

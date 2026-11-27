@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-export interface Row { host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; created?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
+export interface Row { pinnedAt?: string; rightStatus?: string; host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; created?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
 export interface Choice { label: string; detail: string; selected: boolean }
 export interface Question { key: string; valid?: boolean; label: string; multi: boolean; free: boolean; value: string; options: Choice[] }
 export interface Card { id: string; revision: number; kind: string; title: string; detail: string; questions: Question[]; complete?: boolean; approvalKey?: string; risk?: string; code?: string }
@@ -62,6 +62,7 @@ export class Workspace {
   cancelTransfer(): void;
   startVoice(): void;
   finishVoice(): void;
+  finishVoiceForSend(): Promise<boolean>;
   cancelVoice(): void;
   dismissShare(): void;
   acceptShare(): Promise<void>;

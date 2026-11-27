@@ -71,6 +71,18 @@
     {
       "name": "scrim",
       "value": "#66000000"
+    },
+    {
+      "name": "status_error",
+      "value": "#D91F37"
+    },
+    {
+      "name": "status_awaiting",
+      "value": "#19D2C1"
+    },
+    {
+      "name": "status_done",
+      "value": "#2AAE5B"
     }
   ]
 }

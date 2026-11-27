@@ -10,6 +10,10 @@ await build({
   stdin: {
     resolveDir: root,
     contents: `
+      export { resolveMobileSessionRightStatus } from './apps/mobile/src/session/sessionRightStatus.ts';
+      export { getSessionListCollapseView } from './packages/maker-shared/src/sessionListCollapse.ts';
+      export { sessionTaskProjectIconDirectory } from './packages/maker-shared/src/worktreePaths.ts';
+      export { hasPendingSessionInterruption } from './packages/maker-shared/src/sessionActivity.ts';
       export { resolveLoginStage } from './apps/mobile/src/auth/loginSkinLayout.ts';
       export { buildLegacyAttachmentOssRef, parseAttachmentOssRef, isSharedTaskMediaKey } from './packages/device-link/src/attachmentOssRef.ts';
       export { DeviceLinkClient } from './packages/device-link/src/client.ts';

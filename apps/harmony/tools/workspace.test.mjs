@@ -46,6 +46,7 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
   const host = { id: 'task', workingDir: '/fixture', title: 'Fixture task', agentKind: 'codex', model: 'fixture' };
   const rows = [{ id: 'first', sessionId: 'task', content: {text: 'existing'} }];
   const secrets = new Map();
+  let homeSnapshotRace = false;
   let socket, authorizeUrl, exchanges = 0, count = 0, subscriptions = 0, refreshes = 0;
   globalThis.harmonyPorts = {
     accountUrl: 'https://fixture.invalid', directoryUrl: '/devices', relayUrl: 'wss://fixture.invalid',
@@ -85,7 +86,13 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
             const {channel,args} = frame.payload;
             let result;
             switch (channel) {
-              case 'maker:list-active': result = {sessions:[]}; break;
+              case 'maker:list-active':
+                result = {format:'active-sessions-v2',sessions:[]};
+                if (homeSnapshotRace) {
+                  homeSnapshotRace = false;
+                  socket.push('local-db:sessions:activity', {sessionId:'task',phase:'needs-interaction',attention:true});
+                }
+                break;
               case 'maker:get-pending-interactions': result = []; break;
               case 'maker:input:get-projection': result = {inputDeliveryVersion:1, deliveryReceipts:(args[1]?.deliveryClientIds || []).map(id => ({
                 clientId: id, state: rows.some(r => r.id === id) ? 'accepted' : 'unknown'
@@ -131,10 +138,22 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
   assert.equal(subscriptions,2);
   assert.equal(count,1);
   app.client.stop();
-  app = new Workspace(s => { state = s; });
+  // A newer activity push must survive a delayed list snapshot, and a later read
+  // acknowledgement must clear the terminal dot without another list request.
+  host.pinnedAt = '2026-01-02T00:00:00Z';
+  homeSnapshotRace = true;
+  app = new Workspace(s => { state = s; }, true);
   await app.init({});
-  await until(() => state?.relay === 'online' && state?.devices.length);
-  await app.openDevice('host');
+  await until(() => state?.linked && state.tasks.length);
+  assert.equal(state.tasks[0].pinnedAt, host.pinnedAt);
+  assert.equal(state.tasks[0].project, '/fixture');
+  assert.equal(state.tasks[0].rightStatus, 'awaiting');
+  for (const [phase, attention, expected] of [
+    ['running',false,'running'], ['error',true,'error'], ['completed',true,'done'], ['completed',false,'time'],
+  ]) {
+    socket.push('local-db:sessions:activity', {sessionId:'task',phase,attention});
+    assert.equal(state.tasks[0].rightStatus, expected);
+  }
   await app.openTask('task');
   assert.equal(refreshes,1);
   assert.equal(state.accountEmail, login.membership.email);
@@ -473,6 +492,22 @@ test('route a notification, accept a share and recover one attachment-only messa
   await app.addFile('image'); assert.equal(app.state.attachments.length,1); assert.equal(sent.length,0);
   app.startVoice();app.cancelVoice();assert.equal(app.state.draft,'');
   app.startVoice();app.finishVoice();assert.equal(app.state.draft,'验收');app.editDraft('');
+  // A late recognition after cancelling the send gesture cannot send or replace the draft.
+  app.native.dictation = (_, update, cb) => {
+    complete = cb;
+    update('录音中');
+    return {finish(){}, cancel(){}};
+  };
+  app.startVoice();
+  const cancelled = app.finishVoiceForSend();
+  app.cancelVoice(); complete('迟到的结果','');
+  assert.equal(await cancelled,false); assert.equal(app.state.draft,'');
+  app.startVoice();
+  const finish = app.finishVoiceForSend();
+  assert.equal(await app.finishVoiceForSend(),false);
+  complete('确认发送','');
+  assert.equal(await finish,true); assert.equal(app.state.draft,'确认发送');
+  app.editDraft('');
   await assert.rejects(app.send(''),/lost ACK/);
   assert.equal(sent.length,1); assert.equal(sent[0].files.length,1); assert.equal(sent[0].chatMessage.images[0].originalName,'sample.png');
   await app.back(); await app.openTask('outside-first-page');

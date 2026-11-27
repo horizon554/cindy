@@ -687,6 +687,34 @@
     {
       "name": "settings_agreement",
       "value": "用户协议"
+    },
+    {
+      "name": "pinned_tasks",
+      "value": "置顶"
+    },
+    {
+      "name": "view_group",
+      "value": "查看全部 %d 项任务"
+    },
+    {
+      "name": "task_error",
+      "value": "任务出错，未读"
+    },
+    {
+      "name": "task_awaiting",
+      "value": "等待你处理"
+    },
+    {
+      "name": "task_done",
+      "value": "已完成，未读"
+    },
+    {
+      "name": "show_attachments",
+      "value": "展开 %d 个附件"
+    },
+    {
+      "name": "voice_send",
+      "value": "结束录音并发送"
     }
   ]
 }
