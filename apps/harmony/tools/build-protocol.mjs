@@ -10,6 +10,10 @@ await build({
   stdin: {
     resolveDir: root,
     contents: `
+      export { hasBotGroupCollection, botGroupMemberLinks, botGroupResourceRef, botGroupChatDataFromResource, BOT_GROUP_CLIENT_PRIMITIVES } from './apps/mobile/src/session/botGroupRemote.ts';
+      export { createConversationListState } from './packages/maker-shared/src/chatConversationList.ts';
+      export { latestBotGroupMessage, botGroupActivityAt, chatGroupMemberName } from './packages/maker-shared/src/botGroupPresentation.ts';
+      export { botGroupMessageSummaryText, readBotGroupTaskCard } from './packages/maker-shared/src/botGroupChat.ts';
       export { HomeDeviceSyncLimiter } from './apps/mobile/src/session/homeDeviceSync.ts';
       export { resolveMobileSessionRightStatus } from './apps/mobile/src/session/sessionRightStatus.ts';
       export { mobileSessionBulkPatch } from './packages/maker-shared/src/sessionSelection.ts';
@@ -31,7 +35,12 @@ await build({
       export { OPENAI_PROVIDER_PATH, ANTHROPIC_PROVIDER_PATH, XD_SYMBOL_PATHS, XD_VIEW_BOX } from './apps/mobile/src/components/vendorIconPaths.ts';
       export { resolveProviderSvgColorScheme } from './apps/mobile/src/session/resolveProviderSvgColorScheme.ts';
       export { PROTOCOL_VERSION, providerPickerListArgs } from './packages/device-link/src/protocol.ts';
-      export { authApiBaseUrl, deviceLinkApiBaseUrl } from './config/endpoint.json';
+      export { readVoiceCallRecord } from './apps/desktop/src/shared/voiceConversation.ts';
+      export { BOT_AVATAR_MAX_BYTES, isManagedBotAvatarUrl } from './apps/desktop/src/shared/botAvatarValue.ts';
+      export { sniffMediaMime } from './apps/desktop/src/main/cindy-media/sniffMediaMime.ts';
+      export { DEVICE_LINK_MEDIA_FETCH_CHANNEL } from './packages/maker-shared/src/deviceLinkContract.ts';
+      export { REMOTE_RESOURCE_PROTOCOL_VERSION, resolveRemoteText } from './packages/device-link/src/remoteResources.ts';
+      export { authApiBaseUrl, deviceLinkApiBaseUrl, chatApiBaseUrl } from './config/endpoint.json';
     `,
   },
   banner: { js: "import systemDateTime from '@ohos.systemDateTime'; const harmonyNow = () => systemDateTime.getUptime(systemDateTime.TimeType.ACTIVE);" },

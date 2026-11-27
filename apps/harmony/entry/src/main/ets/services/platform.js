@@ -3,7 +3,7 @@ import webSocket from '@ohos.net.webSocket';
 import asset from '@ohos.security.asset';
 import util from '@ohos.util';
 import preferences from '@ohos.data.preferences';
-import { authApiBaseUrl, deviceLinkApiBaseUrl } from './protocol.generated';
+import { BOT_AVATAR_MAX_BYTES, authApiBaseUrl, deviceLinkApiBaseUrl } from './protocol.generated';
 
 export const relayUrl = deviceLinkApiBaseUrl.replace(/^https:/, 'wss:') + '/api/device-link/ws';
 export const accountUrl = authApiBaseUrl;
@@ -24,12 +24,30 @@ export async function request(url, body, token, method) {
     if (response.responseCode < 200 || response.responseCode >= 300) {
       const error = new Error('服务请求失败（HTTP ' + response.responseCode + '）');
       error.httpStatus = response.responseCode;
+      try {
+        const body = JSON.parse(response.result);
+        const code = body?.error?.code ?? body?.code;
+        if (typeof code === 'string' && /^[A-Z_]{1,64}$/.test(code)) error.code = code;
+      } catch { /* Some gateways return plain text. */ }
       throw error;
     }
     return response.result ? JSON.parse(response.result) : {};
   } finally {
     client.destroy();
   }
+}
+
+// CDN / signed media requests never carry the signed-in account's credentials.
+export async function downloadAvatarBytes(address) {
+  const client = http.createHttp();
+  try {
+    const response = await client.request(address, {
+      expectDataType: http.HttpDataType.ARRAY_BUFFER, maxLimit: BOT_AVATAR_MAX_BYTES,
+      maxRedirects: 0, usingCache: false, connectTimeout: 8000, readTimeout: 12000
+    });
+    if (response.responseCode !== 200 || !(response.result instanceof ArrayBuffer)) return null;
+    return new Uint8Array(response.result);
+  } finally { client.destroy(); }
 }
 
 export async function readSession(key = 'cn.session') {

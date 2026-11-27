@@ -4,13 +4,14 @@ import { filePreview } from '@kit.PreviewKit';
 import { common } from '@kit.AbilityKit';
 import { installInputs } from '../services/nativeEntry';
 import { ModelBrandIcon } from './ModelBrandIcon';
+import { CompanionAvatar } from './CompanionAvatar';
 import { LoginBrand } from './LoginBrand';
 import { SettingsPage } from './SettingsPage';
-import { groupHomeRows, HomeGroup } from '../services/homeList';
+import { groupHomeRows, HomeGroup, matchingCompanions } from '../services/homeList';
 import { HistorySource } from './HistorySource';
 import { HistoryMessage, InteractionPanel, MessageBody } from './TaskContent';
 import { ChoiceRow, DirectoryRow, IconAction, PillAction, OptionRow, PreferenceChip } from './Controls';
-import { Row as Item, PreferenceOption, Workspace, ViewState, PendingUpload, Attachment, MediaInfo, Card, FolderList, Question, Choice } from '../services/workspace';
+import { Row as Item, PreferenceOption, Workspace, Companion, ViewState, PendingUpload, Attachment, MediaInfo, Card, FolderList, Question, Choice } from '../services/workspace';
 
 const PRIVACY_URL = 'https://cindy.cn/privacy';
 const TERMS_URL = 'https://cindy.cn/terms';
@@ -87,6 +88,8 @@ struct Index {
   @State @Watch('scheduleRoutes') panel: string = '';
   @State drawerOpen: boolean = false;
   @State query: string = '';
+  @State companionsExpanded: boolean = false;
+  @State companionsCollapsed: boolean = false;
   @State statusFilter: string = 'active';
   @State scope: string = '';
   @State collapsed: string[] = [];
@@ -150,7 +153,7 @@ struct Index {
     }
     const switched = state.task !== this.view.task;
     const changed = state.messages.length !== this.view.messages.length || state.live !== this.view.live;
-    if (state.account !== this.view.account) { this.scope = ''; this.query = ''; this.showSearch = false; this.shareQuery = ''; this.projectFilter = ''; this.sortBy = 'recent'; this.groupProjects = true; this.groupDevices = true; this.collapsed = []; this.projectList = undefined; this.statusFilter = 'active'; }
+    if (state.account !== this.view.account) { this.companionsExpanded = false; this.companionsCollapsed = false; this.scope = ''; this.query = ''; this.showSearch = false; this.shareQuery = ''; this.projectFilter = ''; this.sortBy = 'recent'; this.groupProjects = true; this.groupDevices = true; this.collapsed = []; this.projectList = undefined; this.statusFilter = 'active'; }
     if (state.shareVersion !== this.view.shareVersion && state.shareLabel) {
       this.projectList = undefined; this.pickingShareTarget = true; this.shareQuery = ''; this.panel = ''; this.drawerOpen = false;
       this.selectedFile = undefined; this.previewSource = '';
@@ -189,7 +192,7 @@ struct Index {
     const voiceEnded = !!this.view.voice && !state.voice;
     const caretChanged = state.voiceCaret !== this.view.voiceCaret || state.voicePreview !== this.view.voicePreview;
     if (!state.draft && this.view.draft) this.manualInputHeight = undefined;
-    const routeChanged = switched || state.account !== this.view.account || state.shareLabel !== this.view.shareLabel;
+    const routeChanged = state.cloudCompanion?.key !== this.view.cloudCompanion?.key || switched || state.account !== this.view.account || state.shareLabel !== this.view.shareLabel;
     this.view = state;
     if (routeChanged) this.scheduleRoutes();
     if (!switched && state.voiceCaret !== undefined && (caretChanged || voiceEnded)) {
@@ -278,6 +281,7 @@ struct Index {
       if (this.view.account) {
         if (this.projectList) next.push('project');
         if (this.view.task) next.push('task');
+        else if (this.view.cloudCompanion) next.push('cloud');
         else if (this.creating) next.push('new');
         if (this.sharePicker()) next.push('share');
         if (this.panel === 'settings') next.push('settings');
@@ -313,6 +317,7 @@ struct Index {
       return true;
     }
     if (this.view.shareLabel) { this.pickingShareTarget = true; return true; }
+    if (this.view.cloudCompanion) { this.workspace.closeCloudCompanion(); return true; }
     if (!this.view.task && this.projectList) { this.projectList = undefined; return true; }
     if (!this.view.task && this.showSearch) { this.showSearch = false; this.query = ''; return true; }
     if (!this.view.task) return false;
@@ -352,7 +357,7 @@ struct Index {
   }
 
   private headerTitle(): ResourceStr {
-    if (this.view.task) return this.view.tasks.find((r: Item) => r.id === this.view.task)?.title || $r('app.string.task');
+    if (this.view.task) return this.titleCompanion(false)?.title || this.view.tasks.find((r: Item) => r.id === this.view.task)?.title || $r('app.string.task');
     return this.view.device ? $r('app.string.tasks') : $r('app.string.hosts');
   }
 
@@ -724,11 +729,15 @@ struct Index {
   @Builder
   taskContent() {
     List({ space: 14, scroller: this.scroll }) {
+      if (!this.view.messages.length && this.view.hasOlder && this.view.linked) {
+        ListItem() { PillAction({ label: $r('app.string.older'), available: !this.busy,
+          onTap: () => this.run(() => this.workspace.older()) }) }
+      }
       LazyForEach(this.historySource, (item: Item) => {
         ListItem() { HistoryMessage({ item: item, openLink: (url: string) => this.run(() => this.openPolicy(url)),
           loadImage: (file: MediaInfo, visible: () => boolean) => this.workspace.thumbnail(file, visible),
           preview: (file: MediaInfo) => this.run(() => this.showPreview(file, this.workspace.localPreview(file.path || ''))) }) }.padding({ left: 16, right: 16 })
-      }, (item: Item) => item.id + item.title + (item.detail || '') + JSON.stringify(item.media || []))
+      }, (item: Item) => this.historySource.key(item))
       if (this.view.live) {
         ListItem() { MessageBody({ value: this.view.live, openLink: (url: string) => this.run(() => this.openPolicy(url)) }) }.padding({ left: 16, right: 16 })
       }
@@ -923,6 +932,7 @@ struct Index {
 
   private changeScope(id: string): void {
     this.scope = id;
+    this.companionsExpanded = false;
     this.projectFilter = '';
     this.workspace.setHomeScope(id);
   }
@@ -1022,7 +1032,8 @@ struct Index {
       }
       if (group.rows.length < group.total) entries.push({ key: 'more-' + group.key, kind: 'moreGroup', group });
     }
-    if (!entries.length) entries.push({ key: 'empty', kind: 'empty' });
+    const matchedBuddies = page === 'home' && !!this.query.trim() && !this.projectFilter && this.statusFilter !== 'archived' && this.matchingCompanions().length > 0;
+    if (!entries.length && !matchedBuddies) entries.push({ key: 'empty', kind: 'empty' });
     if (this.view.moreTasks) entries.push({ key: 'more', kind: 'more' });
     return entries;
   }
@@ -1173,13 +1184,34 @@ struct Index {
     }.width('100%').padding({ left: 12, right: 12 })
   }
 
+  private titleCompanion(cloud: boolean): Companion | undefined {
+    const selected = cloud ? this.view.cloudCompanion : this.view.taskCompanion;
+    if (!selected) return undefined;
+    return this.view.companions?.find((row: Companion) => row.key === selected.key) || selected;
+  }
+
+  private companionRowKey(row: Companion): string {
+    return JSON.stringify([row.key, row.title, row.avatar, row.preset, row.avatarImage, row.cloudImage, row.actor, row.faces?.map((m: Companion) => [m.key, m.avatar, m.preset, m.cloudImage, m.avatarImage])]);
+  }
+
+  @Builder
+  conversationTitle(cloud: boolean) {
+    Row({ space: 8 }) {
+      if (cloud ? this.view.cloudCompanion : this.view.taskCompanion) {
+        ForEach([this.titleCompanion(cloud)!], (row: Companion) => {
+          CompanionAvatar({ row, load: (buddy: Companion, visible: () => boolean) => this.workspace.companionAvatar(buddy, visible) })
+        }, (row: Companion) => this.companionRowKey(row))
+      }
+      Text(cloud ? this.titleCompanion(true)?.title || '' : this.headerTitle()).id(cloud ? 'cloud-title' : 'task-title')
+        .fontSize(18).fontWeight(FontWeight.Medium).layoutWeight(1)
+        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
+    }.width('100%').height('100%').padding({ left: 8, right: 8 })
+  }
+
   @Builder
   taskTitle() {
-    Row() {
-      Text(this.headerTitle()).id('task-title').fontSize(18).fontWeight(FontWeight.Medium)
-        .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
-    }.height('100%').padding({ left: 8, right: 8 })
-      .gesture(TapGesture({ count: 2 }).onAction(() => this.openRename()))
+    Row() { this.conversationTitle(false) }
+      .height('100%').gesture(TapGesture({ count: 2 }).onAction(() => this.openRename()))
   }
 
   @Builder
@@ -1410,11 +1442,110 @@ struct Index {
     }.width('100%').layoutWeight(1).padding({ left: 16, right: 16 })
   }
 
+  private matchingCompanions(): Companion[] {
+    return matchingCompanions(this.view.companions || [], this.query, this.scope);
+  }
+
+  private companionSummary(row: Companion): string {
+    if (row.recentCall) return this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.call_history').id);
+    return row.preview || row.subtitle || this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.companion_no_preview').id);
+  }
+
+  @Builder
+  companionSection() {
+    if (this.matchingCompanions().length || (this.view.companionError && !this.query.trim())) {
+      ListItem() {
+        Row() {
+          Button({ type: ButtonType.Normal }) {
+            Row({ space: 8 }) {
+              SymbolGlyph(this.companionsCollapsed && !this.query.trim() ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_down'))
+                .fontSize(14).width(22).fontColor([$r('app.color.muted')])
+              SymbolGlyph($r('sys.symbol.person_2')).fontSize(19).fontColor([$r('app.color.muted')])
+              Text($r('app.string.companions')).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink'))
+              Blank()
+              Text(this.matchingCompanions().length.toString()).fontSize(14).fontColor($r('app.color.muted'))
+            }.width('100%')
+          }.id('companions-header').height(44).layoutWeight(1).padding(DIRECTORY_ROW_INSETS).backgroundColor(Color.Transparent)
+            .onClick(() => { if (!this.query.trim()) this.companionsCollapsed = !this.companionsCollapsed; })
+          if (this.view.companionError && !this.query.trim()) {
+            IconAction({ icon: $r('sys.symbol.arrow_clockwise'), label: $r('app.string.companions_retry'), controlId: 'companions-retry',
+              onTap: () => this.run(() => this.workspace.refreshCompanions()) })
+          }
+        }.width('100%')
+      }
+      if (!this.companionsCollapsed || this.query.trim()) {
+        ForEach(this.companionsExpanded || this.query.trim() ? this.matchingCompanions() : this.matchingCompanions().slice(0, 3), (row: Companion) => {
+          ListItem() {
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 12 }) {
+                CompanionAvatar({ row, portraitSize: 44, load: (buddy: Companion, visible: () => boolean) => this.workspace.companionAvatar(buddy, visible) })
+                Column({ space: 3 }) {
+                  Text(row.title).id('companion-name').fontSize(16).fontColor($r('app.color.ink')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(this.companionSummary(row)).id(row.recentCall || row.preview ? 'companion-preview' : 'companion-subtitle').fontSize(14).fontColor($r('app.color.muted')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              }.width('100%')
+            }.id('companion-row-' + row.key).constraintSize({ minHeight: 58 }).width('100%').padding(DIRECTORY_ROW_INSETS).backgroundColor(Color.Transparent)
+              .onVisibleAreaChange([0], (visible: boolean, ratio: number) => {
+                if (!row.group && !row.actor) this.workspace.loadCompanionCall(row.key, visible && ratio > 0);
+              })
+              .onDisAppear(() => { if (!row.group && !row.actor) this.workspace.loadCompanionCall(row.key, false); })
+              .accessibilityText([row.title, this.companionSummary(row)].join('，')).accessibilityDescription(row.group ? this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.group_chat').id) : '').onClick(() => this.run(() => this.workspace.openCompanion(row.key)))
+          }
+        }, (row: Companion) => JSON.stringify([this.companionRowKey(row), row.preview, row.subtitle, row.recentCall]))
+        if (!this.query.trim() && this.matchingCompanions().length > 3) {
+          ListItem() {
+            Button(this.companionsExpanded ? $r('app.string.companions_less') : $r('app.string.companions_all', this.matchingCompanions().length))
+              .id('companions-show-all').height(44).fontColor($r('app.color.muted')).backgroundColor(Color.Transparent)
+              .onClick(() => { this.companionsExpanded = !this.companionsExpanded; })
+          }
+        }
+      }
+    }
+  }
+
+  @Builder
+  cloudConversation() {
+    Column() {
+      if (this.view.cloudMessages?.length || this.view.cloudOlder) {
+        List({ space: 10, initialIndex: this.view.cloudMessages?.length || 0 }) {
+          ListItem() {
+            if (this.view.cloudOlder) {
+              PillAction({ label: $r('app.string.older'), available: !this.view.cloudLoading,
+                onTap: () => this.run(() => this.workspace.cloudHistory(true)) })
+            }
+          }
+          ForEach(this.view.cloudMessages, (item: Item) => {
+            ListItem() {
+              Row() {
+                if (item.role === 'user') { Blank().layoutWeight(1) }
+                Column({ space: 4 }) {
+                  if (item.author) {
+                    Text(item.author).fontSize(13).fontColor($r('app.color.muted'))
+                  }
+                  Text(item.title).fontSize(16).fontColor($r('app.color.ink')).copyOption(CopyOptions.InApp)
+                }.alignItems(HorizontalAlign.Start).padding(10).constraintSize({ maxWidth: item.role === 'user' ? '88%' : '100%' })
+                  .backgroundColor(item.role === 'user' ? $r('app.color.panel') : Color.Transparent).borderRadius(12)
+              }.width('100%').padding(DIRECTORY_ROW_INSETS)
+            }
+          }, (item: Item) => JSON.stringify([item.id, item.author, item.title]))
+        }.id('companion-history').width('100%').layoutWeight(1).maintainVisibleContentPosition(true)
+      } else if (this.view.cloudLoading) {
+        LoadingProgress().width(32).height(32).margin(24)
+      } else if (!this.view.cloudError) {
+        Text($r('app.string.companion_empty')).fontColor($r('app.color.muted')).padding(20)
+      }
+      if (this.view.cloudError) {
+        PillAction({ label: $r('app.string.companion_history_retry'), onTap: () => this.run(() => this.workspace.cloudHistory(false)) })
+      }
+      Text(this.view.cloudCompanion?.group ? $r('app.string.group_readonly') : $r('app.string.companion_readonly')).id('companion-readonly').fontSize(13).fontColor($r('app.color.muted')).padding(12)
+    }.height('100%').width('100%').backgroundColor($r('app.color.canvas'))
+  }
+
   @Builder
   directory(page: string) {
     if ((page === 'home' && this.showSearch) || page === 'share') {
       Row() {
-        Search({ placeholder: $r('app.string.search_task'), value: page === 'share' ? this.shareQuery : this.query }).id('search-tasks').height(40).layoutWeight(1)
+        Search({ placeholder: page === 'share' ? $r('app.string.search_task') : $r('app.string.search_home'), value: page === 'share' ? this.shareQuery : this.query }).id('search-tasks').height(40).layoutWeight(1)
           .cancelButton({ style: CancelButtonStyle.INPUT }).onChange((v: string) => { if (page === 'share') this.shareQuery = v; else this.query = v; })
         if (page !== 'share') { IconAction({ icon: $r('sys.symbol.xmark'), label: $r('app.string.close'), controlId: 'close-search',
           onTap: () => { this.showSearch = false; this.query = ''; } }) }
@@ -1425,6 +1556,9 @@ struct Index {
     }
     Stack({ alignContent: Alignment.BottomEnd }) {
       List({ space: 0, scroller: page === 'project' ? this.projectScroller : page === 'share' ? this.shareScroller : this.homeScroller }) {
+        if (page === 'home' && !this.projectFilter && this.statusFilter !== 'archived') {
+          this.companionSection()
+        }
         ForEach(this.directoryEntries(page), (entry: DirectoryEntry) => {
           if (entry.kind === 'device') {
             ListItem() {
@@ -1796,6 +1930,10 @@ struct Index {
       NavDestination() { this.screen(page) }
         .title(this.taskTitle(), { backgroundColor: $r('app.color.canvas') })
         .menus(this.taskMenu()).onBackPressed(() => this.onBackPress())
+    } else if (page === 'cloud') {
+      NavDestination() { this.cloudConversation() }
+        .title(this.conversationTitle(true), { backgroundColor: $r('app.color.canvas') })
+        .onBackPressed(() => this.onBackPress())
     } else if (page === 'preview') {
       NavDestination() { this.screen(page) }
         .title(this.selectedFile?.name || '').menus(this.previewMenu()).hideTitleBar(!this.previewChrome)
@@ -1832,7 +1970,7 @@ struct Index {
       }.width('100%').height('100%')
     }.width('100%').height('100%').sideBarWidth('82%').maxSideBarWidth(340).minSideBarWidth(0)
       .showControlButton(false).divider(null).showSideBar(this.drawerOpen)
-      .attributeModifier(new DrawerGesture(!this.view.task && !this.creating && !this.projectList && !this.selectedFile && !this.panel && !this.view.shareLabel))
+      .attributeModifier(new DrawerGesture(!this.view.cloudCompanion && !this.view.task && !this.creating && !this.projectList && !this.selectedFile && !this.panel && !this.view.shareLabel))
       .onChange((open: boolean) => { if (this.drawerOpen !== open) this.drawerOpen = open; })
   }
 

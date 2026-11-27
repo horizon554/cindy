@@ -7,6 +7,7 @@ export async function openCache(context) {
     name: 'task_history.db', securityLevel: relationalStore.SecurityLevel.S3, encrypt: true
   });
   await db.executeSql('CREATE TABLE IF NOT EXISTS entries (account TEXT, host TEXT, task TEXT, name TEXT, part INTEGER, body TEXT, PRIMARY KEY(account,host,task,name,part))');
+  await db.executeSql("CREATE INDEX IF NOT EXISTS companion_avatar_cache ON entries(account, host, task) WHERE name='companion-avatar'");
   let previous = Promise.resolve();
   function enqueue(action) {
     const result = previous.then(action);
@@ -45,6 +46,16 @@ export async function openCache(context) {
             if (end < json.length && /[\uD800-\uDBFF]/.test(json[end - 1])) end--;
             await db.executeSql('INSERT INTO entries VALUES (?,?,?,?,?,?)', [...key, part++, json.slice(offset, end)]);
             offset = end;
+          }
+          if (key[3] === 'companion-avatar' && json) {
+            // 2,048 chunks of at most 16,000 ASCII bytes keep photos under 32 MiB.
+            // Count indexed chunks without scanning image bytes or evicting task data.
+            await db.executeSql(`DELETE FROM entries WHERE name='companion-avatar' AND (account,host,task) IN (
+              SELECT account,host,task FROM (
+                SELECT account,host,task, SUM(COUNT(*)) OVER (ORDER BY MAX(rowid) DESC) AS cumulative
+                FROM entries WHERE name='companion-avatar' GROUP BY account,host,task
+              ) WHERE cumulative > 2048
+            )`);
           }
           db.commit();
         } catch (error) { db.rollBack(); throw error; }

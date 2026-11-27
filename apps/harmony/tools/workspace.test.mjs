@@ -10,7 +10,7 @@ import { build } from 'esbuild';
 import './build-protocol.mjs';
 
 const bundled = await build({
-  stdin: { contents: "export { Workspace } from './workspace'; export { receiveWant } from './sso'; export { groupHomeRows } from './homeList';",
+  stdin: { contents: "export { Workspace } from './workspace'; export { receiveWant } from './sso'; export { groupHomeRows, matchingCompanions } from './homeList';",
     resolveDir: fileURLToPath(new URL('../entry/src/main/ets/services', import.meta.url)) },
   platform: 'node', format: 'esm', bundle: true, write: false,
   plugins: [{
@@ -27,7 +27,7 @@ const bundled = await build({
           ? 'export default { getUptime:()=>performance.now(), TimeType:{ACTIVE:1} }'
           : args.path === '@ohos.util'
           ? 'export default {generateRandomUUID:()=>crypto.randomUUID(),TextEncoder:class { encodeInto(s){return Buffer.from(s)} },Base64Helper:class {encodeToStringSync(b){return b.toString("base64")} decodeSync(s){return Buffer.from(s,"base64url")}}, TextDecoder:{create:()=>({decodeWithStream:b=>b.toString()})}}'
-          : 'export const {accountUrl,directoryUrl,relayUrl,request,deviceIdentity,readSession,saveSession,createSocket}=globalThis.harmonyPorts'
+          : 'export const {accountUrl,directoryUrl,relayUrl,request,downloadAvatarBytes,deviceIdentity,readSession,saveSession,createSocket}=globalThis.harmonyPorts'
       }));
     }
   }]
@@ -40,18 +40,68 @@ async function until(predicate) {
   assert.fail('Expected application state was not reached');
 }
 
-test('stream, reconnect after accepted input, and restore login on relaunch', async t => {
+test('restore login and delivery on relaunch, then open the bound host or cloud companion conversation', async t => {
   const jwt = 'test.' + Buffer.from(JSON.stringify({exp: Date.now()/1000 + 3600})).toString('base64url') + '.test';
   const login = { status: 'ok', accessToken: jwt, refreshToken: 'fixture', membership: { id: 'account', displayName: 'Fixture', email: 'fixture@example.invalid', avatarUrl: 'https://fixture.invalid/avatar' } };
   const host = { id: 'task', workingDir: '/fixture', title: 'Fixture task', agentKind: 'codex', model: 'fixture' };
   const rows = [{ id: 'first', sessionId: 'task', content: {text: 'existing'} }];
   const secrets = new Map();
   let homeSnapshotRace = false;
+  const actor = '10000000-0000-4000-8000-000000000001', room = '08fd0aa5-94d7-4d86-ae90-7d77291d786c';
+  const groupId = '30000000-0000-4000-8000-000000000003';
+  const hiddenId = '40000000-0000-4000-8000-000000000004';
+  const self = '50000000-0000-4000-8000-000000000005';
+  const groupRoom = { id: groupId, name: 'Writer', kind: 'group', state: 'joined', created_at: '2026-01-01T00:00:00Z', head: '52' };
+  let joined = true;
+  const unrelatedRooms = Array.from({length: 100}, (_, i) => ({ id: '60000000-0000-4000-8000-' + String(i).padStart(12, '0'), kind: 'direct', state: 'joined' }));
+  const ref = { collectionId: 'teammates', kind: 'bot', id: 'writer' };
+  let canonical = 'buddy-session', cloudReads = 0, delayedCloud;
+  const blobAvatar = 'cindy-media://blobs/' + 'b'.repeat(64) + '.png';
+  const publicPhoto = 'https://fixture.invalid/avatar.png';
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRZkAAAAASUVORK5CYII=', 'base64');
+  let avatarFetches = 0, publicFetches = 0, publicPhotoReady = false;
+  const buddyResource = () => ({ ref, display: { title: 'Writer', preview: 'Hosted recent message', timestamp: Date.parse('2026-01-20T00:00:00Z'), avatar: { kind: 'media', value: blobAvatar, fallbackText: 'W' } }, links: [{ rel: 'conversation',
+    target: { kind: 'session', sessionId: canonical } }] });
   let socket, authorizeUrl, exchanges = 0, count = 0, subscriptions = 0, refreshes = 0;
   globalThis.harmonyPorts = {
+    downloadAvatarBytes: async address => {
+      if (address === publicPhoto + '?group') return png;
+      assert.equal(address, publicPhoto); publicFetches++;
+      return publicPhotoReady ? png : Buffer.from('<html>not an image</html>');
+    },
     accountUrl: 'https://fixture.invalid', directoryUrl: '/devices', relayUrl: 'wss://fixture.invalid',
     deviceIdentity: async () => 'phone', saveSession: async (s,k='session') => { secrets.set(k,s); }, readSession: async (k='session') => secrets.get(k),
     async request(url, body, token) {
+      if (url.endsWith('/v1/me')) return { actor: { id: self, kind: 'human' }, capabilities: { companionHome: true, conversationListStateVersion: 1 } };
+      if (url.endsWith('/v1/conversation-list-state?limit=100')) return [{ conversationId: hiddenId, hidden: true, revision: 1 }];
+      if (url.endsWith('/v1/conversations?limit=100')) return unrelatedRooms;
+      if (url.endsWith('/v1/conversations?limit=100&after=' + unrelatedRooms.at(-1).id)) return [
+        ...(joined ? [groupRoom] : []), { ...groupRoom, id: hiddenId }, { id: room, kind: 'direct', state: 'joined', head: '1' }];
+      if (url.endsWith('/' + groupId + '/snapshot')) return { room: groupRoom, members: [
+        { id: actor, kind: 'bot', name: 'Mimi', state: 'joined', groupAvatar: publicPhoto + '?group', avatar: '🐱' },
+        { id: self, kind: 'human', name: 'Me', state: 'joined', avatar: '🌱' }], messages: [{ seq: '52', deleted: true }, { seq: '51', content: [{type:'text',text:'Latest group post'}], createdAt: '2026-02-01T00:00:00Z' }] };
+      if (url.includes('/' + groupId + '/messages?')) {
+        assert.equal(body, undefined);
+        if (url.endsWith('&before=2')) return [{ id: 'm1', seq: '1', authorId: actor, author: { name: 'Mimi' }, content: [{ type: 'text', text: 'first' }] }];
+        return Array.from({length: 100}, (_, i) => ({ id: 'm' + (101-i), seq: String(101-i), authorId: i === 0 ? self : actor,
+          author: { name: i === 0 ? 'Me' : 'Global bot name' }, content: [{ type: 'text', text: 'turn ' + i }] }));
+      }
+      if (url.endsWith('/' + room + '/messages?limit=1')) return [{ seq:'1', content:[{type:'text', text:'Cloud transcript'}] }];
+      if (url.endsWith('/v1/actors')) return [
+        { id: actor, externalId: 'cloud', kind: 'bot', homeDeviceId: 'offline', name: 'Writer', avatar: publicPhoto },
+        { id: room, externalId: 'writer', kind: 'bot', homeDeviceId: 'host', name: 'Writer' },
+        { id: room, externalId: 'deleted', kind: 'bot', disabled: true, homeDeviceId: 'offline', name: 'Gone' },
+      ];
+      if (url.endsWith('/v1/conversations')) {
+        assert.deepEqual(body.participants, [actor]);
+        assert.equal(body.operationId, 'companion-room:' + actor);
+        return { id: room };
+      }
+      if (url.endsWith('/v1/conversations/' + room + '/messages?limit=100')) {
+        cloudReads++;
+        if (delayedCloud) await delayedCloud;
+        return [{ id: 'first-cloud', authorId: actor, seq: '1', content: [{ type: 'text', text: 'Cloud transcript' }] }];
+      }
       if (url.endsWith('/sso/discovery')) return { region:'cn', orgName:'Fixture',
         connections:[{connectionId:'fixture',connectionName:'Test SAML'}] };
       if (url.endsWith('/token')) {
@@ -86,6 +136,28 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
             const {channel,args} = frame.payload;
             let result;
             switch (channel) {
+              case 'device-link:media:fetch':
+                avatarFetches++;
+                assert.deepEqual(args, [{ url: blobAvatar, thumbnail: true, prepareOnly: false }]);
+                result = { size: png.length, mimeType: 'image/png', inlineBase64: png.toString('base64') }; break;
+              case 'maker:remote-resources:manifest':
+                result = {collections: [{ id: 'bot-groups', resourceKind: 'bot-group' }]}; break;
+              case 'maker:remote-resources:list':
+                if (args[0].collectionId === 'bot-groups') {
+                  result = { items: [groupId, hiddenId, 'legacy'].map(id => ({ ref: { collectionId: 'bot-groups', kind: 'bot-group', id },
+                    display: { title: 'Writer', subtitle: 'Local member', preview: 'Local recent message', timestamp: 4 }, links: [{ rel: 'member', target: {kind:'resource', ref}, label:'Writer' }] })) }; break;
+                }
+                assert.equal(args[0].collectionId, 'teammates');
+                result = { items: [buddyResource()] }; break;
+              case 'maker:remote-resources:get':
+                if (args[0].ref.kind === 'bot-group') {
+                  assert.equal(args[0].ref.id, 'legacy');
+                  result = { ref: args[0].ref, blocks: [{ primitive: 'bot-group-chat', data: { id: 'legacy', name: 'Writer',
+                    members: [], messages: [{ id: 'local', sequence: 1, kind: 'message', authorKind: 'bot', authorName: 'Bot',
+                      content: 'local history', createdAt: 23 }] } }] }; break;
+                }
+                assert.deepEqual(args[0].ref, ref);
+                result = buddyResource(); break;
               case 'maker:schedule:list': result = []; break;
               case 'maker:schedule:list-sidebar-index-runs': result = {runs:[]}; break;
               case 'maker:list-active':
@@ -100,8 +172,9 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
                 clientId: id, state: rows.some(r => r.id === id) ? 'accepted' : 'unknown'
               }))}; break;
               case 'local-db:sessions:list': result = [host]; break;
-              case 'local-db:sessions:get': result = host; break;
+              case 'local-db:sessions:get': result = args[0] === 'task' ? host : { ...host, id: args[0], source: 'bot', status: 'active' }; break;
               case 'local-db:messages:list': result = rows.slice().reverse(); break;
+              case 'device-link:unsubscribe': break;
               case 'device-link:subscribe': subscriptions++; break;
               case 'maker:input:enqueue':
                 count++;
@@ -119,7 +192,7 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
       return socket;
     }
   };
-  const { Workspace, receiveWant } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+  const { Workspace, receiveWant, matchingCompanions } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64'));
   let state;
   let app = new Workspace(s => { state = s; });
   t.after(() => { app.client?.stop(); delete globalThis.harmonyPorts; });
@@ -163,7 +236,100 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
   assert.equal(secrets.get('session').email, undefined);
   assert.equal(state.messages.at(-1).title,'finished while offline');
   assert.equal(count,1);
+
+  // Tier 1: a bot's canonical session can be outside the bounded task list.
+  // Same-name hosted/cloud rows must open their own history; a rebind fences sends.
+  await app.back();
+  // Production companion entry, integration tier: duplicate names/host copies, hidden membership, page older and late responses.
+  // The old roster only returned bots; two extra mixed rows must be independently readable.
+  await app.refreshCompanions();
+  assert.equal(state.companions.length, 4);
+  const group = state.companions[0];
+  assert.deepEqual(state.companions.map(row => row.id), [groupId, 'writer', 'legacy', 'cloud']);
+  assert.deepEqual(matchingCompanions(state.companions, 'Local member', 'host').map(row => row.id), ['legacy']);
+  assert.deepEqual(matchingCompanions(state.companions, 'ｍＩＭＩ', 'host').map(row => row.id), [groupId]);
+  assert.equal(matchingCompanions(state.companions, 'writer', '').length, 4);
+  assert.equal(state.companions.filter(row => row.id === groupId).length, 1);
+  assert.ok(!state.companions.some(row => row.id === hiddenId));
+  const localGroup = state.companions.find(row => row.id === 'legacy');
+  // Integration: the home row used to discard both the portrait members and the last message.
+  assert.equal(group.preview, 'Latest group post');
+  assert.deepEqual(group.faces.map(face => face.cloudImage || face.avatar), [publicPhoto + '?group', '🌱']);
+  assert.equal(await app.companionAvatar(group.faces[0], () => true), 'data:image/png;base64,' + png.toString('base64'));
+  assert.equal(localGroup.faces[0].avatarImage, blobAvatar);
+  assert.equal(localGroup.preview, 'Local recent message');
+  assert.equal(state.companions.find(row => row.actor === actor).preview, 'Cloud transcript');
+  assert.equal(state.companions.find(row => row.id === 'writer').preview, 'Hosted recent message');
+  await app.openCompanion(localGroup.key);
+  assert.equal(state.cloudMessages[0].title, 'local history');
+  app.closeCloudCompanion();
+  await app.openCompanion(group.key);
+  assert.equal(state.cloudMessages.length, 100);
+  assert.equal(state.cloudMessages.at(-1).role, 'user');
+  assert.equal(state.cloudMessages[0].author, 'Mimi');
+  await app.cloudHistory(true);
+  assert.equal(state.cloudMessages[0].title, 'first');
+  assert.equal(state.cloudOlder, false);
+  joined = false;
+  await app.refreshCompanions();
+  assert.equal(state.cloudCompanion, undefined);
+  assert.deepEqual(state.cloudMessages, []);
+  assert.ok(!state.companions.some(row => row.id === groupId));
+  assert.equal(await app.companionAvatar(group.faces[0], () => true), '');
+  const hosted = state.companions.find(row => row.host === 'host' && !row.group);
+  const cloud = state.companions.find(row => row.actor === actor);
+  assert.equal(hosted.title, cloud.title);
+  // A hosted custom portrait and an offline buddy's public photo must both
+  // reach the native image view. A bad CDN response must not pollute its cache.
+  const visible = () => true, image = 'data:image/png;base64,' + png.toString('base64');
+  assert.equal(await app.companionAvatar(hosted, () => false), '');
+  assert.deepEqual(await Promise.all([app.companionAvatar(hosted, visible), app.companionAvatar(hosted, visible)]), [image, image]);
+  assert.equal(await app.companionAvatar(hosted, visible), image);
+  assert.equal(avatarFetches, 1);
+  assert.equal(await app.companionAvatar(cloud, visible), '');
+  publicPhotoReady = true;
+  assert.equal(await app.companionAvatar(cloud, visible), image);
+  assert.equal(await app.companionAvatar(cloud, visible), image);
+  assert.equal(publicFetches, 2);
+  assert.ok(!state.tasks.some(row => row.id === canonical));
+  // The host stores call transcripts in metadata with an empty assistant body.
+  // Exercise the actual companion entry (integration), including an empty call.
+  const call = { version: 1, callId: 'call', startedAt: 1000, endedAt: 62000, turns: [], handoffs: [] };
+  const callRow = { id: 'empty-call', sessionId: canonical, role: 'assistant', content: '', agentMeta: { voiceCall: call } };
+  rows.push(callRow, { ...callRow, id: 'spoken-call', agentMeta: { voiceCall: { ...call,
+    turns: [{ id: 'u', role: 'user', text: 'fixture question', complete: true, createdAt: 1001 },
+      { id: 'a', role: 'assistant', text: 'fixture reply', complete: true, createdAt: 1002 }],
+    handoffs: [{ id: 'task', inputId: 'u', state: 'accepted', text: 'fixture question' }] } } });
+  // A newer voice card has an empty stored body, even when the host still lists an older text preview.
+  await app.loadCompanionCall(hosted.key);
+  assert.equal(state.companions.find(row => row.key === hosted.key).recentCall, true);
+  await app.openCompanion(hosted.key);
+  assert.deepEqual(state.messages.map(row => row.id), ['spoken-call']);
+  assert.deepEqual(state.messages[0].voiceCall.lines.map(line => [line.role, line.text, line.status]), [
+    ['user', 'fixture question', 'accepted'], ['assistant', 'fixture reply', undefined],
+  ]);
+  assert.equal(state.task, canonical);
+  assert.deepEqual(state.taskCompanion, { ...hosted, recentCall: true });
+  canonical = 'moved';
+  await assert.rejects(app.send('should not dispatch'), /伙伴会话已变更/);
+  assert.equal(count, 1);
+  await app.back();
+  await app.openCompanion(cloud.key);
+  assert.equal(state.taskCompanion, undefined);
+  assert.deepEqual(state.cloudCompanion, cloud);
+  assert.equal(state.cloudMessages[0].title, 'Cloud transcript');
+  assert.equal(state.task, '');
+  let resumeCloud;
+  delayedCloud = new Promise(resolve => { resumeCloud = resolve; });
+  const refreshCloud = app.cloudHistory(false);
+  await until(() => cloudReads === 2);
+  app.closeCloudCompanion();
+  resumeCloud();
+  await refreshCloud;
+  assert.deepEqual(state.cloudMessages, []);
+  assert.equal(state.cloudCompanion, undefined);
   await app.logout();
+  assert.deepEqual(state.companions, []);
   assert.equal(secrets.get('session'),null);
   assert.equal(state.accountEmail, '');
   assert.equal(state.accountAvatar, '');
@@ -296,7 +462,8 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   globalThis.harmonyPorts = { deviceIdentity: async () => 'phone', readSession: async () => null, saveSession: async () => {},
     request: async () => { throw Object.assign(new Error('directory denied'), {httpStatus:403}); } };
   const { Workspace } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64') + '#m2');
-  const app = new Workspace(() => {}, true);
+  let view;
+  const app = new Workspace(state => { view = state; }, true);
   await app.init({});
   app.session = { id: 'account-one', name: '测试' };
   app.show({ account: '测试', relay: 'online', devices: [{ id: 'pc', title: '电脑' }] });
@@ -376,6 +543,20 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   await assert.rejects(app.applyPreference('model','unlisted'), /重新选择/);
   await app.applyPreference('model','other');
   assert.equal(app.state.model,'other');
+  // A whole page of empty calls still leads to the older visible conversation.
+  const emptyRecord = { version: 1, callId: 'empty', startedAt: 1000, turns: [], handoffs: [] };
+  history = [{ id: 'older-text', sessionId: task, role: 'user', content: 'before calls' },
+    ...Array.from({ length: 40 }, (_, i) => ({ id: 'call-' + i, sessionId: task, role: 'assistant',
+      content: '', agentMeta: { voiceCall: { ...emptyRecord, callId: 'call-' + i } } }))];
+  await app.history(app.version);
+  assert.deepEqual(view.messages, []);
+  assert.equal(view.hasOlder, true);
+  await app.older();
+  assert.deepEqual(view.messages.map(row => row.title), ['before calls']);
+  history.at(-1).agentMeta.voiceCall.turns = [{ id: 'u', role: 'user', text: 'late transcript', complete: true, createdAt: 1001 }];
+  await app.history(app.version);
+  assert.deepEqual(view.messages.map(row => row.id), ['older-text', 'call-39']);
+  assert.equal(view.messages[1].voiceCall.lines[0].text, 'late transcript');
   history = Array.from({length:85},(_,i)=>({id:'m'+i,sessionId:task,createdAt:20,role:'user',content:'行 '+i}));
   history[80] = {...history[80],role:'future',content:{}};
   await app.history(app.version);

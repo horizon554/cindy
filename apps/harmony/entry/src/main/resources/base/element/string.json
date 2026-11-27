@@ -345,6 +345,10 @@
       "value": "同意并继续"
     },
     {
+      "name": "search_home",
+      "value": "搜索任务、项目、伙伴或群聊"
+    },
+    {
       "name": "search_task",
       "value": "搜索任务或项目"
     },
@@ -811,6 +815,90 @@
     {
       "name": "discard_send",
       "value": "放弃发送"
+    },
+    {
+      "name": "companions",
+      "value": "伙伴"
+    },
+    {
+      "name": "companions_retry",
+      "value": "重新加载伙伴和群聊"
+    },
+    {
+      "name": "companions_all",
+      "value": "查看全部 %d 项"
+    },
+    {
+      "name": "companions_less",
+      "value": "收起"
+    },
+    {
+      "name": "companion_no_preview",
+      "value": "暂无消息摘要"
+    },
+    {
+      "name": "companion_empty",
+      "value": "暂无聊天记录"
+    },
+    {
+      "name": "companion_history_retry",
+      "value": "重新加载聊天记录"
+    },
+    {
+      "name": "companion_readonly",
+      "value": "云端聊天记录 · 只读"
+    },
+    {
+      "name": "call_history",
+      "value": "语音通话"
+    },
+    {
+      "name": "call_you",
+      "value": "你"
+    },
+    {
+      "name": "call_companion",
+      "value": "伙伴"
+    },
+    {
+      "name": "call_saved",
+      "value": "记录已保存"
+    },
+    {
+      "name": "call_expand",
+      "value": "展开通话记录"
+    },
+    {
+      "name": "call_collapse",
+      "value": "收起通话记录"
+    },
+    {
+      "name": "call_send_failed",
+      "value": "发送失败，原话已保留。"
+    },
+    {
+      "name": "call_handoff_sending",
+      "value": "正在交接…"
+    },
+    {
+      "name": "call_handoff_accepted",
+      "value": "已交给伙伴处理"
+    },
+    {
+      "name": "call_handoff_failed",
+      "value": "交接失败，原话已保留"
+    },
+    {
+      "name": "call_handoff_completed",
+      "value": "结果已返回"
+    },
+    {
+      "name": "group_chat",
+      "value": "群聊"
+    },
+    {
+      "name": "group_readonly",
+      "value": "群聊记录 · 只读"
     }
   ]
 }

@@ -32,7 +32,7 @@ RNOH 由鸿蒙侧 CPF-RN 社区维护，华为开发者文档列为跨平台方�
 
 ## 哪些行为共用，哪些由鸿蒙实现
 
-- **产品行为以当前主仓为准。** 对照移动端的真实任务入口、能力协商、审批、停止和恢复语义；Android 提供 CN 登录、系统返回、分享、权限拒绝后的交互参照。云端伙伴由 Chat 服务承载，后续接入时沿用其消息来源。[任务传输入口](../../mobile/src/device-link/mobileMakerTransport.ts) · [移动端场景测试](../../mobile/src/__tests__/mobileRemoteFlowSmoke.test.ts) · [云端伙伴](../../mobile/src/chat/cloudCompanion.ts)
+- **产品行为以当前主仓为准。** 对照移动端的真实任务入口、能力协商、审批、停止和恢复语义；Android 提供 CN 登录、系统返回、分享、权限拒绝后的交互参照。首页伙伴分区沿用电脑提供的伙伴会话绑定；仅有云端伙伴时从 Chat 服务读取一对一历史。已有群聊与伙伴混排，按群或成员名称搜索，点开后从 Chat 服务或群所属的在线电脑读取群历史。[任务传输入口](../../mobile/src/device-link/mobileMakerTransport.ts) · [移动端场景测试](../../mobile/src/__tests__/mobileRemoteFlowSmoke.test.ts) · [云端伙伴](../../mobile/src/chat/cloudCompanion.ts)
 - **职责划分参考原生 iOS。** 独立 UIKit 工程在基线 `3a2475f` 已拆分 Domain、Protocol、Persistence、Sync、DeviceLink、Presentation、AppShell。鸿蒙首版按这些职责组织一个应用，页面订阅状态，应用层持有账号与连接生命周期。
 - **复用契约与内核。** 三端共享脱敏的消息样本、事件顺序和预期结果，覆盖未知消息、重复增量、撤权和迟到响应。对无平台依赖的 TS 逐项检查 ArkTS 兼容性；Agent-Net 优先验证 Rust core 经现有 C ABI 接入鸿蒙 Node-API。[Device Link](../../../packages/device-link/src) · [Rust 依赖](../../../packages/agent-net-native/Cargo.toml) · [C ABI](../../../packages/agent-net-native/include/cindy_agent_net.h) · [华为 Native Module](https://developer.huawei.com/consumer/cn/doc/guidebook/programming-language1-0000002593254720/)
 

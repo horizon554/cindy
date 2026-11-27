@@ -345,6 +345,10 @@
       "value": "Agree and continue"
     },
     {
+      "name": "search_home",
+      "value": "Search tasks, projects, companions, or groups"
+    },
+    {
       "name": "search_task",
       "value": "Search tasks or projects"
     },
@@ -811,6 +815,90 @@
     {
       "name": "discard_send",
       "value": "Discard send"
+    },
+    {
+      "name": "companions",
+      "value": "Buddies"
+    },
+    {
+      "name": "companions_retry",
+      "value": "Reload buddies and groups"
+    },
+    {
+      "name": "companions_all",
+      "value": "View all %d"
+    },
+    {
+      "name": "companions_less",
+      "value": "Show less"
+    },
+    {
+      "name": "companion_no_preview",
+      "value": "No message preview"
+    },
+    {
+      "name": "companion_empty",
+      "value": "No messages yet"
+    },
+    {
+      "name": "companion_history_retry",
+      "value": "Reload conversation"
+    },
+    {
+      "name": "companion_readonly",
+      "value": "Cloud conversation · Read only"
+    },
+    {
+      "name": "call_history",
+      "value": "Voice call"
+    },
+    {
+      "name": "call_you",
+      "value": "You"
+    },
+    {
+      "name": "call_companion",
+      "value": "Companion"
+    },
+    {
+      "name": "call_saved",
+      "value": "Record saved"
+    },
+    {
+      "name": "call_expand",
+      "value": "Expand call transcript"
+    },
+    {
+      "name": "call_collapse",
+      "value": "Collapse call transcript"
+    },
+    {
+      "name": "call_send_failed",
+      "value": "Could not send. Your words have been kept."
+    },
+    {
+      "name": "call_handoff_sending",
+      "value": "Handing over…"
+    },
+    {
+      "name": "call_handoff_accepted",
+      "value": "Handed to your companion"
+    },
+    {
+      "name": "call_handoff_failed",
+      "value": "Could not hand over. Your words have been kept."
+    },
+    {
+      "name": "call_handoff_completed",
+      "value": "Result received"
+    },
+    {
+      "name": "group_chat",
+      "value": "Group chat"
+    },
+    {
+      "name": "group_readonly",
+      "value": "Group history · Read only"
     }
   ]
 }

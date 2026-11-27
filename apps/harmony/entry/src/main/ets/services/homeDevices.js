@@ -1,6 +1,9 @@
 // The homepage can read several peers. Navigation and every mutation still use
 // Workspace's selected peer and version. Each subscription owns its own rows.
 import { HomeDeviceSyncLimiter, buildSessionScheduleIndex, normalizeScheduleList, normalizeScheduleRuns, PROTOCOL_VERSION } from './protocol.generated';
+import { hostGroups, hostGroupHistory } from './groupChats';
+import { hostCompanions } from './companions';
+import { taskPage } from './taskModel';
 import { homeTask } from './homeList';
 
 // A task can be the schedule's explicit target or the session of a particular run.
@@ -35,6 +38,8 @@ export class HomeDevices {
     this.peers.delete(id);
     clearTimeout(peer.timer);
     clearTimeout(peer.scheduleTimer);
+    for (const list of [peer.bots, peer.groups]) clearTimeout(list?.timer);
+    if (peer.bots || peer.groups) this.app.companions?.publish();
     if (close && peer.opened) peer.client.closeLink(id, 'user');
   }
   clear(close) {
@@ -108,12 +113,56 @@ export class HomeDevices {
       peer.loaded = true;
       await this.publish(peer);
       guard();
-      if (refreshSchedules) this.readSchedules(peer, optional, guard);
+      if (refreshSchedules) {
+        this.readSchedules(peer, optional, guard);
+        peer.bots ??= this.collectionReader(peer, guard, () => hostCompanions(call, id, app.locale));
+        peer.groups ??= this.collectionReader(peer, guard, () => hostGroups(call, peer, app.locale));
+        // The host text preview skips empty-body voice records. Only an on-screen
+        // buddy reads a short window of its bound session, via the shared queue.
+        peer.recentCall = async sessionId => {
+          const rows = await call('local-db:messages:list', [sessionId, { limit: 8 }]);
+          const visible = rows.filter(row => row?.sessionId === sessionId && !row.rewindAt && !row.agentMeta?.autoResume &&
+            !row.agentMeta?.botPrivateReply && !row.agentMeta?.parentUuid && !row.agentMeta?.botDirectMessage &&
+            (row.role === 'user' || row.role === 'assistant'));
+          const last = taskPage(visible, sessionId).reverse().find(message => !message.emptyVoiceCall);
+          return !!last?.voiceCall;
+        };
+        peer.groupHistory = groupId => hostGroupHistory(call, groupId, app.locale);
+        peer.bots.refresh();
+        peer.groups.refresh();
+      }
     }, id === app.state.device ? 'foreground' : 'background').catch(async error => {
       if (this.peers.get(id) === peer && ['ACCESS_REVOKED','REMOTE_DISABLED'].includes(error.code)) await app.forgetHost(id);
       throw error;
     }).finally(() => { peer.flight = null; });
     return peer.flight;
+  }
+  collectionReader(peer, guard, read) {
+    const list = { rows: [], error: false, dirty: false };
+    list.refresh = () => {
+      if (list.flight) return list.flight;
+      list.flight = this.pool.run(async () => {
+        guard();
+        const rows = await read();
+        guard();
+        list.rows = rows;
+        list.error = false;
+      }).catch(async error => {
+        if (this.peers.get(peer.id) !== peer) return;
+        if (['ACCESS_REVOKED', 'REMOTE_DISABLED'].includes(error.code)) return this.app.forgetHost(peer.id);
+        const absent = ['NOT_FOUND', 'CHANNEL_NOT_ALLOWED', 'PERMISSION_DENIED', 'FORBIDDEN'].includes(error.code);
+        if (absent) list.rows = [];
+        list.error = !absent;
+      }).finally(() => {
+        list.flight = null;
+        if (this.peers.get(peer.id) !== peer) return;
+        this.app.companions?.publish();
+        if (list === peer.bots) this.app.companions?.refreshVisibleCalls(peer);
+        if (list.dirty) { list.dirty = false; list.refresh(); }
+      });
+      return list.flight;
+    };
+    return list;
   }
   readSchedules(peer, optional, guard) {
     // Never make opening a task wait for optional schedule channels. Use the same
@@ -159,7 +208,20 @@ export class HomeDevices {
     const peer = this.peers.get(host);
     if (!peer) return;
     const id = payload?.sessionId;
-    if (channel === 'local-db:sessions:activity' && id && ['running','needs-interaction','completed','error'].includes(payload.phase)) {
+    if (channel === 'maker:remote-resources:changed') {
+      const list = payload?.collectionId === 'teammates' ? peer.bots : payload?.collectionId === 'bot-groups' ? peer.groups : null;
+      if (list && list === peer.bots && peer.callReads) {
+        if (payload.resourceRefs?.length) {
+          for (const ref of payload.resourceRefs) peer.callReads.delete(JSON.stringify([peer.id, ref.id]));
+        } else peer.callReads.clear();
+      }
+      if (list && !list.timer) list.timer = setTimeout(() => {
+        list.timer = null;
+        if (this.peers.get(host) !== peer) return;
+        if (list.flight) list.dirty = true;
+        else list.refresh();
+      }, 250);
+    } else if (channel === 'local-db:sessions:activity' && id && ['running','needs-interaction','completed','error'].includes(payload.phase)) {
       const signal = { activityPhase: payload.phase, activityAttention: payload.attention === true,
         isTurnRunning: ['running', 'needs-interaction'].includes(payload.phase) };
       peer.signals.set(id, signal);

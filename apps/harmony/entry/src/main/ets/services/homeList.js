@@ -78,3 +78,9 @@ export function groupHomeRows(rows, groupProjects, flat, searching, deviceOrder 
   }
   return groups;
 }
+
+export function matchingCompanions(rows, query, scope) {
+  const needle = query.normalize('NFKC').trim().toLocaleLowerCase();
+  return rows.filter(row => (!scope || row.host === scope || (row.group && !row.host)) &&
+    (!needle || [row.title, row.searchText || ''].some(value => value.normalize('NFKC').toLocaleLowerCase().includes(needle))));
+}

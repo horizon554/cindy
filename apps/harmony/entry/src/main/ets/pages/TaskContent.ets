@@ -1,4 +1,4 @@
-import { Row as Item, Card, Question, Choice, MediaInfo } from '../services/workspace';
+import { Row as Item, Card, Question, Choice, MediaInfo, CallLine, CallTranscript } from '../services/workspace';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { ChoiceRow, PillAction } from './Controls';
 
@@ -92,6 +92,62 @@ struct HistoryAttachment {
 }
 
 @Component
+struct VoiceCallHistory {
+  @Prop record: CallTranscript;
+  @State expanded: boolean = false;
+
+  private duration(): string | Resource {
+    if (this.record.endedAt === undefined) return $r('app.string.call_saved');
+    const seconds = Math.max(0, Math.floor((this.record.endedAt - this.record.startedAt) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    return (minutes >= 60 ? Math.floor(minutes / 60) + ':' + String(minutes % 60).padStart(2, '0') : String(minutes)) +
+      ':' + String(seconds % 60).padStart(2, '0');
+  }
+
+  private statusLabel(status: string): Resource {
+    switch (status) {
+      case 'sending': return $r('app.string.call_handoff_sending');
+      case 'accepted': return $r('app.string.call_handoff_accepted');
+      case 'completed': return $r('app.string.call_handoff_completed');
+      case 'failed': return $r('app.string.call_handoff_failed');
+      default: return $r('app.string.call_send_failed');
+    }
+  }
+
+  build() {
+    Column() {
+      Button({ type: ButtonType.Normal }) {
+        Row({ space: 8 }) {
+          Text($r('app.string.call_history')).fontSize(15).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink'))
+          Text(this.duration()).fontSize(13).fontColor($r('app.color.muted'))
+          Blank()
+          Text(new Date(this.record.startedAt).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }))
+            .fontSize(12).fontColor($r('app.color.muted')).maxLines(1)
+          SymbolGlyph(this.expanded ? $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
+            .fontSize(13).fontColor([$r('app.color.muted')])
+        }.width('100%').padding({ left: 12, right: 12 })
+      }.id('voice-call-toggle').width('100%').constraintSize({ minHeight: 44 }).backgroundColor(Color.Transparent)
+        .accessibilityDescription(this.expanded ? $r('app.string.call_collapse') : $r('app.string.call_expand'))
+        .onClick(() => { this.expanded = !this.expanded; })
+      if (this.expanded) {
+        Column({ space: 10 }) {
+          ForEach(this.record.lines, (line: CallLine) => {
+            Column({ space: 3 }) {
+              Text(line.role === 'user' ? $r('app.string.call_you') : $r('app.string.call_companion'))
+                .fontSize(12).fontColor($r('app.color.muted'))
+              if (line.text) {
+                Text(line.text).fontSize(15).lineHeight(22).fontColor($r('app.color.ink')).copyOption(CopyOptions.InApp)
+              }
+              if (line.status) { Text(this.statusLabel(line.status)).fontSize(13).fontColor($r('app.color.muted')) }
+            }.width('100%').alignItems(HorizontalAlign.Start)
+          }, (_line: CallLine, index: number) => index.toString())
+        }.id('voice-call-transcript').width('100%').padding({ left: 12, right: 12, bottom: 12 })
+      }
+    }.width('100%').borderRadius(12).borderWidth(0.5).borderColor($r('app.color.line')).backgroundColor($r('app.color.panel'))
+  }
+}
+
+@Component
 export struct HistoryMessage {
   @Prop item: Item = { id: '', title: '' };
 
@@ -116,7 +172,9 @@ export struct HistoryMessage {
   }
 
   build() {
-    if (this.item.role === 'user') {
+    if (this.item.voiceCall) {
+      VoiceCallHistory({ record: this.item.voiceCall })
+    } else if (this.item.role === 'user') {
       Row() {
         Column({ space: 6 }) {
           if (this.item.messageText !== '' || !this.item.media?.length) {

@@ -1,5 +1,5 @@
 import { normalizeAskQuestions, answerKey, askQuestionOptions, askAnswerError, encodeMultiSelectAnswer,
-  selectionFromAnswer, buildPermissionReviewPresentation } from './protocol.generated';
+  selectionFromAnswer, buildPermissionReviewPresentation, readVoiceCallRecord } from './protocol.generated';
 
 function decode(content) {
   if (typeof content !== 'string') return content;
@@ -28,12 +28,34 @@ function body(content) {
   return '';
 }
 
+function callTranscript(record) {
+  const handoffs = new Map(record.handoffs.map(task => [task.inputId, task]));
+  const lines = [];
+  for (const turn of record.turns) {
+    const handoff = handoffs.get(turn.id);
+    const status = handoff?.state || (turn.role === 'user' && turn.failed ? 'send-failed' : undefined);
+    if (turn.text.trim() || handoff) lines.push({ role: turn.role, text: turn.text, status });
+    handoffs.delete(turn.id);
+  }
+  for (const task of handoffs.values()) lines.push({ role: 'user', text: task.text, status: task.state });
+  if (!lines.length) return undefined;
+  return { startedAt: record.startedAt, endedAt: record.endedAt, lines };
+}
+
 export function taskPage(rows, task) {
   const page = [];
   const seen = new Set();
   for (const row of rows) {
     if (!row?.id || row.sessionId !== task || seen.has(row.id)) continue;
     seen.add(row.id);
+    const call = row.role === 'assistant' && readVoiceCallRecord(row.agentMeta?.voiceCall);
+    if (call) {
+      const voiceCall = callTranscript(call);
+      // Empty calls still anchor Host pagination and history reconciliation.
+      page.push({ id: row.id, clientId: row.clientId || '', role: row.role, title: '',
+        ...(voiceCall ? { voiceCall } : { emptyVoiceCall: true }) });
+      continue;
+    }
     let title, detail;
     if (row.role === 'ask_user' || row.role === 'permission' || row.role === 'tool_use' || row.role === 'tool_result') {
       let data = row.content;

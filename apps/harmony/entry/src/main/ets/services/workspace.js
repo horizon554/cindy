@@ -1,3 +1,4 @@
+import { Companions, resolveCompanion } from './companions';
 import { HomeDevices } from './homeDevices';
 import { homeTask } from './homeList';
 import { modelBrand, providerBrand } from './modelBrand';
@@ -10,7 +11,7 @@ import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, readSessio
 
 import { authorize, cancelAuthorization, consumeAuthorization, listenForWant, pendingAuthorization } from './sso';
 
-const taskView = { legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', voiceCaret: undefined, pendingUploads: [], pickingFiles: false, waitingToCreate: false, failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
+const taskView = { taskCompanion: undefined, legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', voiceCaret: undefined, pendingUploads: [], pickingFiles: false, waitingToCreate: false, failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
   attachments: [], transfer: '', uploadPending: false, voice: '', activity: '', hasOlder: false, paused: false, retryable: false, delivery: '' };
 const hostView = { ...taskView, device: '', tasks: [], linked: false, moreTasks: false };
 
@@ -62,7 +63,8 @@ export class Workspace {
       this.state.liveHosts = live.map(peer => peer.id);
       this.state.moreTasks = live.some(peer => peer.more && (!this.home.scope || this.home.scope === peer.id));
     }
-    this.changed({ ...this.state });
+    if (patch.messages) this.visibleMessages = patch.messages.filter(row => !row.emptyVoiceCall);
+    this.changed({ ...this.state, messages: this.visibleMessages || this.state.messages });
   }
   putHomeRows(host, tasks) {
     const homeIndex = [...(this.state.homeIndex || []).filter(row => row.host !== host), ...tasks.map(row => ({ ...row, host }))];
@@ -76,6 +78,7 @@ export class Workspace {
   }
   async init(context) {
     this.context = context;
+    this.locale = context.config?.language || 'zh-CN';
     this.cache = await openCache(context);
     this.id = await deviceIdentity(context);
     const session = await readSession();
@@ -284,6 +287,10 @@ export class Workspace {
       if (env.src !== this.state.device) return;
       if (this.state.task && this.state.linked && payload?.sessionId === this.state.task) this.push(channel, payload);
     });
+    if (this.home) {
+      this.companions = new Companions(this);
+      this.companions.refresh();
+    }
     client.start();
     this.refreshPush();
   }
@@ -456,6 +463,7 @@ export class Workspace {
     else throw new Error('网络恢复后会自动连接');
   }
   resetTask() {
+    this.companion = null;
     this.newDraft = null;
     this.localMedia.clear();
     this.recentImages.clear();
@@ -483,12 +491,39 @@ export class Workspace {
   }
   async openTask(id) {
     if (!this.state.tasks.some(r => r.id === id)) throw new Error('请选择当前电脑上的任务');
+    await this.enterTask(id);
+  }
+  async refreshCompanions() {
+    const reads = [...this.home.peers.values()].flatMap(peer => [peer.bots?.refresh(), peer.groups?.refresh()]);
+    await Promise.all([this.companions?.refresh(), ...reads]);
+  }
+  loadCompanionCall(key, visible = true) { return this.companions?.loadCall(key, visible); }
+  async companionAvatar(row, visible) { return await this.companions?.avatars.load(row, visible) || ''; }
+  async openCompanion(key) {
+    const roster = this.companions;
+    const lookup = () => roster.rows().find(row => row.key === key);
+    const row = lookup();
+    if (!row) throw new Error('伙伴已不可访问');
+    if (row.group || row.actor) return roster.openRoom(row);
+    if (!this.available(row.host)) throw new Error('请等待伙伴的电脑上线');
+    if (this.state.device !== row.host || !this.state.linked) await this.openDevice(row.host);
+    const v = this.version;
+    if (this.companions !== roster || this.state.device !== row.host || !lookup()) throw new Error('伙伴名单已变更');
+    const id = await resolveCompanion((ch, args) => this.invoke(ch, args, v), row.id, this.locale);
+    this.guard(v);
+    await this.enterTask(id, row);
+  }
+  closeCloudCompanion() { this.companions?.close(); }
+  cloudHistory(older) { return this.companions?.readRoom(older); }
+  async enterTask(id, companion) {
+    if (this.companions?.open) this.companions.close();
     const version = ++this.version;
     this.resetTask();
-    this.show({ ...taskView, task: id, error: '' });
+    this.companion = companion;
+    this.show({ ...taskView, task: id, taskCompanion: companion, error: '' });
     const cached = await this.loadLocalTask(version);
     this.guard(version);
-    if (this.state.linked) return this.attachTask(version);
+    if (this.state.linked) return this.attachTask(version, true, !!companion);
     this.show({ messages: cached?.messages || [], hasOlder: !!cached?.hasOlder });
     this.ready = true;
   }
@@ -501,11 +536,19 @@ export class Workspace {
     this.show({ attachments: attachments || [], draft: this.dirtyDraft ? this.state.draft : (draft || ''), pendingLabel: pending?.text || pending?.attachments?.[0]?.name || '', delivery: pending ? '正在核对上次发送' : '' });
     return cached;
   }
-  async attachTask(version, subscribe = true) {
+  async validateCompanion(version) {
+    const buddy = this.companion;
+    if (!buddy) return;
+    const id = await resolveCompanion((ch, args) => this.invoke(ch, args, version), buddy.id, this.locale);
+    if (this.state.device !== buddy.host || id !== this.state.task) throw Object.assign(new Error('伙伴会话已变更，请从首页重新打开'), { code: 'COMPANION_CHANGED' });
+  }
+  async attachTask(version, subscribe = true, bindingVerified = false) {
     const id = this.state.task;
     if (!this.hydrated) await this.loadLocalTask(version);
     try {
+      if (!bindingVerified) await this.validateCompanion(version);
       const row = await this.invoke('local-db:sessions:get', [id], version);
+      if (this.companion && (row?.source !== 'bot' || row.status !== 'active')) throw Object.assign(new Error('伙伴会话已不可用'), { code: 'COMPANION_CHANGED' });
       if (!row || row.id !== id || row.status === 'deleted' || row.hiddenAt) throw Object.assign(new Error('任务已不可访问'), { code: 'NOT_FOUND' });
       this.show({ agent: row.agentKind || '', model: row.model || '', provider: row.providerId || '', permission: row.permissionMode || '' });
       if (subscribe) await this.invoke('device-link:subscribe', [{ topics: ['session:' + id], controllerName: 'Cindy HarmonyOS', capabilities: [] }], version);
@@ -524,6 +567,10 @@ export class Workspace {
       this.ready = true;
       this.show({ error: '' });
     } catch (error) {
+      if (version === this.version && this.companion && ['COMPANION_CHANGED','NOT_FOUND','FORBIDDEN','PERMISSION_DENIED'].includes(error.code)) {
+        await this.back();
+        throw error;
+      }
       if (version === this.version && ['NOT_FOUND','FORBIDDEN','PERMISSION_DENIED'].includes(error.code)) {
         const keys = ['draft','outbox','history','attachments'].map(name => this.key(name));
         this.cancelDraftTimer();
@@ -1097,7 +1144,9 @@ export class Workspace {
       if (!this.pending) return;
       if (!retry || (!original && (this.pending.text !== text || JSON.stringify((this.pending.attachments || []).map(f => f.id)) !== JSON.stringify(this.state.attachments.map(f => f.id))))) throw new Error('上次发送结果待确认，请先核对原消息');
     }
+    await this.validateCompanion(version);
     const row = await this.invoke('local-db:sessions:get', [task], version);
+    if (this.companion && (row?.source !== 'bot' || row.status !== 'active')) throw Object.assign(new Error('伙伴会话已不可用'), { code: 'COMPANION_CHANGED' });
     if (!row || row.id !== task || !row.workingDir) throw new Error('无法确认任务工作目录');
     if (row.agentDeviceId || row.agentSwitchIntent) throw new Error('此任务涉及远程执行或切换 Agent，暂不支持发送');
     const pending = this.pending || { id: util.generateRandomUUID(true), text, attachments: this.state.attachments.slice(), retrySafe: this.deliverySupported };
@@ -1189,6 +1238,10 @@ export class Workspace {
     await this.openTask(row.id);
   }
   foreground() {
+    if (this.companions && !this.state.task) {
+      if (this.companions.open) this.companions.readRoom();
+      else this.refreshCompanions().catch(() => {});
+    }
     if (!this.session || this.state.relay !== 'online' || !this.state.linked || !this.state.task || !this.ready || this.foregroundRead) return;
     const v = this.version;
     this.foregroundRead = this.attachTask(v, false).catch(e => { if (v === this.version) this.report(e); }).finally(() => { this.foregroundRead = null; });
@@ -1547,6 +1600,7 @@ export class Workspace {
     this.share = null;
     this.notification = null;
     this.authEpoch++;
+    this.companions = null;
     this.version++;
     const client = this.client;
     this.home?.clear(false);
@@ -1557,7 +1611,7 @@ export class Workspace {
     this.cancelDraftTimer();
     this.resetTask();
     client?.stop();
-    this.show({ ...hostView, shareLabel: '', shareText: '', shareFiles: [], pushEnabled: false, pushStatus: '', accounts: [], account: '', accountEmail: '', accountAvatar: '', relay: '', devices: [], error: '' });
+    this.show({ ...hostView, companions: [], companionError: false, cloudCompanion: undefined, cloudMessages: [], cloudOlder: false, cloudLoading: false, cloudError: false, shareLabel: '', shareText: '', shareFiles: [], pushEnabled: false, pushStatus: '', accounts: [], account: '', accountEmail: '', accountAvatar: '', relay: '', devices: [], error: '' });
     await Promise.all([this.storeSession(null), owner && this.cache.forget(owner)]);
     if (owner && this.native) {
       const disable = () => this.native.disablePush(owner, access);
