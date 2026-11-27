@@ -461,6 +461,10 @@
       "value": "All computers"
     },
     {
+      "name": "archived_filter_hint",
+      "value": "Showing archived tasks only"
+    },
+    {
       "name": "display_options",
       "value": "Display options"
     },

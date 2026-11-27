@@ -24,7 +24,12 @@ await build({
       export { permissionModeOrAsk } from './packages/maker-shared/src/permissionMode.ts';
       export { normalizeAskQuestions, answerKey, askQuestionOptions, askAnswerError, encodeMultiSelectAnswer, selectionFromAnswer, buildPermissionReviewPresentation } from './packages/maker-shared/src/interaction.ts';
       export { isTurnContinuationBoundaryEvent } from './packages/maker-shared/src/turnContinuation.ts';
-      export { buildMobileModelSections, flattenProviderSections } from './apps/mobile/src/session/providerModelSections.ts';
+      export { providerMonogram, buildMobileModelSections, flattenProviderSections } from './apps/mobile/src/session/providerModelSections.ts';
+      export { resolveModelIconKind } from './packages/model-providers/src/sections.ts';
+      export { resolveProviderLogoKind, isProviderLogoKind, PROVIDER_LOGO_PATHS, MODEL_SPECTRUM_COLORS,
+        CINDY_MARK_TRANSFORM, CINDY_MARK_PATH, CINDY_MARK_EARRING_PATH, CINDY_MARK_EARRING_COLOR } from './packages/model-providers/src/providerBranding.ts';
+      export { OPENAI_PROVIDER_PATH, ANTHROPIC_PROVIDER_PATH, XD_SYMBOL_PATHS, XD_VIEW_BOX } from './apps/mobile/src/components/vendorIconPaths.ts';
+      export { resolveProviderSvgColorScheme } from './apps/mobile/src/session/resolveProviderSvgColorScheme.ts';
       export { PROTOCOL_VERSION, providerPickerListArgs } from './packages/device-link/src/protocol.ts';
       export { authApiBaseUrl, deviceLinkApiBaseUrl } from './config/endpoint.json';
     `,

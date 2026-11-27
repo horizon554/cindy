@@ -1,5 +1,7 @@
+import { PickerBrand } from './modelBrand';
 import { common } from '@kit.AbilityKit';
 export interface Row { agentKind?: string; lead?: boolean; attached?: boolean; remote?: boolean; hasDraft?: boolean; localDraft?: boolean; scheduled?: boolean; scheduleStopped?: boolean; pinnedAt?: string; rightStatus?: string; host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; created?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
+export interface PreferenceOption extends Row { brand?: PickerBrand; sectionBrand?: PickerBrand; provider?: string; model?: string; activeSource?: boolean }
 export interface Choice { label: string; detail: string; selected: boolean }
 export interface Question { key: string; valid?: boolean; label: string; multi: boolean; free: boolean; value: string; options: Choice[] }
 export interface Card { id: string; revision: number; kind: string; title: string; detail: string; questions: Question[]; complete?: boolean; approvalKey?: string; risk?: string; code?: string }
@@ -41,7 +43,7 @@ export class Workspace {
   browse(path: string): Promise<FolderList>;
   shareImage(index: number): string;
   engines(): Promise<string[]>;
-  preferences(kind: string): Promise<Row[]>;
+  preferences(kind: string): Promise<PreferenceOption[]>;
   applyPreference(kind: string, value: string): Promise<void>;
   removeUpload(id: string): void;
   retryFile(id?: string): Promise<boolean | undefined>;

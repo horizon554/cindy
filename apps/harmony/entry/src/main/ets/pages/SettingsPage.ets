@@ -4,6 +4,7 @@ import { OptionRow } from './Controls';
 
 @Component
 export struct SettingsPage {
+  scroller: Scroller = new Scroller();
   @Prop account: string = '';
   @Prop email: string = '';
   @Prop avatar: string = '';
@@ -43,11 +44,6 @@ export struct SettingsPage {
   }
 
   @Builder
-  divider() {
-    Divider().strokeWidth(0.5).color($r('app.color.line')).padding({ left: 12, right: 12 })
-  }
-
-  @Builder
   identity() {
     Row({ space: 12 }) {
       Stack() {
@@ -82,9 +78,8 @@ export struct SettingsPage {
 
   @Builder
   notifications() {
-    Column({ space: 6 }) {
-      this.heading($r('app.string.settings_notifications_group'))
-      Column() {
+    ListItemGroup({ header: this.heading($r('app.string.settings_notifications_group')), style: ListItemGroupStyle.CARD }) {
+      ListItem() {
         Row({ space: 12 }) {
           Text($r('app.string.notification_settings')).fontSize(16).lineHeight(23).fontColor($r('app.color.ink')).layoutWeight(1)
           ForEach([this.toggleRevision], (_rev: number) => {
@@ -97,69 +92,56 @@ export struct SettingsPage {
               })
           }, (rev: number) => rev.toString())
         }.width('100%').constraintSize({ minHeight: 48 }).padding({ left: 12, right: 12 })
-        this.divider()
-        OptionRow({ label: $r('app.string.settings_notifications'), action: this.openNotifications, control: 'system-notifications' })
-      }.settingsCard()
-      if (this.pushStatus) {
-        Text(this.pushStatus).id('settings-push-status').fontSize(14).lineHeight(20).fontColor($r('app.color.muted'))
-          .width('100%').padding({ left: 12, right: 12 })
       }
-    }.width('100%')
+      ListItem() { OptionRow({ label: $r('app.string.settings_notifications'), action: this.openNotifications, control: 'system-notifications' }) }
+      if (this.pushStatus) {
+        ListItem() {
+          Text(this.pushStatus).id('settings-push-status').fontSize(14).lineHeight(20).fontColor($r('app.color.muted'))
+            .width('100%').padding(12)
+        }
+      }
+    }.settingsDividers()
+  }
+
+  @Builder
+  valueGroup(title: Resource, label: Resource, value: ResourceStr, control: string) {
+    ListItemGroup({ header: this.heading(title), style: ListItemGroupStyle.CARD }) {
+      ListItem() { this.valueRow(label, value, control) }
+    }
   }
 
   build() {
-    Scroll() {
-      Column({ space: 18 }) {
-        this.identity()
-        Column({ space: 6 }) {
-          this.heading($r('app.string.settings_relay'))
-          Column() { this.valueRow($r('app.string.settings_current_relay'), $r('app.string.settings_official_relay'), 'settings-relay') }.settingsCard()
+    List({ space: 12, scroller: this.scroller }) {
+      ListItem() { this.identity() }.padding({ left: 16, right: 16 })
+      this.valueGroup($r('app.string.settings_relay'), $r('app.string.settings_current_relay'), $r('app.string.settings_official_relay'), 'settings-relay')
+      ListItemGroup({ header: this.heading($r('app.string.settings_version')), style: ListItemGroupStyle.CARD }) {
+        ListItem() {
+          if (this.version) { this.valueRow($r('app.string.settings_current_version'), this.version, 'settings-version') }
+          else { this.valueRow($r('app.string.settings_current_version'), '—', 'settings-version') }
         }
-        Column({ space: 6 }) {
-          this.heading($r('app.string.settings_version'))
-          Column() {
-            if (this.version) {
-              this.valueRow($r('app.string.settings_current_version'), this.version, 'settings-version')
-            } else {
-              this.valueRow($r('app.string.settings_current_version'), '—', 'settings-version')
-            }
-          }.settingsCard()
+      }
+      this.notifications()
+      this.valueGroup($r('app.string.settings_appearance'), $r('app.string.settings_theme'), $r('app.string.settings_system_default'), 'settings-theme')
+      this.valueGroup($r('app.string.settings_language'), $r('app.string.settings_language'), $r('app.string.settings_system_default'), 'settings-language')
+      ListItemGroup({ header: this.heading($r('app.string.settings_about')), style: ListItemGroupStyle.CARD }) {
+        if (deviceInfo.marketName || deviceInfo.productModel) {
+          ListItem() { this.valueRow($r('app.string.settings_phone_model'), deviceInfo.marketName || deviceInfo.productModel, 'settings-phone') }
         }
-        this.notifications()
-        Column({ space: 6 }) {
-          this.heading($r('app.string.settings_appearance'))
-          Column() { this.valueRow($r('app.string.settings_theme'), $r('app.string.settings_system_default'), 'settings-theme') }.settingsCard()
-        }
-        Column({ space: 6 }) {
-          this.heading($r('app.string.settings_language'))
-          Column() { this.valueRow($r('app.string.settings_app_language'), $r('app.string.settings_system_default'), 'settings-language') }.settingsCard()
-        }
-        Column({ space: 6 }) {
-          this.heading($r('app.string.settings_about'))
-          Column() {
-            if (deviceInfo.marketName || deviceInfo.productModel) {
-              this.valueRow($r('app.string.settings_phone_model'), deviceInfo.marketName || deviceInfo.productModel, 'settings-phone')
-              this.divider()
-            }
-            this.valueRow($r('app.string.settings_system'), deviceInfo.osFullName, 'settings-os')
-          }.settingsCard()
-        }
-        Column({ space: 6 }) {
-          this.heading($r('app.string.settings_legal'))
-          Column() {
-            OptionRow({ label: $r('app.string.privacy'), action: this.openPrivacy, control: 'settings-privacy' })
-            this.divider()
-            OptionRow({ label: $r('app.string.settings_agreement'), action: this.openTerms, control: 'settings-agreement' })
-          }.settingsCard()
-        }
+        ListItem() { this.valueRow($r('app.string.settings_system'), deviceInfo.osFullName, 'settings-os') }
+      }.settingsDividers()
+      ListItemGroup({ header: this.heading($r('app.string.settings_legal')), style: ListItemGroupStyle.CARD }) {
+        ListItem() { OptionRow({ label: $r('app.string.privacy'), action: this.openPrivacy, control: 'settings-privacy' }) }
+        ListItem() { OptionRow({ label: $r('app.string.settings_agreement'), action: this.openTerms, control: 'settings-agreement' }) }
+      }.settingsDividers()
+      ListItem() {
         Button($r('app.string.sign_out'), { type: ButtonType.Normal }).id('settings-logout').width('100%')
           .constraintSize({ minHeight: 48 }).fontSize(16).fontColor($r('app.color.danger')).backgroundColor($r('app.color.panel'))
           .borderRadius(12).enabled(!this.busy).onClick(this.logout)
-      }.width('100%').padding({ top: 4, bottom: 12 })
-    }.id('settings-scroll').width('100%').height('100%').align(Alignment.Top).scrollBar(BarState.Auto)
+      }.padding({ left: 16, right: 16 })
+    }.id('settings-scroll').width('100%').height('100%').scrollBar(BarState.Auto).contentStartOffset(4).contentEndOffset(12)
   }
 }
 
-@Extend(Column) function settingsCard() {
-  .width('100%').borderRadius(12).backgroundColor($r('app.color.panel')).clip(true)
+@Extend(ListItemGroup) function settingsDividers() {
+  .divider({ strokeWidth: 0.5, color: $r('app.color.line'), startMargin: 12, endMargin: 12 })
 }

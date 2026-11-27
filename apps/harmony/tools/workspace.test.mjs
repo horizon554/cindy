@@ -304,6 +304,7 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   let history = [], cards = [], created = 0, enqueue = 0, stopped = 0, resumed = 0, resolved = 0;
   let loseCreation = true, loseSend = false, refuse = false, lostDecision = false;
   let holdHistory, releaseHistory, legacyHost = false;
+  let catalog = [];
   const requests = [];
   const receipt = new Map();
   const ask = {request: {kind:'ask_user_question',requestId:'q',questions:[
@@ -324,7 +325,7 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
         case 'maker:list-available-agents': result = ['pi','codex']; break;
         case 'maker:provider:list':
           if (legacyHost) return {ok:false,error:{code:'CHANNEL_NOT_ALLOWED'}};
-          result = {providers:[]}; break;
+          result = {providers:catalog}; break;
         case 'maker:get-capabilities': result = {availableModels:[{id:'other', label:'Other'}],permissionModes:[{id:'ask',label:'Ask'},{id:'plan',label:'Plan'}]}; break;
         case 'maker:set-model': sessions.get(id).model = args[1]; break;
         case 'maker:create-session':
@@ -450,6 +451,29 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   await app.configureNew();
   assert.equal(app.state.legacyPicker, false);
   assert.deepEqual(await app.preferences('model'), []);
+
+  // Two sources can offer the same model ID. Artwork follows catalog metadata
+  // while selection still addresses the chosen provider/model pair.
+  const provider = (id, name, models) => ({
+    id, name, agents:['pi'], connected:true, routing:{pi:{}}, models:{pi:models}
+  });
+  catalog = [
+    { ...provider('team', 'Team', [{id:'shared',name:'Example',icon:'openai'}, {id:'plain',name:'Plain'}]), logoKind:'xd' },
+    provider('custom', '自建', [{id:'shared',name:'Example',icon:'future-brand'}])
+  ];
+  const branded = await app.preferences('model');
+  const teamModel = branded.find(row => row.provider === 'team' && row.model === 'shared');
+  assert.equal(teamModel.brand.kind, 'openai');
+  const team = branded.filter(row => row.provider === 'team');
+  assert.deepEqual(team.filter(row => row.sectionBrand).map(row => row.sectionBrand.kind), ['xd']);
+  assert.equal(team.find(row => row.model === 'plain').brand.kind, 'xd');
+  const custom = branded.find(row => row.provider === 'custom');
+  assert.equal(custom.brand.monogram, '自');
+  assert.equal(custom.brand.kind, '');
+  await app.applyPreference('model', custom.id);
+  assert.equal(app.state.provider, 'custom');
+  assert.equal(app.state.model, 'shared');
+  catalog = [];
   legacyHost = true;
   await app.configureNew();
   assert.equal(app.state.legacyPicker, true);

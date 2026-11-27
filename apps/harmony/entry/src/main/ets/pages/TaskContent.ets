@@ -1,6 +1,6 @@
 import { Row as Item, Card, Question, Choice, MediaInfo } from '../services/workspace';
 import { pasteboard } from '@kit.BasicServicesKit';
-import { PillAction } from './Controls';
+import { ChoiceRow, PillAction } from './Controls';
 
 import { messageBlocks, messageSpans, MessageBlock, MessageSpan } from '../services/taskModel';
 
@@ -200,25 +200,12 @@ export struct InteractionPanel {
                   Text((this.step + 1).toString() + ' / ' + this.card.questions.length.toString()).fontSize(13).fontColor($r('app.color.muted'))
                 }
                 Text(q.label).fontSize(15).fontColor($r('app.color.ink'))
-                ForEach(q.options, (o: Choice) => {
-                  Button({ type: ButtonType.Normal }) {
-                    Row({ space: 8 }) {
-                      Column({ space: 2 }) {
-                        Text(o.label).fontSize(15).fontColor($r('app.color.ink'))
-                        if (o.detail) { Text(o.detail).fontSize(13).fontColor($r('app.color.muted')) }
-                      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                      Stack() {
-                        if (o.selected) {
-                          if (q.multi) { SymbolGlyph($r('sys.symbol.checkmark')).fontSize(14) }
-                          else { Circle().width(10).height(10).fill($r('app.color.ink')) }
-                        }
-                      }.width(20).height(20).borderWidth(1).borderColor($r('app.color.muted')).borderRadius(q.multi ? 4 : 10)
-
-                    }.width('100%').padding({ left: 12, right: 12, top: 7, bottom: 7 })
-                  }.width('100%').constraintSize({ minHeight: 44 }).borderRadius(8)
-                    .backgroundColor(o.selected ? $r('app.color.chip') : $r('app.color.canvas'))
-                    .accessibilityDescription(o.selected ? $r('app.string.choice_selected') : $r('app.string.choice_unselected')).enabled(this.available).onClick(() => this.edit(q.key, o.label, true))
-                }, (o: Choice) => o.label)
+                ForEach(this.card.questions[this.step].options, (o: Choice, index: number) => {
+                  ChoiceRow({ label: o.label, detail: o.detail, multi: q.multi,
+                    selected: !!this.card.questions[this.step]?.options[index]?.selected, available: this.available,
+                    group: this.card.id + '/' + q.key, control: JSON.stringify([this.card.id, q.key, o.label]),
+                    action: () => this.edit(q.key, o.label, true) })
+                }, (o: Choice) => JSON.stringify([o.label, o.detail]))
                 if (q.free) {
                   TextInput({ text: q.value, placeholder: $r('app.string.answer') }).accessibilityText(q.label)
                     .enabled(this.available).onChange((v: string, preview?: PreviewText) => {

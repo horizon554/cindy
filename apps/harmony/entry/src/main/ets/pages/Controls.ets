@@ -1,3 +1,13 @@
+import { ModelBrandIcon } from './ModelBrandIcon';
+import { PickerBrand } from '../services/modelBrand';
+
+@Component
+struct FilterReminderDot {
+  build() {
+    Circle().width(6).height(6).fill($r('app.color.running')).accessibilityLevel('no')
+  }
+}
+
 @Component
 export struct PillAction {
   @Prop label: ResourceStr = '';
@@ -18,6 +28,7 @@ export struct IconAction {
   @Prop icon: Resource = $r('sys.symbol.plus');
   @Prop label: Resource = $r('app.string.add_file');
   @Prop controlId: string = '';
+  @Prop reminder: string = '';
   @Prop prominent: boolean = false;
   @Prop available: boolean = true;
   menuItems: MenuElement[] = [];
@@ -25,8 +36,12 @@ export struct IconAction {
 
   @Builder
   glyph() {
-    SymbolGlyph(this.icon).fontSize(20).fontColor([this.prominent ? $r('app.color.on_action') : $r('app.color.ink')])
-      .accessibilityLevel('no')
+    Stack({ alignContent: Alignment.Center }) {
+      SymbolGlyph(this.icon).fontSize(20).fontColor([this.prominent ? $r('app.color.on_action') : $r('app.color.ink')])
+      if (this.reminder) {
+        FilterReminderDot().position({ x: 19, y: 0 })
+      }
+    }.width(24).height(24).accessibilityLevel('no-hide-descendants')
   }
 
   build() {
@@ -37,7 +52,7 @@ export struct IconAction {
     } else {
       Button({ type: ButtonType.Circle }) { this.glyph() }
         .width(44).height(44).backgroundColor(this.prominent ? $r('app.color.action') : Color.Transparent)
-        .id(this.controlId).accessibilityText(this.label).enabled(this.available).onClick(this.onTap)
+        .id(this.controlId).accessibilityText(this.label).accessibilityDescription(this.reminder).enabled(this.available).onClick(this.onTap)
     }
   }
 }
@@ -76,6 +91,7 @@ export struct DirectoryRow {
 export struct OptionRow {
   @Prop label: ResourceStr = '';
   @Prop value: ResourceStr = '';
+  @Prop showReminder: boolean = false;
   control: string = '';
   action: () => void = () => {};
 
@@ -85,9 +101,54 @@ export struct OptionRow {
         Text(this.label).fontSize(15).fontColor($r('app.color.ink'))
         Blank()
         Text(this.value).fontSize(14).fontColor($r('app.color.muted')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: '60%' })
+        if (this.showReminder) { FilterReminderDot() }
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(12).fontColor([$r('app.color.faint')])
       }.width('100%').padding({ left: 12, right: 12 })
     }.id(this.control).height(48).width('100%').borderRadius(8).backgroundColor($r('app.color.panel')).onClick(this.action)
+  }
+}
+
+@Component
+export struct ChoiceRow {
+  @Prop label: ResourceStr = '';
+  @Prop detail: string = '';
+  @Prop showReminder: boolean = false;
+  @Prop brand?: PickerBrand = undefined;
+  @Prop description: string = '';
+  @Prop group: string = '';
+  @Prop control: string = '';
+  @Prop selected: boolean = false;
+  @Prop multi: boolean = false;
+  @Prop available: boolean = true;
+  action: () => void = () => {};
+
+  private accessibleLabel(): string {
+    return typeof this.label === 'string' ? this.label :
+      this.getUIContext().getHostContext()?.resourceManager.getStringSync(this.label.id) || '';
+  }
+
+  build() {
+    Row() {
+      Row({ space: 8 }) {
+        if (this.brand) { ModelBrandIcon({ brand: this.brand, control: this.control }) }
+        Column({ space: 2 }) {
+          Text(this.label).fontSize(15).fontColor($r('app.color.ink'))
+          if (this.detail) { Text(this.detail).fontSize(13).fontColor($r('app.color.muted')) }
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        if (this.showReminder) { FilterReminderDot() }
+      }.layoutWeight(1).constraintSize({ minHeight: 48 }).padding({ left: 12, top: 6, bottom: 6 })
+        .accessibilityLevel('no-hide-descendants').onClick(this.action)
+      if (this.multi) {
+        Checkbox({ name: this.accessibleLabel() }).select(this.selected).id(this.control)
+          .width(20).height(20).margin({ left: 12, right: 12 }).responseRegion({ x: -12, y: -14, width: 44, height: 48 })
+          .selectedColor($r('app.color.action')).accessibilityText(this.accessibleLabel()).accessibilityDescription(this.description || this.detail)
+          .onClick(this.action)
+      } else {
+        Radio({ value: this.control, group: this.group }).checked(this.selected).id(this.control)
+          .width(20).height(20).margin({ left: 12, right: 12 }).responseRegion({ x: -12, y: -14, width: 44, height: 48 })
+          .accessibilityText(this.accessibleLabel()).accessibilityDescription(this.description || this.detail).onClick(this.action)
+      }
+    }.width('100%').borderRadius(8).backgroundColor($r('app.color.panel')).enabled(this.available)
   }
 }
 

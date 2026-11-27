@@ -461,6 +461,10 @@
       "value": "所有电脑"
     },
     {
+      "name": "archived_filter_hint",
+      "value": "当前仅显示已归档任务"
+    },
+    {
       "name": "display_options",
       "value": "显示选项"
     },

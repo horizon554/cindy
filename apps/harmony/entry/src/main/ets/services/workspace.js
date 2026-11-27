@@ -1,5 +1,6 @@
 import { HomeDevices } from './homeDevices';
 import { homeTask } from './homeList';
+import { modelBrand, providerBrand } from './modelBrand';
 import { messageMedia } from './media';
 import { openCache } from './cache';
 import { approvalKey, taskPage, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
@@ -873,17 +874,23 @@ export class Workspace {
         const sections = buildMobileModelSections({ providers: directory.providers, agentKind: agent,
           selectedProviderId: this.state.provider, selectedModelId: this.state.model,
           existingSessionRoute: !this.newDraft, visibilityOverrides: directory.modelVisibilityOverrides });
-        options = flattenProviderSections(sections.sections).map(({ provider, model }) => ({
-          id: JSON.stringify([provider.id, model.id]), title: model.name || model.displayName || model.id,
-          summary: provider.name, model: model.id, provider: provider.id
-        }));
+        options = sections.sections.flatMap(({ provider, models }) => {
+          const source = providerBrand(provider);
+          return models.map((model, index) => ({
+            id: JSON.stringify([provider.id, model.id]), title: model.name || model.displayName || model.id,
+            summary: provider.name || provider.id, model: model.id, provider: provider.id,
+            brand: modelBrand(model.icon, source), sectionBrand: index === 0 ? source : undefined,
+            activeSource: provider.id === sections.activeSourceId
+          }));
+        });
       }
     }
     if (!options) {
       const caps = await this.invoke('maker:get-capabilities', [agent], v);
       const reported = kind === 'model' ? caps?.availableModels : caps?.permissionModes;
       options = (reported || []).filter(o => o?.id).map(o => ({
-        id: o.id, title: o.label || o.id, summary: o.description || '', model: o.id
+        id: o.id, title: o.label || o.id, summary: o.description || '', model: o.id,
+        brand: kind === 'model' ? modelBrand(o.icon) : undefined
       }));
     }
     this.guard(v);
