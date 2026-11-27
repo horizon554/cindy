@@ -747,6 +747,38 @@
     {
       "name": "archive_schedules",
       "value": "This task is linked to %s. The next automation run will restore it. Archive it now?"
+    },
+    {
+      "name": "row_draft",
+      "value": "Draft"
+    },
+    {
+      "name": "row_pinned",
+      "value": "Pinned"
+    },
+    {
+      "name": "row_scheduled",
+      "value": "Scheduled task"
+    },
+    {
+      "name": "row_stopped_schedule",
+      "value": "Inactive schedule"
+    },
+    {
+      "name": "row_lead",
+      "value": "Team lead"
+    },
+    {
+      "name": "row_attached",
+      "value": "Attached task"
+    },
+    {
+      "name": "row_remote",
+      "value": "Remote agent"
+    },
+    {
+      "name": "row_engine",
+      "value": "Task engine"
     }
   ]
 }

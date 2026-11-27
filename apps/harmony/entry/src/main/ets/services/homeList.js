@@ -19,7 +19,9 @@ export function homeTask(row, signal) {
     id: row.id, title: row.title || '未命名任务', pinnedAt: row.pinnedAt || '',
     project: sessionTaskProjectIconDirectory(row) || '', summary: row.preview || row.summary || '',
     created: row.createdAt || '', updated: row.lastActivityAt || row.userSendAt || row.updatedAt || row.createdAt || '',
-    status: row.status || '', interrupted, ...activityFields(signal || row, interrupted),
+    agentKind: row.agentKind || '', lead: row.orcaRole === 'lead', attached: row.attached === true || row.deviceLinkAttached === true,
+    remote: !!row.agentDeviceId, hasDraft: row.hasDraft === true || row.hasPausedQueue === true || row.composerDraft === true,
+    scheduled: row.source === 'scheduler', status: row.status || '', interrupted, ...activityFields(signal || row, interrupted),
   };
 }
 

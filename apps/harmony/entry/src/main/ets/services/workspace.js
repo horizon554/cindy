@@ -1,4 +1,5 @@
-import { activityFields, homeTask } from './homeList';
+import { HomeDevices } from './homeDevices';
+import { homeTask } from './homeList';
 import { messageMedia } from './media';
 import { openCache } from './cache';
 import { approvalKey, taskPage, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
@@ -9,7 +10,7 @@ import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, readSessio
 import { authorize, cancelAuthorization, consumeAuthorization, listenForWant, pendingAuthorization } from './sso';
 
 const taskView = { legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', voiceCaret: undefined, uploadName: '', failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
-  attachments: [], transfer: '', voice: '', activity: '', hasOlder: false, paused: false, retryable: false, delivery: '' };
+  attachments: [], transfer: '', uploadPending: false, voice: '', activity: '', hasOlder: false, paused: false, retryable: false, delivery: '' };
 const hostView = { ...taskView, device: '', tasks: [], linked: false, moreTasks: false };
 
 // One instance owns one visible account. Only the native page can initiate a send.
@@ -21,6 +22,7 @@ function displayName(uri) {
 export class Workspace {
   constructor(changed, taskHome = false) {
     this.taskHome = taskHome;
+    this.home = taskHome ? new HomeDevices(this) : null;
     this.localMedia = new Map();
     this.recentImages = new Map();
     this.thumbnailQueue = Promise.resolve();
@@ -34,18 +36,42 @@ export class Workspace {
   show(patch) {
     if (this.taskHome && patch.devices) {
       const devices = patch.devices, owner = this.session?.id;
-      patch.homeIndex = [];
-      if (owner && devices.length) {
-        Promise.all(devices.map(async host => {
-          const rows = await this.cache.read([owner, host.id, '', 'tasks']);
-          return (rows || []).map(row => ({ ...row, host: host.id }));
-        })).then(pages => {
-          if (this.session?.id === owner && this.state.devices === devices) this.show({ homeIndex: pages.flat() });
-        }).catch(() => {});
+      const allowed = new Set(devices.map(d => d.id));
+      for (const id of this.home.peers.keys()) {
+        if (!allowed.has(id) || devices.find(d => d.id === id)?.offline) this.home.drop(id, true);
+      }
+      if (!allowed.has(this.home.scope)) this.home.scope = '';
+      patch.homeIndex = (this.state.homeIndex || []).filter(row => allowed.has(row.host));
+      for (const host of devices) {
+        if (!owner || this.home.peers.get(host.id)?.loaded) continue;
+        Promise.all([this.cache.read([owner, host.id, '', 'tasks']), this.cache.draftTasks?.(owner, host.id)])
+          .then(([rows, drafts]) => {
+            if (!rows || this.session?.id !== owner || this.state.devices !== devices || this.home.peers.get(host.id)?.loaded) return;
+            this.putHomeRows(host.id, rows.map(row => ({ ...row, localDraft: drafts ? drafts.has(row.id) : row.localDraft })));
+          }).catch(() => {});
       }
     }
+    if (this.home && patch.tasks && !patch.homeIndex && patch.device === undefined && this.state.device) {
+      const host = this.state.device;
+      patch.homeIndex = [...(this.state.homeIndex || []).filter(row => row.host !== host), ...patch.tasks.map(row => ({ ...row, host }))];
+    }
     Object.assign(this.state, patch);
+    if (this.home) {
+      const live = [...this.home.peers.values()].filter(peer => peer.loaded);
+      this.state.liveHosts = live.map(peer => peer.id);
+      this.state.moreTasks = live.some(peer => peer.more && (!this.home.scope || this.home.scope === peer.id));
+    }
     this.changed({ ...this.state });
+  }
+  putHomeRows(host, tasks) {
+    const homeIndex = [...(this.state.homeIndex || []).filter(row => row.host !== host), ...tasks.map(row => ({ ...row, host }))];
+    this.show(host === this.state.device ? { tasks, homeIndex } : { homeIndex });
+  }
+  setHomeScope(id) {
+    if (!this.home || this.home.scope === id) return;
+    this.home.scope = id;
+    this.show({});
+    if (this.directoryReady) this.home.sync();
   }
   async init(context) {
     this.context = context;
@@ -224,6 +250,8 @@ export class Workspace {
     client.onStatusChange(status => {
       if (this.client !== client) return;
       this.version++;
+      this.directoryReady = false;
+      this.home?.clear(false);
       this.ready = false;
       this.cancelVoice();
       this.cancelTransfer();
@@ -234,6 +262,8 @@ export class Workspace {
     client.onFrame(env => {
       if (client !== this.client || !env.src) return;
       if (env.kind === 'link-close') {
+        this.home?.drop(env.src);
+        if (this.home) this.show({});
         if (['revoked', 'toggle-off'].includes(env.payload?.reason)) {
           this.forgetHost(env.src).catch(e => this.report(e));
         } else if (env.src === this.state.device) {
@@ -247,11 +277,10 @@ export class Workspace {
         }
         return;
       }
-      if (env.src !== this.state.device || env.kind !== 'push') return;
+      if (env.kind !== 'push') return;
       const { channel, payload } = env.payload || {};
-      if (this.taskHome && channel === 'local-db:sessions:activity' && (this.state.linked || this.homeRead?.version === this.version)) {
-        this.applyHomeActivity(payload);
-      }
+      this.home?.push(env.src, channel, payload);
+      if (env.src !== this.state.device) return;
       if (this.state.task && this.state.linked && payload?.sessionId === this.state.task) this.push(channel, payload);
     });
     client.start();
@@ -264,9 +293,12 @@ export class Workspace {
   guard(version) {
     if (version !== this.version || !this.session) throw new Error('任务连接已变更');
   }
-  async forgetHost(host) {
+  async forgetHost(host, directoryUpdate = false) {
     if (!this.session) return;
     const owner = this.session.id;
+    const lostScope = this.home?.scope === host;
+    this.directoryRead?.add(host);
+    this.home?.drop(host, true);
     if (this.state.device === host) {
       this.version++;
       this.cancelDraftTimer();
@@ -276,25 +308,31 @@ export class Workspace {
     const devices = this.state.devices.filter(d => d.id !== host);
     this.show({ devices });
     await Promise.all([this.cache.forget(owner, host), this.cache.write([owner, '', '', 'devices'], devices)]);
+    if (lostScope && !directoryUpdate && this.session?.id === owner && this.directoryReady) await this.home.sync();
   }
-  async devices() {
+  async devices(syncHome = true) {
     const client = this.client;
+    const revoked = new Set();
+    this.directoryRead = revoked;
+    const current = () => client === this.client && this.directoryRead === revoked;
     let result;
     try {
       const token = await this.token();
       try { result = await request(directoryUrl, null, token); }
       catch (error) {
-        if (error.httpStatus !== 401 || client !== this.client) throw error;
+        if (error.httpStatus !== 401 || !current()) throw error;
         if (this.access === token) this.expires = 0;
         result = await request(directoryUrl, null, await this.token());
       }
     } catch (error) {
-      if (client === this.client && this.session && [401,403].includes(error.httpStatus)) {
+      if (!current()) return false;
+      if (this.session && [401,403].includes(error.httpStatus)) {
         const account = this.session.id;
         const host = this.state.device;
         this.directoryEpoch = (this.directoryEpoch || 0) + 1;
         this.version++;
-        if (host && this.state.linked) client.closeLink(host, 'user');
+        this.directoryReady = false;
+        if (host && !this.home && this.state.linked) client.closeLink(host, 'user');
         this.cancelDraftTimer();
         this.resetTask();
         this.show({ ...hostView, devices: [], error: '当前账号无法访问设备目录' });
@@ -302,56 +340,63 @@ export class Workspace {
       }
       throw error;
     }
-    if (client !== this.client) return;
+    if (!current()) return false;
     this.directoryEpoch = (this.directoryEpoch || 0) + 1;
     const key = this.key('devices', '', '');
     const known = await this.cache.read(key) || [];
-    if (client !== this.client) return;
-    const devices = result.devices.filter(d => !d.isSelf && d.remoteControlEnabled && (d.online || known.some(old => old.id === d.deviceId)))
+    if (!current()) return false;
+    const listed = result.devices.filter(d => !d.isSelf && d.remoteControlEnabled && (d.online || known.some(old => old.id === d.deviceId)))
       .map(d => ({ id: d.deviceId, title: d.name, offline: !d.online }));
     for (const d of known) {
-      if (!devices.some(row => row.id === d.id)) {
-        await this.forgetHost(d.id);
-        if (client !== this.client) return;
+      if (!listed.some(row => row.id === d.id)) {
+        await this.forgetHost(d.id, true);
+        if (!current()) return false;
       }
     }
+    const devices = listed.filter(d => !revoked.has(d.id));
+    this.directoryReady = true;
     this.show({ devices });
     await this.cache.write(key, devices);
+    if (current() && syncHome) await this.home?.sync(true);
   }
   async invoke(channel, args, version) {
     this.guard(version);
     const host = this.state.device;
     try {
-      const response = await this.client.invoke(host, { channel, args }, undefined, {
-        beforeDispatch: () => this.guard(version)
-      });
-      this.guard(version);
-      if (!response.ok) {
-        const error = new Error('电脑请求失败（' + response.error.code + '）');
-        const inner = /^\[(NOT_FOUND|PERMISSION_DENIED|ACCESS_REVOKED|FORBIDDEN)\]/.exec(response.error.message || '');
-        error.code = response.error.code === 'IPC_ERROR' && inner ? inner[1] : response.error.code;
-        throw error;
-      }
-      return response.result;
+      return await this.requestHost(this.client, host, channel, args, () => this.guard(version));
     } catch (error) {
       if (version === this.version && ['ACCESS_REVOKED','REMOTE_DISABLED'].includes(error.code)) await this.forgetHost(host);
       throw error;
     }
   }
+  async requestHost(client, host, channel, args, guard) {
+    guard();
+    const response = await client.invoke(host, { channel, args }, undefined, { beforeDispatch: guard });
+    guard();
+    if (!response.ok) {
+      const error = new Error('电脑请求失败（' + response.error.code + '）');
+      const inner = /^\[(NOT_FOUND|PERMISSION_DENIED|ACCESS_REVOKED|FORBIDDEN)\]/.exec(response.error.message || '');
+      error.code = response.error.code === 'IPC_ERROR' && inner ? inner[1] : response.error.code;
+      throw error;
+    }
+    return response.result;
+  }
   async recover() {
     const version = this.version;
     if (this.notification) return this.openNotification();
-    await this.devices();
+    if (await this.devices(false) === false) return;
     const { device, task } = this.state;
-    if (version !== this.version) return;
+    const syncing = this.home?.sync(true);
+    if (version !== this.version) return syncing;
     if (this.taskHome && !device) {
       const preferred = await this.cache.read(this.key('home-device', '', ''));
       if (version !== this.version || this.state.device) return;
       const next = this.homeHost(this.state.devices, preferred);
       if (next) await this.openDevice(next.id);
+      await syncing;
       return;
     }
-    if (!device || !this.available(device)) return;
+    if (!device || !this.available(device)) return syncing;
     await this.connectDevice(device, version);
     if (version === this.version && task) await this.attachTask(version);
     else if (version === this.version && this.newDraft && !this.state.agent) await this.configureNew();
@@ -363,6 +408,13 @@ export class Workspace {
     return this.state.relay === 'online' && this.state.devices.some(d => d.id === id && !d.offline);
   }
   async connectDevice(id, version) {
+    if (this.home) {
+      await this.home.load(id);
+      this.guard(version);
+      const tasks = (this.state.homeIndex || []).filter(row => row.host === id);
+      this.show({ tasks, linked: true, error: '' });
+      return;
+    }
     try {
       await this.client.openLink(id, { controllerName: 'Cindy HarmonyOS', protocolVersion: PROTOCOL_VERSION, appVersion: '0.1.0', capabilities: [] });
     } catch (error) {
@@ -370,58 +422,19 @@ export class Workspace {
       throw error;
     }
     this.guard(version);
-    await this.listTasks(version, this.limit || 40, this.taskHome);
+    await this.listTasks(version, this.limit || 40);
     this.guard(version);
     this.show({ linked: true, error: '' });
   }
-  applyHomeActivity(payload) {
-    if (!payload?.sessionId || !['running','needs-interaction','completed','error'].includes(payload.phase)) return;
-    const signal = { activityPhase: payload.phase, activityAttention: payload.attention === true,
-      isTurnRunning: payload.phase === 'running' || payload.phase === 'needs-interaction' };
-    if (this.homeRead?.version === this.version) this.homeRead.updates.set(payload.sessionId, signal);
-    const previous = this.state.tasks.find(row => row.id === payload.sessionId);
-    if (!previous) return;
-    const fields = activityFields(signal, previous.interrupted);
-    if (previous.rightStatus !== fields.rightStatus || previous.running !== fields.running) {
-      this.show({ tasks: this.state.tasks.map(row => row === previous ? { ...row, ...fields } : row) });
-    }
-  }
-  async listTasks(version, limit, subscribe = false) {
-    const read = { version, updates: new Map(), metadata: new Map() };
-    this.homeRead = read;
-    try {
-      if (subscribe) {
-        try {
-          await this.invoke('device-link:subscribe', [{ topics: ['sessions'], controllerName: 'Cindy HarmonyOS', capabilities: [] }], version);
-        } catch (error) {
-          this.guard(version);
-          if (!['CHANNEL_NOT_ALLOWED', 'NOT_FOUND'].includes(error.code)) throw error;
-        }
-      }
-      const args = this.taskHome ? [limit, 'all', { includePinned: true }] : [limit, 'all'];
-      const rows = await this.invoke('local-db:sessions:list', args, version);
-      let active = [];
-      if (this.taskHome) {
-        try {
-          const snapshot = await this.invoke('maker:list-active', [{ summary: true, snapshotVersion: 2 }], version);
-          active = Array.isArray(snapshot) ? snapshot : snapshot?.sessions || [];
-        } catch (error) {
-          this.guard(version);
-          if (!['CHANNEL_NOT_ALLOWED', 'NOT_FOUND'].includes(error.code)) throw error;
-        }
-      }
-      if (this.homeRead !== read) return;
-      const signals = new Map(active.filter(row => row?.sessionId).map(row => [row.sessionId, { ...row, isTurnRunning: row.isTurnRunning !== false }]));
-      const tasks = rows.filter(row => row?.id && row.status !== 'deleted' && !row.hiddenAt)
-        .map(row => ({ ...homeTask(row, read.updates.get(row.id) || signals.get(row.id)), ...read.metadata.get(row.id) }));
-      this.limit = limit;
-      if (this.taskHome) this.state.homeIndex = [...(this.state.homeIndex || []).filter(r => r.host !== this.state.device),
-        ...tasks.map(row => ({ ...row, host: this.state.device }))];
-      this.show({ tasks, moreTasks: rows.length >= limit && limit < 1000 });
-      await this.cache.write(this.key('tasks', this.state.device, ''), tasks);
-    } finally { if (this.homeRead === read) this.homeRead = null; }
+  async listTasks(version, limit) {
+    const rows = await this.invoke('local-db:sessions:list', [limit, 'all'], version);
+    const tasks = rows.filter(row => row?.id && row.status !== 'deleted' && !row.hiddenAt).map(row => homeTask(row));
+    this.limit = limit;
+    this.show({ tasks, moreTasks: rows.length >= limit && limit < 1000 });
+    await this.cache.write(this.key('tasks', this.state.device, ''), tasks);
   }
   async more() {
+    if (this.home) { await this.home.more(); return; }
     if (this.state.moreTasks && this.state.linked) await this.listTasks(this.version, Math.min(1000, this.limit + 40));
   }
   async openDevice(id) {
@@ -432,9 +445,10 @@ export class Workspace {
     this.show({ ...hostView, device: id, error: '' });
     if (this.taskHome) await this.cache.write(this.key('home-device', '', ''), id);
     this.guard(version);
+    if (this.home && this.directoryReady) this.home.sync();
     if (this.available(id)) return this.connectDevice(id, version);
-    const tasks = await this.cache.read(this.key('tasks'));
-    if (version === this.version) this.show({ tasks: tasks || [] });
+    const [tasks, drafts] = await Promise.all([this.cache.read(this.key('tasks')), this.home && this.cache.draftTasks?.(this.session.id, id)]);
+    if (version === this.version) this.show({ tasks: (tasks || []).map(row => drafts ? { ...row, localDraft: drafts.has(row.id) } : row) });
   }
   async reconnect() {
     if (this.state.relay === 'online') await this.recover();
@@ -512,6 +526,7 @@ export class Workspace {
         this.cancelDraftTimer();
         this.version++;
         this.resetTask();
+        this.home?.metadata(this.state.device, id, { status: 'deleted' });
         const tasks = this.state.tasks.filter(r => r.id !== id);
         this.show({ ...taskView, tasks, error: '任务已不可访问' });
         await Promise.all([...keys.map(key => this.cache.write(key, null)), this.cache.write(this.key('tasks'), tasks)]);
@@ -686,7 +701,22 @@ export class Workspace {
   async flushDraft() {
     const draft = this.dirtyDraft;
     this.cancelDraftTimer();
-    if (draft) await this.cache.write(draft.key, draft.text || null);
+    if (draft) {
+      await this.cache.write(draft.key, draft.text || null);
+      this.markComposerDraft(draft.key);
+    }
+  }
+  markComposerDraft([owner, host, id]) {
+    if (!this.home || this.session?.id !== owner || this.state.device !== host || this.state.task !== id) return;
+    const peer = this.home.peers.get(host);
+    const marked = !!(this.state.draft.trim() || this.state.attachments.length);
+    if (peer?.drafts) {
+      if (marked) peer.drafts.add(id);
+      else peer.drafts.delete(id);
+    }
+    if (this.state.tasks.some(row => row.id === id && !!row.localDraft !== marked)) {
+      this.putHomeRows(host, this.state.tasks.map(row => row.id === id ? { ...row, localDraft: marked } : row));
+    }
   }
   snapshotNew() {
     if (!this.newDraft) return;
@@ -736,6 +766,7 @@ export class Workspace {
     const row = updated?.title ? updated : await this.invoke('local-db:sessions:get', [task], v);
     this.guard(v);
     if (row?.id !== task || !row.title) throw new Error('无法确认任务标题');
+    this.home?.metadata(this.state.device, task, { title: row.title });
     const tasks = this.state.tasks.map(item => item.id === task ? { ...item, title: row.title } : item);
     this.show({ tasks });
     await this.cache.write(this.key('tasks', this.state.device, ''), tasks);
@@ -743,7 +774,7 @@ export class Workspace {
   async changeHomeTask(host, id, action, title, confirmArchive) {
     if (!this.session || this.state.task || !this.available(host)) throw new Error('请连接任务所在的电脑');
     if (!['pin', 'unpin', 'archive', 'restore', 'rename'].includes(action)) throw new Error('不支持的任务操作');
-    if (this.state.device && this.state.device !== host && this.state.linked) this.client.closeLink(this.state.device, 'user');
+    if (!this.home && this.state.device && this.state.device !== host && this.state.linked) this.client.closeLink(this.state.device, 'user');
     const connecting = this.state.device !== host ? this.openDevice(host) : undefined;
     const v = this.version;
     if (connecting) await connecting;
@@ -783,7 +814,7 @@ export class Workspace {
   }
   async applyHomeMetadata(host, row) {
     const metadata = { title: row.title, status: row.status || '', pinnedAt: row.pinnedAt || '' };
-    if (this.homeRead?.version === this.version) this.homeRead.metadata.set(row.id, metadata);
+    this.home?.metadata(host, row.id, row);
     const tasks = this.state.tasks.map(item => item.id === row.id ? { ...item, ...metadata } : item);
     if (!tasks.some(item => item.id === row.id)) tasks.push(homeTask(row));
     this.show({ tasks, homeIndex: [...(this.state.homeIndex || []).filter(item => item.host !== host),
@@ -863,7 +894,7 @@ export class Workspace {
   }
   async create(title, project = '', firstText = '', engine = '', draftOnly = false) {
     if (this.creating) return this.creating;
-    this.creating = this.createTask(title.trim(), project, firstText, engine, draftOnly).finally(() => { this.creating = null; });
+    this.creating = this.afterUpload(() => this.createTask(title.trim(), project, firstText, engine, draftOnly)).finally(() => { this.creating = null; });
     return this.creating;
   }
   async createTask(title, project, firstText, engine, draftOnly) {
@@ -918,7 +949,10 @@ export class Workspace {
       if (result?.sessionId !== intent.id) throw new Error('电脑返回的任务与创建请求不一致');
     }
     if (intent.title && row?.title !== intent.title) await this.invoke('local-db:sessions:patch-meta', [intent.id, { title: intent.title }], version);
-    const tasks = [{ id: intent.id, title: intent.title || row?.title || '新任务', project: intent.project || '' }, ...this.state.tasks.filter(t => t.id !== intent.id)];
+    const createdRow = { ...row, id: intent.id, title: intent.title || row?.title || '新任务', projectDir: intent.project || row?.projectDir,
+      workspaceKind: intent.project ? 'project' : 'dialogue', agentKind: row?.agentKind || intent.engine || this.state.agent };
+    this.home?.metadata(this.state.device, intent.id, createdRow);
+    const tasks = [homeTask(createdRow), ...this.state.tasks.filter(t => t.id !== intent.id)];
     this.show({ tasks });
     await this.cache.write(this.key('tasks'), tasks);
     this.guard(version);
@@ -997,8 +1031,17 @@ export class Workspace {
   }
   async send(text) {
     if (this.sending) return this.sending;
-    this.sending = this.sendOnce(text).finally(() => { this.sending = null; });
+    this.sending = this.afterUpload(() => this.sendOnce(text)).finally(() => { this.sending = null; });
     return this.sending;
+  }
+  async afterUpload(action) {
+    const transfer = this.transfer;
+    if (transfer) {
+      const version = this.version, target = this.newDraft, draft = this.state.draft;
+      if (!this.state.uploadPending || !await transfer.finished || version !== this.version || target !== this.newDraft ||
+          (target && this.state.draft !== draft) || !this.state.linked || this.transfer || this.state.failedFile) return false;
+    }
+    return action();
   }
   async retryOriginal() {
     if (this.sending || !this.pending || !this.state.retryable) return;
@@ -1088,13 +1131,13 @@ export class Workspace {
   }
   async routeNotification(target) {
     const epoch = this.authEpoch, version = this.version;
-    await this.devices();
+    await this.devices(false);
     if (this.notification || epoch !== this.authEpoch || version !== this.version) return;
     if (!this.available(target.host)) throw new Error('通知对应的电脑离线或已撤权');
     await this.flushDraft();
     this.guard(version);
     if (this.state.device !== target.host || !this.state.linked) {
-      if (this.state.device && this.state.device !== target.host && this.state.linked) this.client.closeLink(this.state.device, 'user');
+      if (!this.home && this.state.device && this.state.device !== target.host && this.state.linked) this.client.closeLink(this.state.device, 'user');
       await this.openDevice(target.host);
     }
     const before = this.version;
@@ -1102,7 +1145,8 @@ export class Workspace {
     if (!row || row.id !== target.task || row.hiddenAt || row.status === 'deleted') throw new Error('通知对应的任务已不可访问');
     if (this.state.task === row.id) { await this.history(before); return; }
     if (this.state.task) await this.back();
-    if (!this.state.tasks.some(r => r.id === row.id)) this.show({ tasks: [{ id: row.id, title: row.title || '任务' }, ...this.state.tasks] });
+    this.home?.metadata(target.host, row.id, row);
+    if (!this.state.tasks.some(r => r.id === row.id)) this.show({ tasks: [homeTask(row), ...this.state.tasks] });
     await this.openTask(row.id);
   }
   foreground() {
@@ -1141,7 +1185,10 @@ export class Workspace {
   async setAttachments(attachments) {
     const key = this.key('attachments');
     this.show({ attachments });
-    if (!this.newDraft) await this.cache.write(key, attachments.length ? attachments : null);
+    if (!this.newDraft) {
+      await this.cache.write(key, attachments.length ? attachments : null);
+      this.markComposerDraft(key);
+    }
   }
   localPreview(id) {
     const entry = this.recentImages.get(id);
@@ -1185,7 +1232,7 @@ export class Workspace {
   }
   cancelTransfer() {
     const t = this.transfer;
-    if (t) { t.cancelled = true; t.abort?.(); this.transfer = null; this.show({ transfer: '', uploadName: '' }); }
+    if (t) { t.cancelled = true; t.settle?.(false); t.abort?.(); this.transfer = null; this.show({ transfer: '', uploadName: '', uploadPending: false }); }
   }
   discardFailed() { this.failedUpload = null; this.show({ failedFile: '' }); }
   async retryFile() {
@@ -1193,9 +1240,11 @@ export class Workspace {
     if (f && f.version === this.version) return this.addFile(f.kind, f.uri);
   }
   async addFile(kind, supplied) {
-    if ((!this.newDraft && (!this.ready || !this.state.task)) || !this.state.linked || this.transfer || this.sending) throw new Error('请先打开任务');
+    if ((!this.newDraft && (!this.ready || !this.state.task)) || !this.state.linked || this.transfer || this.sending || this.creating) throw new Error('请先打开任务');
     if (this.state.attachments.length >= 20) throw new Error('每条消息最多可添加 20 个附件');
     const v = this.version, t = { cancelled: false, tickets: this.uploadTickets };
+    t.finished = new Promise(resolve => { t.settle = resolve; });
+    let uploaded = false;
     this.transfer = t;
     this.show({ transfer: supplied ? '正在上传' : '正在选择' });
     let uri, name;
@@ -1211,19 +1260,23 @@ export class Workspace {
       this.guard(v);
       name = displayName(uri) || (kind === 'image' ? '图片' : '文件');
       this.discardFailed();
-      this.show({ transfer: '正在上传', uploadName: name });
+      this.show({ transfer: '正在上传', uploadName: name, uploadPending: true });
       const f = await this.native.uploadFile(this.context, uri, () => this.token(), t, this.state.attachments);
       if (t.cancelled) return false;
       this.guard(v);
       this.localMedia.set(f.id, uri);
       if (!this.state.attachments.some(a => a.id === f.id)) await this.setAttachments([...this.state.attachments, f]);
-      return true;
+      uploaded = !t.cancelled && v === this.version;
+      return uploaded;
     } catch (e) {
       if (t.cancelled || e.code === 13900042 || v !== this.version) return false;
       if (uri) { this.failedUpload = { kind, uri, version: v }; this.show({ failedFile: name || '附件' }); }
       throw e;
     }
-    finally { if (this.transfer === t) { this.transfer = null; this.show({ transfer: '', uploadName: '' }); } }
+    finally {
+      if (this.transfer === t) { this.transfer = null; this.show({ transfer: '', uploadName: '', uploadPending: false }); }
+      t.settle(uploaded);
+    }
   }
   shareImage(index) {
     const uri = this.share?.uris[index];
@@ -1333,7 +1386,7 @@ export class Workspace {
       this.show({ ...taskView, error: '' });
       if (linked) await this.invoke('device-link:unsubscribe', [{ topics: ['session:' + task] }], version);
     } else if (device) {
-      if (linked) this.client.closeLink(device, 'user');
+      if (!this.home && linked) this.client.closeLink(device, 'user');
       this.show({ ...hostView, error: '' });
     }
   }
@@ -1346,6 +1399,8 @@ export class Workspace {
     this.authEpoch++;
     this.version++;
     const client = this.client;
+    this.home?.clear(false);
+    this.directoryReady = false;
     this.client = null;
     this.session = null;
     this.access = null;

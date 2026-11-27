@@ -86,6 +86,8 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
             const {channel,args} = frame.payload;
             let result;
             switch (channel) {
+              case 'maker:schedule:list': result = []; break;
+              case 'maker:schedule:list-sidebar-index-runs': result = {runs:[]}; break;
               case 'maker:list-active':
                 result = {format:'active-sessions-v2',sessions:[]};
                 if (homeSnapshotRace) {
@@ -191,22 +193,38 @@ test('stream, reconnect after accepted input, and restore login on relaunch', as
 // Tier 1: two computers can contain identical task IDs and project paths. Run the
 // home controller against distinct peers, including a cancelled archive preflight.
 test('group home tasks by computer and apply row actions only to their owning peer', async () => {
-  const { Workspace, groupHomeRows } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64'));
+  const directory = ['a', 'b'].map(deviceId => ({ deviceId, name: deviceId, remoteControlEnabled: true, online: true }));
+  directory.push({ deviceId: 'disabled', name: '', remoteControlEnabled: false, online: true });
+  globalThis.harmonyPorts = { request: async () => ({ devices: directory }) };
+  const { Workspace, groupHomeRows } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64') + '#home-groups');
   const app = new Workspace(() => {}, true);
   const peers = new Map(['a', 'b'].map(host => [host, [
     { id: 'same', title: host, workingDir: '/work', status: 'active' },
-    { id: 'solo', title: host + ' chat', workspaceKind: 'dialogue', status: 'active' },
+    { id: 'solo', title: 'Shared chat', workspaceKind: 'dialogue', status: 'active' },
   ]]));
   const saved = new Map();
   const writes = [];
   app.session = { id: 'owner' };
-  app.cache = { read: async key => saved.get(JSON.stringify(key)), write: async (key, value) => saved.set(JSON.stringify(key), value) };
+  app.token = async () => 'fixture';
+  let releaseCache, blockList;
+  const staleCache = new Promise(resolve => { releaseCache = resolve; });
+  const lists = [];
+  app.cache = { read: async key => key[1] === 'b' && key[3] === 'tasks' ? staleCache : saved.get(JSON.stringify(key)),
+    forget: async (owner, host) => saved.delete(JSON.stringify([owner,host,'','tasks'])), write: async (key, value) => saved.set(JSON.stringify(key), value) };
   app.client = { openLink: async () => {}, closeLink() {}, async invoke(host, { channel, args }, _, options) {
     options.beforeDispatch();
     const rows = peers.get(host);
     let result;
-    if (channel === 'local-db:sessions:list') result = rows;
+    if (channel === 'local-db:sessions:list') {
+      lists.push(host);
+      if (host === 'b' && blockList) await blockList;
+      result = rows.slice(0, args[0]);
+    }
+    if (channel === 'maker:list-active' && host === 'b') result = [{sessionId:'same',isTurnRunning:true}];
     if (channel === 'local-db:sessions:get') result = rows.find(row => row.id === args[0]);
+    if (channel === 'maker:schedule:list-sidebar-index-runs') result = {runs:[{
+      scheduleId:'paused', scheduleName:'Paused', scheduleStatus:'paused', runId:'r', sessionId:'solo', status:'completed', firedAt:10,
+    }]};
     if (channel === 'maker:schedule:list') result = [{ id: 'schedule', name: 'Daily', status: 'active', targetSessionId: 'same' }];
     if (channel === 'local-db:sessions:patch-meta') {
       writes.push(host);
@@ -214,10 +232,22 @@ test('group home tasks by computer and apply row actions only to their owning pe
     }
     return { ok: true, result };
   } };
-  app.show({ relay: 'online', devices: [...peers.keys()].map(id => ({ id, title: id })) });
-  await app.openDevice('a');
-  await app.back();
+  app.show({ relay: 'online' });
+  await app.reconnect();
+  assert.equal(app.state.device, '');
+  assert.deepEqual(lists.sort(), ['a','b']);
+  assert.equal(app.state.homeIndex.filter(row => row.id === 'same').length, 2);
+  assert.deepEqual(app.state.homeIndex.filter(row => row.id === 'solo' && row.title === 'Shared chat').map(row => row.host).sort(), ['a','b']);
+  const rowB = () => app.state.homeIndex.find(row => row.host === 'b' && row.id === 'same');
+  assert.equal(rowB().rightStatus, 'running');
+  await until(() => rowB()?.scheduled);
+  assert.equal(rowB().scheduled, true);
+  assert.equal(app.state.homeIndex.find(row => row.host === 'b' && row.id === 'solo').scheduleStopped, true);
+  releaseCache([{ id: 'stale', title: 'old cache' }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(rowB().title, 'b');
   await app.openDevice('b');
+  assert.equal(lists.length, 2);
   const sections = (collapsed = []) => groupHomeRows(app.state.homeIndex, true, false, false, ['a', 'b'], collapsed);
   assert.deepEqual(sections().filter(group => group.kind === 'device').map(group => group.head.host), ['a', 'b']);
   assert.deepEqual(sections([sections()[0].key]).filter(group => group.kind === 'project').map(group => group.head.host), ['b']);
@@ -238,6 +268,25 @@ test('group home tasks by computer and apply row actions only to their owning pe
   assert.deepEqual([result.title, result.status, result.pinnedAt], ['Changed', 'active', '']);
   assert.deepEqual(peers.get('b')[0], { id: 'same', title: 'b', workingDir: '/work', status: 'active' });
   assert.deepEqual(writes, ['a', 'a', 'a', 'a']);
+  for (let i = 0; i < 40; i++) peers.get('b').push({id: 'page-' + i, title: 'Page ' + i});
+  await app.reconnect();
+  assert.equal(app.state.moreTasks, true);
+  await app.more();
+  assert.ok(app.state.homeIndex.some(row => row.id === 'page-39' && row.host === 'b'));
+  assert.equal(app.state.moreTasks, false);
+  app.setHomeScope('a');
+  assert.deepEqual(app.state.liveHosts, ['a']);
+  let releaseList;
+  blockList = new Promise(resolve => { releaseList = resolve; });
+  const reads = lists.length;
+  app.setHomeScope('');
+  await until(() => lists.length > reads);
+  await app.forgetHost('b');
+  releaseList();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(app.state.homeIndex.every(row => row.host !== 'b'));
+  assert.ok(!saved.has(JSON.stringify(['owner','b','','tasks'])));
+  delete globalThis.harmonyPorts;
 });
 
 // M2 regression through the page controller, replacing only native storage and
@@ -408,10 +457,31 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   await app.preferences('permission'); await app.applyPreference('permission','plan');
   const firstFile = {id:'first-file',name:'notes.txt',path:'test-key',category:'text',mimeType:'text/plain'};
   app.native = {pickFile:async () => 'file://docs/notes.txt',uploadFile:async () => firstFile};
-  await app.addFile('file');
+  let finishFirst;
+  app.native.uploadFile = () => new Promise(resolve => { finishFirst = resolve; });
+  app.editDraft('新任务草稿');
+  const cancelledFirst = app.addFile('file');
+  await until(() => app.state.uploadPending);
+  const beforeCancel = created;
+  const cancelledCreate = app.create('', '/fixture', app.state.draft);
+  app.cancelTransfer();
+  await cancelledCreate;
+  finishFirst(firstFile);
+  assert.equal(await cancelledFirst, false);
+  assert.equal(created, beforeCancel);
+  assert.equal(app.state.draft, '新任务草稿');
+  app.editDraft('');
+  const pickingFirst = app.addFile('file');
+  await until(() => app.state.uploadPending);
   const enqueuesBefore = enqueue;
+  const createdBefore = created;
   loseCreation = true;
-  await assert.rejects(app.create('', '/fixture'), /reply lost/);
+  const firstTaps = [app.create('', '/fixture'), app.create('', '/fixture')].map(promise => assert.rejects(promise, /reply lost/));
+  assert.equal(created, createdBefore);
+  finishFirst(firstFile);
+  await Promise.all([pickingFirst, ...firstTaps]);
+  assert.equal(created, createdBefore + 1);
+  app.native.uploadFile = async () => firstFile;
   await app.create('', '/fixture');
   assert.equal(enqueue, enqueuesBefore + 1);
   assert.deepEqual(requests.filter(r => r.channel === 'maker:input:enqueue').at(-1).args[1].files, [firstFile]);
@@ -601,5 +671,46 @@ test('route a notification, accept a share and recover one attachment-only messa
   assert.equal(sent[2].clientId,sent[1].clientId);
   assert.deepEqual(sent[2].files,sent[1].files);
   assert.equal(app.state.draft,'下一条草稿');
+  app.editDraft('');
+  let uploaded, rejected;
+  app.native.uploadFile = () => new Promise((resolve, reject) => { uploaded = resolve; rejected = reject; });
+  const file = {id:'wait', name:'wait.txt', path:'wait', mimeType:'text/plain'};
+  async function startUpload() {
+    const promise = app.addFile('file', 'file://fixture/wait.txt');
+    await until(() => app.state.uploadPending);
+    return { promise };
+  }
+  const beforeUpload = sent.length;
+  const attachmentOnly = await startUpload();
+  const taps = [app.send(''), app.send('')];
+  app.editDraft('下一条输入');
+  assert.equal(sent.length, beforeUpload);
+  uploaded(file);
+  await Promise.all([attachmentOnly.promise, ...taps]);
+  assert.equal(sent.length, beforeUpload + 1);
+  assert.deepEqual(sent.at(-1).files, [file]);
+  assert.equal(app.state.draft, '下一条输入');
+  app.editDraft('保留文字');
+  const failed = await startUpload();
+  const queued = app.send(app.state.draft);
+  rejected(new Error('fixture upload failed'));
+  await assert.rejects(failed.promise, /fixture upload failed/);
+  await queued;
+  assert.equal(app.state.failedFile, 'wait.txt');
+  assert.equal(app.state.draft, '保留文字');
+  const cancelledUpload = await startUpload();
+  const pendingSend = app.send(app.state.draft);
+  app.cancelTransfer();
+  await pendingSend;
+  uploaded(file);
+  assert.equal(await cancelledUpload.promise, false);
+  const switched = await startUpload();
+  const oldSend = app.send(app.state.draft);
+  await app.back();
+  await app.openTask('a');
+  uploaded(file);
+  await Promise.all([oldSend, switched.promise]);
+  assert.equal(sent.length, beforeUpload + 1);
+  assert.deepEqual(app.state.attachments, []);
   app.startVoice();await app.back();complete('迟到的语音','');assert.equal(app.state.draft,'');
 });

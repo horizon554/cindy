@@ -747,6 +747,38 @@
     {
       "name": "archive_schedules",
       "value": "此任务关联了 %s。自动化再次运行时会恢复任务，仍要归档吗？"
+    },
+    {
+      "name": "row_draft",
+      "value": "有草稿"
+    },
+    {
+      "name": "row_pinned",
+      "value": "已置顶"
+    },
+    {
+      "name": "row_scheduled",
+      "value": "定时任务"
+    },
+    {
+      "name": "row_stopped_schedule",
+      "value": "定时任务已暂停"
+    },
+    {
+      "name": "row_lead",
+      "value": "团队负责人"
+    },
+    {
+      "name": "row_attached",
+      "value": "已接管任务"
+    },
+    {
+      "name": "row_remote",
+      "value": "远程执行"
+    },
+    {
+      "name": "row_engine",
+      "value": "任务引擎"
     }
   ]
 }

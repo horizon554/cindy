@@ -10,9 +10,11 @@ await build({
   stdin: {
     resolveDir: root,
     contents: `
+      export { HomeDeviceSyncLimiter } from './apps/mobile/src/session/homeDeviceSync.ts';
       export { resolveMobileSessionRightStatus } from './apps/mobile/src/session/sessionRightStatus.ts';
       export { mobileSessionBulkPatch } from './packages/maker-shared/src/sessionSelection.ts';
-      export { normalizeScheduleList } from './packages/maker-shared/src/scheduleModel.ts';
+      export { buildSessionScheduleIndex } from './packages/maker-shared/src/sessionList.ts';
+      export { normalizeScheduleList, normalizeScheduleRuns } from './packages/maker-shared/src/scheduleModel.ts';
       export { getSessionListCollapseView } from './packages/maker-shared/src/sessionListCollapse.ts';
       export { sessionTaskProjectIconDirectory } from './packages/maker-shared/src/worktreePaths.ts';
       export { hasPendingSessionInterruption } from './packages/maker-shared/src/sessionActivity.ts';

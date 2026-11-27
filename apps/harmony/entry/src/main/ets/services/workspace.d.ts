@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-export interface Row { pinnedAt?: string; rightStatus?: string; host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; created?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
+export interface Row { agentKind?: string; lead?: boolean; attached?: boolean; remote?: boolean; hasDraft?: boolean; localDraft?: boolean; scheduled?: boolean; scheduleStopped?: boolean; pinnedAt?: string; rightStatus?: string; host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; created?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
 export interface Choice { label: string; detail: string; selected: boolean }
 export interface Question { key: string; valid?: boolean; label: string; multi: boolean; free: boolean; value: string; options: Choice[] }
 export interface Card { id: string; revision: number; kind: string; title: string; detail: string; questions: Question[]; complete?: boolean; approvalKey?: string; risk?: string; code?: string }
@@ -8,7 +8,7 @@ export interface Attachment extends MediaInfo { id: string }
 export interface FolderList { path: string; parent: string; rows: Row[] }
 export interface NewTaskDraft { owner: string; text: string; attachments: Attachment[]; media: Map<string, string> }
 export interface ViewState {
-  legacyPicker?: boolean; homeIndex?: Row[]; attachments: Attachment[]; transfer: string; voice: string; pushEnabled: boolean; pushStatus: string; shareLabel: string;
+  liveHosts?: string[]; uploadPending?: boolean; legacyPicker?: boolean; homeIndex?: Row[]; attachments: Attachment[]; transfer: string; voice: string; pushEnabled: boolean; pushStatus: string; shareLabel: string;
   ssoWaiting: boolean; ssoMethods: Row[]; verification: string; accounts: Row[]; account: string; accountEmail?: string; accountAvatar?: string; relay: string; devices: Row[]; tasks: Row[]; messages: Row[];
   linked: boolean; moreTasks: boolean; hasOlder: boolean; paused: boolean; running: boolean;
   retryable: boolean; activity: string; draft: string; delivery: string; pendingLabel?: string; agent?: string; model?: string; provider?: string; permission?: string; voicePreview?: string; voiceCaret?: number; uploadName?: string; failedFile?: string; shareVersion?: number; shareFiles?: string[]; shareText?: string; cards: Card[];
@@ -44,6 +44,7 @@ export class Workspace {
   retryFile(): Promise<boolean | undefined>;
   discardFailed(): void;
   reconnect(): Promise<void>;
+  setHomeScope(id: string): void;
   more(): Promise<void>;
   older(): Promise<void>;
   decide(id: string, choice: string, confirmedKey?: string): Promise<void>;

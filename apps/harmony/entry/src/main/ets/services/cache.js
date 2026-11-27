@@ -24,6 +24,15 @@ export async function openCache(context) {
         } finally { rows.close(); }
       });
     },
+    draftTasks(account, host) {
+      return enqueue(async () => {
+        const rows = await db.querySql("SELECT DISTINCT task FROM entries WHERE account=? AND host=? AND task<>'' AND part=0 AND (name='attachments' OR (name='draft' AND trim(body, ' ' || char(34))<>''))", [account, host]);
+        const drafts = new Set();
+        try { while (rows.goToNextRow()) drafts.add(rows.getString(0)); }
+        finally { rows.close(); }
+        return drafts;
+      });
+    },
     write(key, value) {
       const json = value == null ? '' : JSON.stringify(value);
       return enqueue(async () => {

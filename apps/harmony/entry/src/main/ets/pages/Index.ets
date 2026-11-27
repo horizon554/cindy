@@ -375,7 +375,7 @@ struct Index {
 
   private async sendFromComposer(): Promise<void> {
     if (this.view.voice && !await this.workspace.finishVoiceForSend()) return;
-    if (!this.view.linked || this.composing || this.view.cards.length || this.view.transfer || this.view.failedFile || this.view.delivery) return;
+    if (!this.view.linked || this.composing || this.view.cards.length || (this.view.transfer && !this.view.uploadPending) || this.view.failedFile || this.view.delivery) return;
     if (this.creating) await this.newTask();
     else if (this.view.task) await this.workspace.send(this.view.draft);
   }
@@ -386,7 +386,7 @@ struct Index {
       PillAction({ label: $r('app.string.resume'), available: !this.busy && this.view.linked,
         onTap: () => this.run(() => this.workspace.control(true)) })
     }
-    if (this.view.running && (this.view.voice || this.view.draft.trim() || this.view.attachments.length)) {
+    if (this.view.running && (this.view.voice || this.view.draft.trim() || this.view.attachments.length || this.view.uploadPending)) {
       this.stopAction()
     }
     if (this.view.voice) {
@@ -405,13 +405,13 @@ struct Index {
       IconAction({ icon: $r('sys.symbol.mic'), label: $r('app.string.voice'), controlId: 'voice',
         available: !this.busy && !this.composing && this.view.linked && !this.view.transfer, onTap: () => this.startDictation() })
     }
-    if (this.view.running && !this.view.voice && !this.view.draft.trim() && !this.view.attachments.length) {
+    if (this.view.running && !this.view.voice && !this.view.draft.trim() && !this.view.attachments.length && !this.view.uploadPending) {
       this.stopAction()
-    } else if (this.view.voice || this.view.draft.trim() || this.view.attachments.length || (this.creating && this.view.shareLabel)) {
+    } else if (this.view.voice || this.view.draft.trim() || this.view.attachments.length || this.view.uploadPending || (this.creating && this.view.shareLabel)) {
       IconAction({ icon: $r('sys.symbol.arrow_up'), label: this.view.voice ? $r('app.string.voice_send') :
         this.creating && this.view.shareLabel ? $r('app.string.share_new') : $r('app.string.send'),
         controlId: this.creating ? 'create-send' : 'send', prominent: true, available: !this.busy && !this.composing && this.view.linked &&
-          !this.view.transfer && !this.view.failedFile && !this.view.delivery && (!this.view.voice || this.view.voice === '录音中'),
+          (!this.view.transfer || !!this.view.uploadPending) && !this.view.failedFile && !this.view.delivery && (!this.view.voice || this.view.voice === '录音中'),
         onTap: () => this.run(() => this.sendFromComposer()) })
     }
   }
@@ -524,8 +524,8 @@ struct Index {
                 this.selectionStart = start; this.selectionEnd = end; this.selectionDraft = this.view.draft;
               }
             })
-            .onWillInsert(() => !this.view.voice)
-            .onWillDelete(() => !this.view.voice)
+            .onWillInsert(() => !this.view.voice && !(this.creating && this.busy && this.view.uploadPending))
+            .onWillDelete(() => !this.view.voice && !(this.creating && this.busy && this.view.uploadPending))
             .onChange((value: string, preview?: PreviewText) => {
               if (this.view.voice) return;
               this.composing = !!preview?.value;
@@ -750,6 +750,12 @@ struct Index {
       })
   }
 
+  private changeScope(id: string): void {
+    this.scope = id;
+    this.projectFilter = '';
+    this.workspace.setHomeScope(id);
+  }
+
   private async selectHost(id: string): Promise<void> {
     if (this.view.device !== id) {
       if (this.view.task) await this.workspace.back();
@@ -767,7 +773,7 @@ struct Index {
     const owner = this.view.account;
     const selectingScope = this.panel === 'hosts';
     await this.selectHost(id);
-    if (selectingScope && this.view.account === owner) { this.scope = id; this.projectFilter = ''; }
+    if (selectingScope && this.view.account === owner) { this.changeScope(id); }
     if (restoring && this.view.account === owner && this.view.device === id) {
       this.creating = true;
       if (!sameHost || !this.view.agent) {
@@ -784,11 +790,7 @@ struct Index {
 
   private scopedRows(): Item[] {
     const allowed = this.view.devices.map((r: Item) => r.id);
-    const current: Item[] = this.view.tasks.map((row: Item): Item => ({
-      id: row.id, title: row.title, project: row.project, summary: row.summary, updated: row.updated, created: row.created,
-      running: row.running, status: row.status, pinnedAt: row.pinnedAt, rightStatus: row.rightStatus, host: this.view.device
-    }));
-    return current.concat((this.view.homeIndex || []).filter((r: Item) => r.host !== this.view.device && allowed.includes(r.host || '')))
+    return (this.view.homeIndex || []).filter((r: Item) => allowed.includes(r.host || ''))
       .filter((r: Item) => this.view.shareLabel ? !this.hostOffline(r.host || '') && r.status !== 'archived' : !this.scope || this.scope === r.host);
   }
 
@@ -885,7 +887,7 @@ struct Index {
 
   private async newTask(): Promise<void> {
     const text = this.view.draft.trim();
-    if (!this.view.shareLabel && !text && !this.view.attachments.length) return;
+    if (!this.view.shareLabel && !text && !this.view.attachments.length && !this.view.uploadPending) return;
     const sharing = !!this.view.shareLabel;
     const version = this.view.shareVersion;
     const created = await this.workspace.create('', this.project.trim(), text, this.engine, sharing);
@@ -943,13 +945,13 @@ struct Index {
   homeHostMenu() {
     Menu() {
       MenuItem({ content: $r('app.string.all_hosts'), labelInfo: this.scope ? '' : '✓' }).id('menu-all-hosts')
-        .onClick(() => { this.scope = ''; this.projectFilter = ''; })
+        .onClick(() => { this.changeScope(''); })
       ForEach(this.view.devices, (host: Item) => {
         MenuItem({ content: this.deviceLabel(host), labelInfo: this.scope === host.id ? '✓' : host.offline ? $r('app.string.offline') : '' })
           .id('menu-host-' + host.id).onClick(() => this.run(async () => {
             const owner = this.view.account;
             await this.selectHost(host.id);
-            if (this.view.account === owner && this.view.device === host.id) { this.scope = host.id; this.projectFilter = ''; }
+            if (this.view.account === owner && this.view.device === host.id) { this.changeScope(host.id); }
           }))
       }, (host: Item) => host.id)
     }
@@ -1039,7 +1041,7 @@ struct Index {
     if (this.panel === 'hosts' || this.panel === 'new-host') {
       List() {
         if (this.panel === 'hosts') {
-          ListItem() { OptionRow({ label: $r('app.string.all_hosts'), value: this.scope ? '' : '✓', action: () => { this.scope = ''; this.projectFilter = ''; this.panel = ''; }, control: 'all-hosts' }) }
+          ListItem() { OptionRow({ label: $r('app.string.all_hosts'), value: this.scope ? '' : '✓', action: () => { this.changeScope(''); this.panel = ''; }, control: 'all-hosts' }) }
         }
         ForEach(this.view.devices, (item: Item) => {
           ListItem() { DirectoryRow({ title: this.deviceLabel(item), targetId: item.id, computer: true, offline: !!item.offline,
@@ -1254,7 +1256,7 @@ struct Index {
               }.width('100%').padding(24)
             }
           }
-          if (this.view.moreTasks && this.view.linked && (this.sharePicker() || !this.scope || this.scope === this.view.device)) {
+          if (this.view.moreTasks) {
             ListItem() { PillAction({ label: $r('app.string.more_tasks'), available: !this.busy, onTap: () => this.run(() => this.workspace.more()) }) }
           }
         }.width('100%').height('100%').contentEndOffset(76)
@@ -1325,17 +1327,68 @@ struct Index {
     }
   }
 
+  private taskIdentity(item: Item): string {
+    const resources = this.getUIContext().getHostContext()!.resourceManager;
+    if (item.status === 'archived') return resources.getStringSync($r('app.string.archived').id);
+    if (item.lead) return resources.getStringSync($r('app.string.row_lead').id);
+    if (item.attached) return resources.getStringSync($r('app.string.row_attached').id);
+    if (item.agentKind === 'cc' || item.agentKind === 'claude-code') return 'Claude Code';
+    if (item.agentKind === 'codex') return 'Codex';
+    if (item.agentKind === 'pi') return 'Pi';
+    return item.agentKind || resources.getStringSync($r('app.string.row_engine').id);
+  }
+
+  @Builder
+  taskMark(item: Item) {
+    Stack({ alignContent: Alignment.BottomEnd }) {
+      if (item.status === 'archived' || item.lead || item.attached) {
+        SymbolGlyph(item.status === 'archived' ? $r('sys.symbol.archivebox') : item.lead ? $r('sys.symbol.person_2') : $r('sys.symbol.link'))
+          .fontSize(21).fontColor([item.running && this.rowStatus(item) === 'running' ? $r('app.color.running') : $r('app.color.muted')])
+      } else if (item.agentKind === 'codex' || item.agentKind === 'pi' || item.agentKind === 'cc' || item.agentKind === 'claude-code') {
+        Image(item.agentKind === 'codex' ? $r('app.media.agent_codex') : item.agentKind === 'pi' ? $r('app.media.agent_pi') : $r('app.media.agent_claude'))
+          .width(21).height(21).fillColor(item.running && this.rowStatus(item) === 'running' ? $r('app.color.running') : $r('app.color.muted'))
+      } else {
+        SymbolGlyph($r('sys.symbol.square_grid_2x2')).fontSize(20).fontColor([item.running && this.rowStatus(item) === 'running' ? $r('app.color.running') : $r('app.color.muted')])
+      }
+      if (item.status !== 'archived' && (item.hasDraft || item.localDraft)) {
+        SymbolGlyph($r('sys.symbol.square_and_pencil')).id('draft-' + item.id).fontSize(11).fontColor([$r('app.color.ink')])
+          .backgroundColor($r('app.color.canvas')).borderRadius(6).accessibilityText($r('app.string.row_draft'))
+      }
+      if (item.remote && item.status !== 'archived' && !item.lead && !item.attached) {
+        SymbolGlyph($r('sys.symbol.link')).fontSize(10).position({ x: 14, y: 0 }).backgroundColor($r('app.color.canvas')).accessibilityText($r('app.string.row_remote'))
+      }
+    }.width(24).height(24).id('identity-' + item.id).accessibilityText(this.taskIdentity(item))
+  }
+
   @Builder
   taskButton(item: Item, indent: number) {
     Button({ type: ButtonType.Normal }) {
       Row({ space: 9 }) {
+        this.taskMark(item)
         Column({ space: 2 }) {
-          Text(item.title).fontSize(15).lineHeight(22).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
+          Text(item.title).fontSize(15).lineHeight(22).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
           if (item.summary && item.summary !== item.title) {
             Text(item.summary).fontSize(13).lineHeight(18).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.muted'))
           }
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        this.taskStatus(item)
+        Column({ space: 2 }) {
+          this.taskStatus(item)
+          if (item.scheduled || item.pinnedAt) {
+            Row({ space: 4 }) {
+              if (item.scheduled) {
+                Stack({ alignContent: Alignment.BottomEnd }) {
+                  SymbolGlyph($r('sys.symbol.timer')).fontSize(15).fontColor([$r('app.color.muted')])
+                  if (item.scheduleStopped) {
+                    SymbolGlyph($r('sys.symbol.pause_fill')).fontSize(8).backgroundColor($r('app.color.canvas'))
+                  }
+                }.id('schedule-' + item.id).accessibilityText(item.scheduleStopped ? $r('app.string.row_stopped_schedule') : $r('app.string.row_scheduled'))
+              }
+              if (item.pinnedAt) {
+                SymbolGlyph($r('sys.symbol.pin')).id('pin-' + item.id).fontSize(14).fontColor([$r('app.color.muted')]).accessibilityText($r('app.string.row_pinned'))
+              }
+            }
+          }
+        }.alignItems(HorizontalAlign.End)
       }.padding({ left: indent, right: 6, top: 4, bottom: 4 }).width('100%')
     }.id(!this.scope && this.view.devices.length > 1 ? JSON.stringify(['task', item.host, item.id]) : item.id)
       .constraintSize({ minHeight: 44 }).width('100%').backgroundColor(Color.Transparent).enabled(this.rowAvailable(item))
@@ -1345,7 +1398,7 @@ struct Index {
   }
 
   private rowStatus(row: Item): string {
-    if (!this.view.linked || row.host !== this.view.device) return 'time';
+    if (!row.host || !this.view.liveHosts?.includes(row.host)) return 'time';
     return row.rightStatus || (row.running ? 'running' : 'time');
   }
 
@@ -1364,11 +1417,16 @@ struct Index {
   }
 
   private statusDescription(item: Item): string {
-    const offline = this.hostOffline(item.host || '');
+    const resources = this.getUIContext().getHostContext()!.resourceManager;
+    const parts: string[] = [this.taskIdentity(item)];
+    if (item.status !== 'archived' && (item.hasDraft || item.localDraft)) parts.push(resources.getStringSync($r('app.string.row_draft').id));
+    if (item.remote && !item.attached && !item.lead && item.status !== 'archived') parts.push(resources.getStringSync($r('app.string.row_remote').id));
+    if (item.pinnedAt) parts.push(resources.getStringSync($r('app.string.row_pinned').id));
+    if (item.scheduled) parts.push(resources.getStringSync((item.scheduleStopped ? $r('app.string.row_stopped_schedule') : $r('app.string.row_scheduled')).id));
     const status = this.rowStatus(item);
-    if (!offline && status === 'time') return this.rowTime(item);
-    const label = offline ? $r('app.string.offline') : this.statusLabel(status);
-    return this.getUIContext().getHostContext()!.resourceManager.getStringSync(label.id);
+    const offline = this.hostOffline(item.host || '');
+    parts.push(!offline && status === 'time' ? this.rowTime(item) : resources.getStringSync((offline ? $r('app.string.offline') : this.statusLabel(status)).id));
+    return parts.filter((part: string) => !!part).join(' · ');
   }
 
   @Builder
