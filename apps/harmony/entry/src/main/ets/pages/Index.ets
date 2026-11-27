@@ -102,6 +102,7 @@ struct Index {
   @State bottomInset: number = 0;
   @State keyboardShown: boolean = false;
   private appWindow?: window.Window;
+  private environmentListener?: number;
   private areaChanged = (event: window.AvoidAreaOptions): void => {
     if (event.type === window.AvoidAreaType.TYPE_SYSTEM) this.topInset = this.getUIContext().px2vp(event.area.topRect.height);
     if (event.type === window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR) this.bottomInset = this.getUIContext().px2vp(event.area.bottomRect.height);
@@ -218,6 +219,10 @@ struct Index {
   }, true);
 
   aboutToAppear(): void {
+    this.environmentListener = this.getUIContext().getHostContext()?.getApplicationContext().on('environment', {
+      onConfigurationUpdated: () => { this.updateBars(); },
+      onMemoryLevel: () => {}
+    });
     this.updateBars();
     installInputs(this.workspace);
     this.getUIContext().setKeyboardAvoidMode(WindowKeyboardAvoidMode.RESIZE);
@@ -811,7 +816,19 @@ struct Index {
     }
   }
 
-  aboutToDisappear(): void { this.resetEditorSelection(); this.appWindow?.off('keyboardHeightChange', this.keyboardChanged); this.appWindow?.off('avoidAreaChange', this.areaChanged); this.appWindow = undefined; clearInterval(this.resendTimer); clearInterval(this.voiceTimer); clearTimeout(this.scrollTimer); }
+  aboutToDisappear(): void {
+    if (this.environmentListener !== undefined) {
+      this.getUIContext().getHostContext()?.getApplicationContext().off('environment', this.environmentListener);
+      this.environmentListener = undefined;
+    }
+    this.resetEditorSelection();
+    this.appWindow?.off('keyboardHeightChange', this.keyboardChanged);
+    this.appWindow?.off('avoidAreaChange', this.areaChanged);
+    this.appWindow = undefined;
+    clearInterval(this.resendTimer);
+    clearInterval(this.voiceTimer);
+    clearTimeout(this.scrollTimer);
+  }
 
   private u(px: number): number { return px * this.loginWidth / 750; }
 
@@ -1578,7 +1595,8 @@ struct Index {
                   Stack({ alignContent: Alignment.BottomEnd }) {
                     SymbolGlyph($r('sys.symbol.timer')).fontSize(15).fontColor([$r('app.color.muted')])
                     if ($$.item.scheduleStopped) {
-                      SymbolGlyph($r('sys.symbol.pause_fill')).fontSize(8).backgroundColor($r('app.color.canvas'))
+                      SymbolGlyph($r('sys.symbol.pause_fill')).fontSize(8)
+                        .fontColor([$r('app.color.muted')]).backgroundColor($r('app.color.canvas'))
                     }
                   }.id('schedule-' + $$.item.id).accessibilityText($$.item.scheduleStopped ? $r('app.string.row_stopped_schedule') : $r('app.string.row_scheduled'))
                 }
@@ -1755,11 +1773,15 @@ struct Index {
         .onBackPressed(() => this.onBackPress())
     } else if (page === 'settings' && deviceInfo.sdkApiVersion >= 14) {
       NavDestination() { this.screen(page) }
-        .title($r('app.string.settings'), { backgroundBlurStyle: BlurStyle.COMPONENT_THICK })
+        .title($r('app.string.settings'), { backgroundColor: $r('app.color.canvas') })
         .bindToScrollable([this.settingsScroller]).onBackPressed(() => this.onBackPress())
+    } else if (page === 'settings') {
+      NavDestination() { this.screen(page) }
+        .title(this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.settings').id),
+          { backgroundColor: $r('app.color.canvas') }).onBackPressed(() => this.onBackPress())
     } else {
       NavDestination() { this.screen(page) }
-        .title(page === 'settings' ? $r('app.string.settings') : page === 'project' ? this.basename(this.projectList?.project || '') :
+        .title(page === 'project' ? this.basename(this.projectList?.project || '') :
           page === 'share' ? $r('app.string.choose_target') : $r('app.string.create_new'))
         .onBackPressed(() => this.onBackPress())
     }
