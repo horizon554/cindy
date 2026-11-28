@@ -27,6 +27,7 @@ export async function request(url, body, token, method) {
       try {
         const body = JSON.parse(response.result);
         const code = body?.error?.code ?? body?.code;
+        if (code === 'HOME_DEVICE_CONFLICT') error.homeDeviceId = body?.error?.details?.homeDeviceId ?? body?.details?.homeDeviceId;
         if (typeof code === 'string' && /^[A-Z_]{1,64}$/.test(code)) error.code = code;
       } catch { /* Some gateways return plain text. */ }
       throw error;

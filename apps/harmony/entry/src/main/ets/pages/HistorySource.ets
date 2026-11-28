@@ -16,7 +16,9 @@ export class HistorySource implements IDataSource {
   private sameRow(a: Row, b: Row): boolean {
     if (a === b) return true;
     return a.id === b.id && a.title === b.title && a.role === b.role && a.messageText === b.messageText && a.detail === b.detail && a.actions === b.actions && a.createdAt === b.createdAt &&
-      a.editPlacement === b.editPlacement && a.forkable === b.forkable && a.clientId === b.clientId && (a.usage === b.usage || JSON.stringify(a.usage) === JSON.stringify(b.usage)) &&
+      a.stamp === b.stamp && a.continued === b.continued && a.author === b.author && a.authorId === b.authorId && a.bot === b.bot && a.interactive === b.interactive && a.replyCount === b.replyCount &&
+      (a.quote === b.quote || JSON.stringify(a.quote) === JSON.stringify(b.quote)) &&
+      (a.taskCard === b.taskCard || JSON.stringify(a.taskCard) === JSON.stringify(b.taskCard)) && a.editPlacement === b.editPlacement && a.forkable === b.forkable && a.clientId === b.clientId && (a.usage === b.usage || JSON.stringify(a.usage) === JSON.stringify(b.usage)) &&
       (a.voiceCall === b.voiceCall || JSON.stringify(a.voiceCall) === JSON.stringify(b.voiceCall)) &&
       (a.media === b.media || JSON.stringify(a.media) === JSON.stringify(b.media));
   }

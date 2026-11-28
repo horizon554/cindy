@@ -4,6 +4,7 @@ import { REMOTE_RESOURCE_PROTOCOL_VERSION, BOT_GROUP_CLIENT_PRIMITIVES, botGroup
   hasBotGroupCollection, botGroupMemberLinks, botGroupChatDataFromResource, botGroupMessageSummaryText, readBotGroupTaskCard,
   createConversationListState, latestBotGroupMessage, botGroupActivityAt, chatGroupMemberName } from './protocol.generated';
 
+import { messageTimestamp } from './taskModel';
 import { portraitFields } from './companionAvatar';
 
 export const singleLinePreview = value => typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim().slice(0, 160) : '';
@@ -41,12 +42,15 @@ export async function hostGroupHistory(call, id, locale) {
   if (!group || group.id !== id || group.archived) throw Object.assign(new Error('群聊已不可访问'), { code: 'NOT_FOUND' });
   const messages = group.messages.flatMap(message => {
     if (message.deleted || message.threadRootId) return [];
-    const files = message.attachments?.length ? message.attachments.map(file => file.name) : message.files || [];
-    const title = [botGroupMessageSummaryText(message), ...files].filter(Boolean).join('\n');
+    const media = message.attachments?.length ? message.attachments : (message.files || []).map(name => ({ name }));
+    const title = message.content || (message.task ? '' : botGroupMessageSummaryText(message));
     const mine = message.isSelf ?? (message.authorKind === 'user' && !group.serverBacked);
-    return title ? [{ id: message.id, title, author: message.authorName, role: mine ? 'user' : 'assistant' }] : [];
+    return title || media.length || message.task ? [{ id: message.id, createdAt: messageTimestamp(message.createdAt), title,
+      author: message.authorName, authorId: message.authorBotId, bot: message.authorKind === 'bot', media,
+      interactive: message.kind === 'message', quote: message.quote, taskCard: message.task, role: mine ? 'user' : 'assistant' }] : [];
   });
-  return { messages, profile: { title: group.name, topic: group.topic, description: group.description, members: group.members } };
+  return { messages, profile: { title: group.name, topic: group.topic, description: group.description, members: group.members,
+    running: group.round?.status === 'running', writable: !group.archived && !group.dissolvedAt, attachments: group.supportsAttachments === true } };
 }
 
 export function cloudMessageBody(message) {
@@ -110,7 +114,7 @@ export class ServerGroups {
               ...portraitFields(m.name, m.groupAvatar ?? m.avatar ?? m.defaultAvatarUrl),
             }));
             row.profile = { title: snapshot.room.name ?? room.name, topic: snapshot.room.topic,
-              description: snapshot.room.description, members: roster };
+              description: snapshot.room.description, writable: !snapshot.room.archived && !snapshot.room.dissolved_at, attachments: true, members: roster };
             row.memberNames = new Map(roster.map(member => [member.id, member.title]));
             row.searchText = roster.map(member => member.title).join('\n');
             row.faces = roster.slice(0, 5);

@@ -10,7 +10,7 @@ import { build } from 'esbuild';
 import './build-protocol.mjs';
 
 const bundled = await build({
-  stdin: { contents: "export { Workspace } from './workspace'; export { receiveWant } from './sso'; export { groupHomeRows, matchingCompanions } from './homeList';",
+  stdin: { contents: "export { Workspace } from './workspace'; export { Companions } from './companions'; export { receiveWant } from './sso'; export { groupHomeRows, matchingCompanions } from './homeList';",
     resolveDir: fileURLToPath(new URL('../entry/src/main/ets/services', import.meta.url)) },
   platform: 'node', format: 'esm', bundle: true, write: false,
   plugins: [{
@@ -55,6 +55,7 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
   let joined = true, snapshotUnavailable = false;
   const unrelatedRooms = Array.from({length: 100}, (_, i) => ({ id: '60000000-0000-4000-8000-' + String(i).padStart(12, '0'), kind: 'direct', state: 'joined' }));
   const ref = { collectionId: 'teammates', kind: 'bot', id: 'writer' };
+  let quotedInput, localGroupInput;
   let canonical = 'buddy-session', cloudReads = 0, delayedCloud;
   const blobAvatar = 'cindy-media://blobs/' + 'b'.repeat(64) + '.png';
   const publicPhoto = 'https://fixture.invalid/avatar.png';
@@ -153,6 +154,11 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
                 }
                 assert.equal(args[0].collectionId, 'teammates');
                 result = { items: [buddyResource()] }; break;
+              case 'maker:remote-resources:invoke':
+                assert.equal(args[0].actionId, 'send');
+                assert.equal(args[0].resourceRef.id, 'legacy');
+                localGroupInput = args[0].input;
+                break;
               case 'maker:remote-resources:get':
                 if (args[0].ref.kind === 'bot-group') {
                   assert.equal(args[0].ref.id, 'legacy');
@@ -181,6 +187,7 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
               case 'device-link:unsubscribe': break;
               case 'device-link:subscribe': subscriptions++; break;
               case 'maker:input:enqueue':
+                if (args[0] === 'buddy-session') { quotedInput = JSON.parse(args[1].persistedContent); break; }
                 count++;
                 assert.equal(args[0],host.id);
                 rows.push({id:args[1].clientId,sessionId:'task',content:args[1].persistedContent});
@@ -266,10 +273,16 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
   assert.equal(state.companions.find(row => row.id === 'writer').preview, 'Hosted recent message');
   await app.openCompanion(localGroup.key);
   assert.equal(state.cloudMessages[0].title, 'local history');
+  assert.equal(state.cloudMessages[0].createdAt, new Date(23).toISOString());
   assert.equal(state.cloudProfile.topic, 'Local topic');
   assert.deepEqual(state.cloudProfile.members.map(member => member.title), ['Writer', 'Other']);
   assert.equal(state.cloudProfile.members[0].avatarImage, blobAvatar);
   assert.equal(state.cloudProfile.members[1].avatar, '🌿');
+  await app.sendRoom('local reply', ['writer'], [], '');
+  assert.equal(localGroupInput.text, 'local reply');
+  assert.deepEqual(localGroupInput.mentions.botIds, ['writer']);
+  assert.ok(localGroupInput.clientId);
+  await assert.rejects(app.sendRoom('', [], [{ id: 'unsupported', name: 'image' }], ''), /附件/);
   app.closeCloudCompanion();
   await app.openCompanion(group.key);
   // The composite portrait shows five people. The profile must include every joined identity,
@@ -339,6 +352,14 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
   ]);
   assert.equal(state.task, canonical);
   assert.deepEqual(state.taskCompanion, { ...hosted, recentCall: true });
+  rows.push({ id: 'quote-source', clientId: 'stable-client-id', sessionId: canonical, role: 'user',
+    content: { text: 'existing question' }, createdAt: '2026-01-02T00:00:00Z' });
+  await app.history(app.version);
+  app.quoteCompanion('quote-source');
+  assert.equal(state.companionQuote.clientId, 'stable-client-id');
+  await app.send('reply');
+  assert.deepEqual(quotedInput.replyQuote, { role: 'user', clientId: 'stable-client-id', excerpt: 'existing question' });
+  assert.equal(state.companionQuote, undefined);
   canonical = 'moved';
   await assert.rejects(app.send('should not dispatch'), /伙伴会话已变更/);
   assert.equal(count, 1);
@@ -1241,4 +1262,192 @@ test('route a notification, accept a share and recover one attachment-only messa
   assert.equal(sent.length, beforeBatch + 1);
   assert.deepEqual(app.state.attachments.map(f=>f.id), ['a.png']);
   app.startVoice();await app.back();complete('迟到的语音','');assert.equal(app.state.draft,'');
+});
+
+// Integration tier. Drive the same roster, history, composer and handoff entry points as ArkUI.
+// Stub the network and native boundaries so no message or device setting escapes the fixture.
+async function roomFixture(tag, request) {
+  globalThis.harmonyPorts = { request };
+  const { Workspace, Companions } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64') + '#' + tag);
+  const app = new Workspace(() => {}, true);
+  const values = new Map();
+  app.cache = { read: async key => values.get(JSON.stringify(key)), write: async (key, value) => values.set(JSON.stringify(key), value) };
+  app.session = { id: 'room-user' };
+  app.id = 'phone';
+  app.locale = 'zh-CN';
+  app.token = async () => 'test-only';
+  app.companions = new Companions(app);
+  return app;
+}
+const roomUuid = n => 'aa000000-0000-4000-8000-' + String(n).padStart(12, '0');
+function roomMessage(n, authorId, minutes, content) {
+  return { id: roomUuid(n), seq: String(n), createdAt: new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString(),
+    authorId, author: { kind: 'bot', name: 'Writer' }, content: content || [{ type: 'text', text: 'turn ' + n }] };
+}
+
+test('group composer preserves a quoted send across a lost reply, opens its topic, and respects revocation', async () => {
+  const id = roomUuid(900), bot = roomUuid(800), self = roomUuid(801), media = roomUuid(802);
+  const member = { id: bot, kind: 'bot', state: 'joined', name: 'Editor' };
+  const meta = { v: 1, role: 'delegation-request', delegationId: 'task', fromBotId: 'a', fromBotName: 'A',
+    toBotId: null, toBotName: 'Cindy', parentSessionId: 'group', childSessionId: 'task', objective: 'Review' };
+  const main = [roomMessage(1, bot, 0), roomMessage(2, bot, 4), roomMessage(3, bot, 5, [
+    { type: 'text', text: '**Ready**' }, { type: 'card', namespace: 'cindy.task', schemaRevision: 1, fallback: 'fallback',
+      data: { state: 'completed', title: 'Review', meta } }, { type: 'media', mediaId: media, caption: 'a.png' }])];
+  main[0].replyCount = 1;
+  const thread = [{ ...roomMessage(4, self, 6), threadRootId: main[0].id, author: { kind: 'human', name: 'Me' } }];
+  const sent = [];
+  let fail = true, quotedReads = 0, revoked = false;
+  const base = '/conversations/' + id;
+  const app = await roomFixture('group-room', async (url, body) => {
+    const path = url.split('/v1')[1];
+    if (revoked) throw Object.assign(new Error('Membership revoked'), { httpStatus: 403 });
+    if (path === base + '/messages?limit=100') return [...main].reverse();
+    if (path === base + '/messages?limit=100&threadRootId=' + main[0].id) return [...thread].reverse();
+    if (path === base + '/messages/' + main[2].id) { quotedReads++; return main[2]; }
+    if (path === base + '/members') return [member];
+    if (path === base + '/executions') return [{ status: 'queued' }];
+    if (path === base + '/media/' + media) return { name: 'a.png', type: 'image/png', size: 8, url: 'https://unit.invalid/a' };
+    if (path === base + '/messages') {
+      sent.push(structuredClone(body));
+      if (fail) throw new Error('Lost response');
+      return { id: roomUuid(100) };
+    }
+    assert.fail('Unexpected group route ' + path);
+  });
+  const c = app.companions, key = JSON.stringify(['group', '', id]);
+  c.groups.self = self;
+  c.groups.rows.set(id, { id, key, host: '', title: 'Fixture', group: true, profile: { title: 'Fixture', writable: true,
+    attachments: true, members: [{ ...member, title: 'Editor' }] }, memberNames: new Map([[bot, 'Editor']]) });
+  await app.openCompanion(key);
+  const rows = app.state.cloudMessages;
+  assert.deepEqual(rows.map(r => [!!r.stamp, r.continued]), [[true,false],[false,true],[true,false]]);
+  assert.equal(app.state.cloudProfile.running, true);
+  assert.equal(rows[2].taskCard?.title, 'Review');
+  assert.equal(rows[2].title, '**Ready**');
+  assert.equal(rows[2].author, 'Editor');
+  assert.equal((await app.roomFile(rows[2].id, media)).mimeType, 'image/png');
+  await assert.rejects(app.roomFile(rows[0].id, media));
+  const peers = app.state.cloudProfile.members;
+  peers.push({ id: roomUuid(806), title: 'Ed' }, { id: roomUuid(807), title: 'Editor' });
+  assert.deepEqual(app.roomMentionIds('@Editor', []), []);
+  const picked = [{ botId: bot, label: 'Editor', start: 0 }];
+  assert.deepEqual(app.roomMentionIds('@Editor', picked), [bot]);
+  assert.deepEqual(app.roomMentionIds('@Edith', []), []);
+  assert.deepEqual(app.roomEditedMentions('@Editor ', 'after @Editor ', picked).map(m => m.start), [6]);
+  assert.deepEqual(app.roomEditedMentions('@Editor ', 'plain', picked), []);
+  const attachment = { id: media, name: 'a.png' };
+  const post = () => app.sendRoom('reply', [], [attachment], rows[2].id);
+  await Promise.all([assert.rejects(post(), /Lost response/), assert.rejects(post(), /Lost response/)]);
+  assert.equal(sent.length, 1);
+  app.closeCloudCompanion();
+  await app.openCompanion(key);
+  assert.equal(app.state.cloudPending.text, 'reply');
+  main[2].content[0].text = 'updated while offline';
+  await assert.rejects(app.sendRoom('different text', [], [], ''), /重试/);
+  fail = false;
+  await post();
+  assert.deepEqual(sent[1], sent[0]);
+  assert.equal(quotedReads, 1);
+  assert.equal(sent[1].content[0].data.messageId, main[2].id);
+  assert.deepEqual(sent[1].mentions, [bot]);
+  assert.equal(sent[1].content.at(-1).mediaId, media);
+  assert.equal(app.state.cloudPending, undefined);
+  main[2].deleted = true;
+  await assert.rejects(post(), /不可引用/);
+  const draft = { text: 'unfinished main', files: [], mentionIds: [], quoteId: '' };
+  app.saveRoomDraft(key, '', draft);
+  await app.openRoomThread(rows[0].id);
+  assert.equal(app.state.cloudRoot.id, rows[0].id);
+  assert.deepEqual(app.state.cloudMessages.map(r => [r.id,r.role]), [[thread[0].id,'user']]);
+  await app.sendRoom('topic reply', [bot, roomUuid(404)], [], '');
+  assert.equal(sent.at(-1).threadRootId, main[0].id);
+  assert.deepEqual(sent.at(-1).mentions, [bot]);
+  assert.ok(app.closeRoomThread());
+  await until(() => app.state.cloudPending?.text === draft.text && !app.state.cloudLoading);
+  revoked = true;
+  await app.cloudHistory(false);
+  assert.equal(app.state.cloudCompanion, undefined);
+  await assert.rejects(app.sendRoom('not allowed', [], [], ''));
+  assert.equal(sent.length, 3);
+});
+
+test('offline companion retains older history, previews cloud media and hands off only to the confirmed online computer', async t => {
+  const actor = roomUuid(700), id = roomUuid(701), media = roomUuid(702);
+  const history = Array.from({ length: 101 }, (_, i) => roomMessage(i+1, actor, i));
+  history[99].createdAt = history[100].createdAt;
+  history[98].createdAt = new Date(Date.UTC(2027, 0, 1)).toISOString();
+  history[0].content = [{ type: 'text', text: 'public ![x](file:///private/a)' }, { type: 'media', mediaId: media, caption: 'p.png' }];
+  const patches = [];
+  let conflict = 'third', oldReads = 0;
+  const app = await roomFixture('direct-room', async (url, body, _token, method) => {
+    const path = url.split('/v1')[1];
+    if (path === '/conversations') return { id };
+    if (path.endsWith('/messages?limit=100')) return history.slice(-100).reverse();
+    if (path.includes('&before=')) {
+      oldReads++;
+      return history.filter(row => BigInt(row.seq) < BigInt(path.split('&before=')[1])).slice(-100).reverse();
+    }
+    if (path.endsWith('/media/' + media)) return { name: 'p.png', type: 'image/png', size: 5, url: 'https://unit.invalid/p' };
+    if (path === '/actors/' + actor) {
+      assert.equal(method,'PATCH'); patches.push(body);
+      if (conflict) throw Object.assign(new Error('moved'), { httpStatus: 409, code: 'HOME_DEVICE_CONFLICT', homeDeviceId: conflict });
+      return { homeDeviceId: 'target' };
+    }
+    assert.fail('Unexpected direct route ' + path);
+  });
+  const c = app.companions;
+  t.after(() => c.close());
+  c.actors = [{ id: actor, externalId: 'buddy', homeDeviceId: 'old', name: 'Writer' }];
+  await app.openCompanion(c.rows()[0].key);
+  await app.cloudHistory(true);
+  assert.equal(oldReads, 1);
+  assert.equal(app.state.cloudMessages[0].title, 'public');
+  const latest = app.state.cloudMessages.slice(-3);
+  assert.deepEqual(latest.map(r => r.seq), ['100','101','99']);
+  assert.equal(latest.some(r => r.stamp), false);
+  await app.cloudHistory(false);
+  assert.equal(app.state.cloudMessages.length, 101);
+  assert.equal(app.state.cloudOlder, false);
+  assert.equal((await app.roomFile(history[0].id, media)).name, 'p.png');
+  history.push(...Array.from({ length: 110 }, (_, i) => roomMessage(102+i, actor, 102+i)));
+  await app.cloudHistory(false);
+  assert.ok(app.state.cloudMessages.some(row => row.id === history[0].id));
+  assert.equal(app.state.cloudOlder, true);
+  await app.cloudHistory(true);
+  assert.equal(app.state.cloudMessages.length, history.length);
+  assert.equal(app.state.cloudOlder, false);
+  await assert.rejects(app.sendRoom('blocked', [], [], ''));
+  app.devices = async () => true;
+  app.state.relay = 'online';
+  app.state.devices = [{ id: 'target', platform: 'darwin' }, { id: 'phone', platform: 'ios' },
+    { id: 'h', platform: 'harmonyos' }, { id: 'old' }, { id: 'asleep', offline: true }];
+  assert.deepEqual((await app.roomTargets()).map(d=>d.id), ['target']);
+  await assert.rejects(app.moveRoom('asleep',false));
+  c.refresh = async () => {};
+  await assert.rejects(app.moveRoom('target',false), /主力电脑已更改/);
+  assert.equal(app.state.homeMove, '');
+  let readTarget = 0, opened = '';
+  const hosted = { id: 'buddy', host: 'target', key: JSON.stringify(['target','buddy']), title: 'Writer' };
+  app.home.peers.set('target', { id: 'target', loaded: true, bots: { rows: [], refresh: async () => { readTarget++; } } });
+  // Advance the wait policy against an online computer whose fresh collection is still empty.
+  const now = Date.now;
+  let firstClock = true;
+  Date.now = () => { if (firstClock) { firstClock = false; return now() - 100000; } return now(); };
+  try {
+    conflict = 'target';
+    await app.moveRoom('target',false);
+    await until(() => app.state.homeMove === 'timeout');
+  } finally { Date.now = now; }
+  const patchCount = patches.length;
+  const bots = app.home.peers.get('target').bots;
+  bots.refresh = async () => { readTarget++; bots.rows = [hosted]; };
+  c.refresh = async () => { c.actors[0].homeDeviceId = 'target'; };
+  // The normal bound-session open is covered by the integration above. Record the selected key here.
+  app.openCompanion = async key => { opened = key; c.close(); };
+  await app.moveRoom('target',true);
+  await until(() => opened !== '');
+  assert.equal(readTarget, 2);
+  assert.equal(opened, hosted.key);
+  assert.equal(patches.length, patchCount);
+  assert.ok(patches.every(p => p.homeDeviceId === 'target' && p.expectedHomeDeviceId === 'old'));
 });

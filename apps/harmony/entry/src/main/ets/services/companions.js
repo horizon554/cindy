@@ -6,6 +6,8 @@ import { CompanionAvatars, portraitFields, publicAvatar } from './companionAvata
 import { isManagedBotAvatarUrl, chatApiBaseUrl, REMOTE_RESOURCE_PROTOCOL_VERSION, resolveRemoteText } from './protocol.generated';
 import { request } from './platform';
 
+import { serverMessage, compareRoomRows, conversationRows } from './companionTimeline';
+import { RoomActions } from './roomActions';
 import { ServerGroups, chatId, chatCursor, cloudMessageBody, singleLinePreview, lostRoom } from './groupChats';
 const rowKey = (host, bot) => JSON.stringify([host, bot]);
 const collection = 'teammates';
@@ -47,7 +49,7 @@ export async function resolveCompanion(call, id, locale) {
 }
 
 export class Companions {
-  constructor(app) { this.app = app; this.actors = []; this.visibleBuddies = new Set(); this.direct = new Map(); this.openedDirectRooms = new Map(); this.groups = new ServerGroups(); this.avatars = new CompanionAvatars(app); }
+  constructor(app) { this.app = app; this.actions = new RoomActions(this); this.actors = []; this.visibleBuddies = new Set(); this.direct = new Map(); this.openedDirectRooms = new Map(); this.groups = new ServerGroups(); this.avatars = new CompanionAvatars(app); }
   rows() {
     const homes = new Map(this.actors.map(a => [a.externalId, a]));
     const rows = new Map();
@@ -121,7 +123,7 @@ export class Companions {
     });
     return entry.flight;
   }
-  async api(path, body) {
+  async api(path, body, method) {
     const app = this.app;
     const current = () => { if (app.companions !== this || !app.session) throw new Error('登录身份已变更'); };
     current();
@@ -129,7 +131,7 @@ export class Companions {
     const token = await app.token();
     current();
     try {
-      const result = await request(url, body, token);
+      const result = await request(url, body, token, method);
       current();
       return result;
     } catch (error) {
@@ -138,7 +140,7 @@ export class Companions {
       if (app.access === token) app.expires = 0;
       const fresh = await app.token();
       current();
-      const result = await request(url, body, fresh);
+      const result = await request(url, body, fresh, method);
       current();
       return result;
     }
@@ -152,6 +154,7 @@ export class Companions {
     const app = this.app;
     try {
       const me = await this.api('/me');
+      this.independentReplies = me?.capabilities?.independentReplies === 1;
       const [actors, groups] = await Promise.allSettled([
         me?.actor?.kind === 'human' && me.capabilities?.companionHome === true ? this.api('/actors') : [],
         this.groups.read(path => this.api(path), me),
@@ -217,7 +220,10 @@ export class Companions {
   }
   groupProfile(room) {
     if (!room?.group) return undefined;
-    if (!room.host) return this.groups.rows.get(room.id)?.profile;
+    if (!room.host) {
+      const profile = this.groups.rows.get(room.id)?.profile;
+      return profile && { ...profile, running: !!room.running };
+    }
     const detail = room.hostProfile;
     if (!detail) return undefined;
     const bots = new Map((this.app.home.peers.get(room.host)?.bots?.rows || []).map(bot => [bot.id, bot]));
@@ -232,23 +238,63 @@ export class Companions {
   }
   publish() {
     const rows = this.rows();
-    if (this.open && !rows.some(row => row.key === this.open.key)) this.close();
+    if (this.open && !rows.some(row => row.key === this.open.key) &&
+        !(this.open.moving && this.actors.some(a => a.id === this.open.actor && a.homeDeviceId === this.open.moving))) this.close();
     this.app.show({ companions: rows, cloudProfile: this.groupProfile(this.open), companionError: !!(this.error || this.groups.error) ||
       [...this.app.home.peers.values()].some(peer => peer.bots?.error || peer.groups?.error) });
   }
   close() {
+    clearTimeout(this.open?.timer);
+    if (this.open?.transfer) { this.open.transfer.cancelled = true; this.open.transfer.abort?.(); }
     this.open = null;
-    this.app.show({ cloudCompanion: undefined, cloudProfile: undefined, cloudMessages: [], cloudOlder: false, cloudLoading: false, cloudError: false });
+    this.app.show({ homeMove: '', homeTarget: '', cloudThread: '', cloudRoot: undefined, cloudPending: undefined, cloudCompanion: undefined, cloudProfile: undefined, cloudMessages: [], cloudOlder: false, cloudLoading: false, cloudError: false });
   }
   async openRoom(row) {
-    const room = { key: row.key, group: !!row.group, host: row.host, id: row.group ? row.id : '', actor: row.actor, messages: new Map() };
+    this.close();
+    const room = { botId: row.id, key: row.key, group: !!row.group, host: row.host, id: row.group ? row.id : '', actor: row.actor, messages: new Map() };
     this.open = room;
     this.app.show({ cloudCompanion: row, cloudProfile: this.groupProfile(room), cloudMessages: [], cloudOlder: false, cloudLoading: true, cloudError: false });
+    await this.loadRoom(room);
+  }
+  async loadRoom(room) {
+    if (room.group) {
+      const key = [this.app.session.id, room.host, room.id, 'group-send:' + (room.thread || '')];
+      const pending = await this.app.cache.read(key);
+      if (this.open !== room) return;
+      this.app.show({ cloudPending: pending || room.draft });
+    }
     await this.readRoom();
+  }
+  async thread(id) {
+    const main = this.open;
+    const root = main?.messages.get(id);
+    if (!main?.group || main.host || main.thread || !root?.interactive || !chatId(id)) return;
+    const room = { ...main, messages: new Map(), parent: main, thread: id, draft: undefined, gap: undefined, refreshRequested: false, loadedOlder: false, before: null, loading: false };
+    this.open = room;
+    this.app.show({ cloudThread: id, cloudRoot: root, cloudMessages: [], cloudPending: undefined, cloudOlder: false, cloudLoading: true, cloudError: false });
+    await this.loadRoom(room);
+  }
+  leaveThread() {
+    if (!this.open?.parent) return false;
+    const main = this.open.parent;
+    this.open = main;
+    this.app.show({ cloudThread: '', cloudRoot: undefined, cloudOlder: !!main.before, cloudError: false, cloudPending: undefined, cloudLoading: false });
+    this.present(main);
+    this.loadRoom(main).catch(e => { if (this.open === main) this.app.report(e); });
+    return true;
+  }
+  present(room) {
+    const rows = [...room.messages.values()];
+    if (!room.host || !room.group) rows.sort((a,b) => compareRoomRows(a,b,!room.group));
+    this.app.show({ cloudMessages: conversationRows(rows, this.app.locale, room.group && !room.thread, !room.group), cloudOlder: !!room.before });
   }
   async readRoom(older = false) {
     const room = this.open;
-    if (!room || room.loading || (older && !room.before)) return;
+    if (!room || (older && !room.before)) return;
+    if (room.loading) {
+      if (!older) room.refreshRequested = true;
+      return;
+    }
     const current = () => this.app.companions === this && this.open === room;
     room.loading = true;
     this.app.show({ cloudLoading: true, cloudError: false });
@@ -259,7 +305,9 @@ export class Companions {
         const { messages, profile } = await peer.groupHistory(room.id);
         if (current()) {
           room.hostProfile = profile;
-          this.app.show({ cloudMessages: messages, cloudProfile: this.groupProfile(room), cloudOlder: false });
+          room.messages = new Map(messages.map(m => [m.id, m]));
+          this.app.show({ cloudProfile: this.groupProfile(room) });
+          this.present(room);
         }
         return;
       }
@@ -281,22 +329,49 @@ export class Companions {
         room.id = result.id;
         this.openedDirectRooms.set(room.actor, result.id);
       }
-      const page = await this.api('/conversations/' + room.id + '/messages?limit=100' + (older ? '&before=' + room.before : ''));
+      const activity = room.group && !room.thread && !older ? this.api('/conversations/' + room.id + '/executions').catch(() => undefined) : undefined;
+      const page = await this.api('/conversations/' + room.id + '/messages?limit=100' + (room.thread ? '&threadRootId=' + room.thread : '') + (older ? '&before=' + room.before : ''));
       if (!current()) return;
       if (!Array.isArray(page)) throw new Error('伙伴记录暂不可用');
       const before = page.length === 100 ? page[99]?.seq : null;
       if (before !== null && (!chatCursor(before) || (older && BigInt(before) >= BigInt(room.before)))) throw new Error('无效的历史页');
-      if (!older) room.messages.clear();
-      for (const message of page) {
-        if (!message?.id || !chatCursor(message.seq) || message.deleted || message.threadRootId || (!room.group && message.origin === 'system')) continue;
-        const title = cloudMessageBody(message);
-        const mine = room.group ? message.authorId === this.groups.self : message.authorId !== room.actor;
-        const author = room.group ? this.groups.rows.get(room.id)?.memberNames?.get(message.authorId) || message.author?.name || '' : '';
-        if (title) room.messages.set(message.id, { id: message.id, title, author, role: mine ? 'user' : 'assistant', seq: message.seq });
+      // Preserve rows below the refreshed sequence window. If a full new window arrived
+      // while away, the older button fills the gap before continuing from the previous cursor.
+      const retain = !older && room.loadedOlder && before;
+      const overlaps = retain && page.some(m => room.messages.has(m.id));
+      const reachedGap = older && room.gap && page.some(m => chatCursor(m?.seq) && BigInt(m.seq) <= room.gap.previousHead);
+      if (retain && !overlaps && !room.gap) {
+        let previousHead = BigInt(0);
+        for (const row of room.messages.values()) if (BigInt(row.seq) > previousHead) previousHead = BigInt(row.seq);
+        room.gap = { before: room.before, previousHead };
       }
-      room.before = before;
-      const messages = [...room.messages.values()].sort((a, b) => BigInt(a.seq) < BigInt(b.seq) ? -1 : BigInt(a.seq) > BigInt(b.seq) ? 1 : 0);
-      this.app.show({ cloudMessages: messages, cloudOlder: !!before });
+      if (!older && !before) room.gap = undefined;
+      if (!older) {
+        for (const [id, old] of room.messages) if (!retain || BigInt(old.seq) >= BigInt(before)) room.messages.delete(id);
+        if (!retain) room.loadedOlder = false;
+      }
+      for (const message of page) {
+        if (!message?.id || !chatCursor(message.seq)) continue;
+        if (message.deleted || (message.threadRootId || '') !== (room.thread || '') || (!room.group && message.origin === 'system')) {
+          room.messages.delete(message.id); continue;
+        }
+        const row = serverMessage(message, room, this.groups.self, this.groups.rows.get(room.id)?.memberNames);
+        if (row) room.messages.set(row.id, row);
+        else room.messages.delete(message.id);
+      }
+      if (older) room.loadedOlder = true;
+      if (reachedGap) {
+        room.before = room.gap.before;
+        room.gap = undefined;
+      } else if (!retain || !overlaps) room.before = before;
+      this.present(room);
+      if (activity) {
+        const executions = await activity;
+        if (current() && Array.isArray(executions)) {
+          room.running = executions.some(e => ['queued', 'running', 'needs_input', 'stopping'].includes(e?.status));
+          this.app.show({ cloudProfile: this.groupProfile(room) });
+        }
+      }
     } catch (error) {
       if (current()) {
         if (room.group && lostRoom(error)) {
@@ -315,7 +390,13 @@ export class Companions {
       }
     } finally {
       room.loading = false;
-      if (current()) this.app.show({ cloudLoading: false });
+      if (current()) {
+        this.app.show({ cloudLoading: false });
+        if (room.refreshRequested) {
+          room.refreshRequested = false;
+          await this.readRoom();
+        }
+      }
     }
   }
 }

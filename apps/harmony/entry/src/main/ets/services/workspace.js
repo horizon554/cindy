@@ -1,3 +1,4 @@
+import { conversationRows } from './companionTimeline';
 import { editAttachments, updateEditRanges } from './messageEdit';
 import { Companions, resolveCompanion } from './companions';
 import { HomeDevices } from './homeDevices';
@@ -7,12 +8,12 @@ import { messageMedia } from './media';
 import { openCache } from './cache';
 import { approvalKey, taskPage, messageActionRows, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
 import util from '@ohos.util';
-import { resolveRemoteInvokeTimeoutMs, buildTaskDeepLink, isSharedTaskPeer, mobileSessionBulkPatch, normalizeScheduleList, buildMobileModelSections, flattenProviderSections, providerPickerListArgs, deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
+import { resolveBotGroupMentions, retainBotGroupTrackedMentions, readChatReplyQuote, resolveRemoteInvokeTimeoutMs, buildTaskDeepLink, isSharedTaskPeer, mobileSessionBulkPatch, normalizeScheduleList, buildMobileModelSections, flattenProviderSections, providerPickerListArgs, deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
 import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, homeDisplayPreferences, readSession, saveSession, createSocket } from './platform';
 
 import { authorize, cancelAuthorization, consumeAuthorization, listenForWant, pendingAuthorization } from './sso';
 
-const taskView = { canEditHistory: false, editingMessage: '', editFileCount: 0, editRecoverable: false, editSubmitting: false, queuedInputs: 0, taskCompanion: undefined, legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', voiceCaret: undefined, pendingUploads: [], pickingFiles: false, waitingToCreate: false, failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
+const taskView = { companionQuote: undefined, canEditHistory: false, editingMessage: '', editFileCount: 0, editRecoverable: false, editSubmitting: false, queuedInputs: 0, taskCompanion: undefined, legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', voiceCaret: undefined, pendingUploads: [], pickingFiles: false, waitingToCreate: false, failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
   attachments: [], transfer: '', uploadPending: false, voice: '', activity: '', hasOlder: false, paused: false, retryable: false, delivery: '' };
 const companionDisplayDefaults = { companionsCollapsed: false, showCollapsedCompanionAvatars: true };
 const hostView = { ...taskView, device: '', tasks: [], linked: false, moreTasks: false };
@@ -74,6 +75,7 @@ export class Workspace {
       const writable = this.state.linked && !isSharedTaskPeer(this.state.device);
       this.visibleMessages = messageActionRows(this.state.messages, running, writable && !this.companion && !this.botSession,
         writable && this.state.canEditHistory && !this.state.cards.length);
+      if (this.state.taskCompanion) this.visibleMessages = conversationRows(this.visibleMessages, this.locale, true, true);
     }
     if (this.editing && !this.state.editSubmitting && (this.state.queuedInputs ||
         ((refreshActions || 'editSubmitting' in patch) && !this.currentEditRow(this.editing.id)))) {
@@ -395,7 +397,7 @@ export class Workspace {
     const known = await this.cache.read(key) || [];
     if (!current()) return false;
     const listed = result.devices.filter(d => !d.isSelf && d.remoteControlEnabled && (d.online || known.some(old => old.id === d.deviceId)))
-      .map(d => ({ id: d.deviceId, title: d.name, offline: !d.online }));
+      .map(d => ({ id: d.deviceId, title: d.name, platform: d.platform, offline: !d.online }));
     for (const d of known) {
       if (!listed.some(row => row.id === d.id)) {
         await this.forgetHost(d.id, true);
@@ -746,6 +748,26 @@ export class Workspace {
       await this.flushDraft();
     }
   }
+  roomMentionInput(tracked) {
+    const members = (this.state.cloudProfile?.members || []).map(member => ({ botId: member.id, name: member.title }));
+    return { members, tracked, allLabels: [] };
+  }
+  roomMentionIds(text, tracked) { return resolveBotGroupMentions(text, this.roomMentionInput(tracked)).botIds; }
+  roomEditedMentions(previous, text, tracked) {
+    return retainBotGroupTrackedMentions(previous, text, this.roomMentionInput(tracked));
+  }
+  saveRoomDraft(key, thread, draft) {
+    const room = this.companions?.open;
+    if (room?.key === key && (room.thread || '') === thread) room.draft = draft;
+  }
+  openRoomThread(id) { return this.companions.thread(id); }
+  closeRoomThread() { return this.companions?.leaveThread(); }
+  sendRoom(text, mentions, files, quote) { const c = this.companions; return c.actions.send(c.open, text, mentions, files, quote); }
+  pickRoomFile(images) { const c = this.companions; return c.actions.pick(c.open, images); }
+  roomFile(id, file) { const c = this.companions; return c.actions.media(c.open, id, file); }
+  roomThumbnail(id, file, visible) { const c = this.companions; return c.actions.thumbnail(c.open, id, file, visible); }
+  roomTargets() { const c = this.companions; return c.actions.targets(c.open); }
+  moveRoom(target, retry) { const c = this.companions; return c.actions.takeOver(c.open, target, retry); }
   closeCloudCompanion() { this.companions?.close(); }
   cloudHistory(older) { return this.companions?.readRoom(older); }
   async enterTask(id, companion) {
@@ -1355,6 +1377,11 @@ export class Workspace {
     await this.cache.write(key, null);
     if (this.pending === pending) this.pending = null;
   }
+  quoteCompanion(id) {
+    const row = this.visibleMessages?.find(r => r.id === id && r.actions && r.clientId);
+    if (!id) return this.show({ companionQuote: undefined });
+    if (this.state.taskCompanion && row && !this.editing) this.show({ companionQuote: readChatReplyQuote({ clientId: row.clientId, role: row.role, excerpt: row.messageText || row.title }) });
+  }
   async send(text) {
     if (this.sending) return this.sending;
     const editing = this.editing;
@@ -1397,11 +1424,12 @@ export class Workspace {
     }
     const row = await this.sendSession(task, version);
     this.guard(version);
-    const pending = this.pending || { id: util.generateRandomUUID(true), text, attachments: this.state.attachments.slice(), retrySafe: this.deliverySupported };
+    const pending = this.pending || { id: util.generateRandomUUID(true), text, ...(this.state.companionQuote && this.state.taskCompanion ? { metadata: { replyQuote: this.state.companionQuote } } : {}), attachments: this.state.attachments.slice(), retrySafe: this.deliverySupported };
     this.pending = pending;
     await this.flushDraft();
     this.guard(version);
     await this.cache.write(this.key('outbox'), pending);
+    if (this.version === version && pending.metadata?.replyQuote) this.show({ companionQuote: undefined });
     return this.enqueuePending(task, version, row, pending);
   }
   async sendSession(task, version) {
@@ -1568,12 +1596,15 @@ export class Workspace {
   async previewUrl(path, thumbnail = false) {
     if (!this.state.task || !this.state.linked) throw new Error('请先连接任务');
     const v = this.version;
+    return this.attachmentUrl(path, () => this.guard(v), thumbnail);
+  }
+  async attachmentUrl(path, check, thumbnail = false) {
     const ref = typeof path === 'string' && parseAttachmentOssRef(path);
     if (!ref || isSharedTaskMediaKey(ref.ossKey)) throw new Error('此附件需在电脑上打开');
     const token = await this.token();
-    this.guard(v);
+    check();
     const result = await request(deviceLinkApiBaseUrl + '/api/device-link/media/presign-get', { key: ref.ossKey }, token);
-    this.guard(v);
+    check();
     if (!/^https:\/\//i.test(result?.getUrl || '')) throw new Error('附件预览不可用');
     if (thumbnail) {
       const expiry = Date.parse(result.expiresAt || '');

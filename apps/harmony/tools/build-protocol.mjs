@@ -16,6 +16,10 @@ await build({
       export { resolveSessionTotalMoney } from './apps/mobile/src/session/remoteMoney.ts';
       export { readSentPastedTextRanges, readSentSlashCommandRanges } from './apps/mobile/src/session/sentMessageAtoms.ts';
       export { readAgentInputReferences } from './packages/maker-shared/src/agentInputProjection.ts';
+      export { collectBotMessageTimeGroups, formatBotMessageGroupTime } from './packages/maker-shared/src/botTimeline.ts';
+      export { resolveBotGroupMentions, retainBotGroupTrackedMentions } from './packages/maker-shared/src/botGroupMentions.ts';
+      export { botGroupQuoteFromMessage, buildBotGroupQuoteCard, readBotGroupQuoteCard } from './packages/maker-shared/src/botGroupQuote.ts';
+      export { isMobilePlatform } from './packages/maker-shared/src/deviceList.ts';
       export { readChatReplyQuote } from './packages/maker-shared/src/chatReplyQuote.ts';
       export { isSyntheticTriggerText } from './packages/maker-shared/src/syntheticTrigger.ts';
       export { buildTaskDeepLink } from './packages/maker-shared/src/brandIdentity.ts';
@@ -23,7 +27,7 @@ await build({
       export { hasBotGroupCollection, botGroupMemberLinks, botGroupResourceRef, botGroupChatDataFromResource, BOT_GROUP_CLIENT_PRIMITIVES } from './apps/mobile/src/session/botGroupRemote.ts';
       export { createConversationListState } from './packages/maker-shared/src/chatConversationList.ts';
       export { latestBotGroupMessage, botGroupActivityAt, chatGroupMemberName } from './packages/maker-shared/src/botGroupPresentation.ts';
-      export { botGroupMessageSummaryText, readBotGroupTaskCard } from './packages/maker-shared/src/botGroupChat.ts';
+      export { botGroupMessageSummaryText, readBotGroupTaskCard, readBotGroupThreadShareCard } from './packages/maker-shared/src/botGroupChat.ts';
       export { HomeDeviceSyncLimiter } from './apps/mobile/src/session/homeDeviceSync.ts';
       export { resolveMobileSessionRightStatus } from './apps/mobile/src/session/sessionRightStatus.ts';
       export { mobileSessionBulkPatch } from './packages/maker-shared/src/sessionSelection.ts';

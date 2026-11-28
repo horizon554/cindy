@@ -7,6 +7,7 @@ import { messageBlocks, messageSpans, MessageBlock, MessageSpan } from '../servi
 @Component
 export struct MessageBody {
   @Prop value: string = '';
+  @Prop fitContent: boolean = false;
   openLink: (url: string) => void = () => {};
   private async copy(value: string): Promise<void> {
     try {
@@ -57,7 +58,7 @@ export struct MessageBody {
             .padding({ left: b.kind === 'quote' ? 12 : 0 }).borderWidth({ left: b.kind === 'quote' ? 2 : 0 }).borderColor($r('app.color.line'))
         }
       }, (block: MessageBlock, index: number) => index.toString() + block.kind + block.text)
-    }.width('100%').alignItems(HorizontalAlign.Start)
+    }.width(this.fitContent ? undefined : '100%').alignItems(HorizontalAlign.Start)
   }
 }
 
@@ -149,6 +150,7 @@ struct VoiceCallHistory {
 
 @Component
 export struct HistoryMessage {
+  locateQuote: (clientId: string) => void = () => {};
   @Prop item: Item = { id: '', title: '' };
 
   @State expanded: boolean = false;
@@ -177,6 +179,8 @@ export struct HistoryMessage {
     } else if (this.item.role === 'user') {
       Row() {
         Column({ space: 6 }) {
+          if (this.item.quote) { Text(this.item.quote.excerpt).fontSize(14).fontColor($r('app.color.muted')).padding({ left: 8 })
+            .borderWidth({ left: 2 }).borderColor($r('app.color.line')).maxLines(2).onClick(() => this.locateQuote(this.item.quote?.clientId || '')) }
           if (this.item.messageText !== '' || !this.item.media?.length) {
             Text(this.item.messageText ?? this.item.title).fontSize(16).lineHeight(24)
               .fontColor($r('app.color.ink')).copyOption(CopyOptions.InApp)

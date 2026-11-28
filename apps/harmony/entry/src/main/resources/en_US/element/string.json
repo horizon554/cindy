@@ -1015,6 +1015,98 @@
     {
       "name": "message_edit_recover",
       "value": "Recover edited message"
+    },
+    {
+      "name": "room_move",
+      "value": "Continue on another computer"
+    },
+    {
+      "name": "room_move_confirm",
+      "value": "Move this companion to %s?"
+    },
+    {
+      "name": "room_no_hosts",
+      "value": "No other computers available"
+    },
+    {
+      "name": "room_wait",
+      "value": "Waiting for the new computer…"
+    },
+    {
+      "name": "room_timeout",
+      "value": "The new computer is not ready yet"
+    },
+    {
+      "name": "room_retry",
+      "value": "Wait again"
+    },
+    {
+      "name": "room_offline",
+      "value": "Home computer %s is offline"
+    },
+    {
+      "name": "room_share_image",
+      "value": "Share as image"
+    },
+    {
+      "name": "room_reply",
+      "value": "Reply"
+    },
+    {
+      "name": "room_topic",
+      "value": "Topic"
+    },
+    {
+      "name": "room_topic_create",
+      "value": "Create topic"
+    },
+    {
+      "name": "room_topic_open",
+      "value": "View topic"
+    },
+    {
+      "name": "room_mention",
+      "value": "Mention member"
+    },
+    {
+      "name": "room_replies",
+      "value": "%d replies"
+    },
+    {
+      "name": "room_task_started",
+      "value": "Started"
+    },
+    {
+      "name": "room_task_waiting",
+      "value": "Waiting"
+    },
+    {
+      "name": "room_task_completed",
+      "value": "Completed"
+    },
+    {
+      "name": "room_task_failed",
+      "value": "Failed"
+    },
+    {
+      "name": "room_task_cancelled",
+      "value": "Cancelled"
+    },
+    {
+      "name": "room_task_timeout",
+      "value": "Timed out"
+    },
+    {
+      "name": "room_home_offline",
+      "value": "Main computer offline"
+    },
+    {
+      "name": "room_quote_outside",
+      "value": "The original message is outside the loaded history."
+    },
+    {
+      "name": "room_send_uncertain",
+      "value": "Delivery is unconfirmed. Tap Send to retry the original message."
     }
   ]
 }

@@ -108,5 +108,30 @@ test('retry an ambiguous PUT against one private object and release staging file
     await assert.rejects(pick([]),/lost reply/);
     const file=await pick([]);await pick([file]);
     assert.equal(presigns,1);assert.equal(attempts,2);assert.equal(closed,3);assert.equal(copies.size,0);
+
+    // Group uploads use the Chat media reservation and seal, with no device-link token on the PUT.
+    const id = 'aa000000-0000-4000-8000-000000000098', calls = [];
+    const transfer = { tickets: new Map() };
+    const api = async (path, body) => {
+      calls.push([path, body]);
+      return path === '/media' ? { id, uploadUrl: 'https://uploads.invalid/group' } : {};
+    };
+    globalThis.mediaTest.rcp.createSession = () => ({ close() {}, fetch: async req => {
+      assert.equal(req.url, 'https://uploads.invalid/group');
+      assert.deepEqual(req.headers, { 'Content-Type': 'text/plain' });
+      return { statusCode: 201 };
+    } });
+    const uploaded = await uploadFile(ctx, 'file://docs/retry.txt', null, transfer, [], api);
+    assert.equal(uploaded.id, id);
+    assert.deepEqual(calls.map(([path]) => path), ['/media', '/media/' + id + '/complete']);
+    assert.equal(calls[1][1].operationId, 'seal:' + id);
+    assert.equal(copies.size, 0);
+    globalThis.mediaTest.rcp.createSession = () => ({ close() {}, fetch: async () => {
+      transfer.cancelled = true;
+      return { statusCode: 201 };
+    } });
+    await assert.rejects(uploadFile(ctx, 'file://docs/retry.txt', null, transfer, [], api), /取消/);
+    assert.equal(calls.length, 3);
+    assert.equal(copies.size, 0);
   } finally {delete globalThis.mediaTest;}
 });

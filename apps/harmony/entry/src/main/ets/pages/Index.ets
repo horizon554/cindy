@@ -6,6 +6,7 @@ import { installInputs } from '../services/nativeEntry';
 import { ModelBrandIcon } from './ModelBrandIcon';
 import { GroupProfilePage } from './GroupProfilePage';
 import { CompanionAvatar, companionPortraitKey } from './CompanionAvatar';
+import { RoomConversation } from './RoomConversation';
 import { MessageFooter } from './MessageFooter';
 import { LoginBrand } from './LoginBrand';
 import { SettingsPage } from './SettingsPage';
@@ -179,7 +180,7 @@ struct Index {
       this.selectedFile = state.attachments.find((a: Attachment) => this.workspace.localPreview(a.id) === this.previewSource);
       if (!this.selectedFile) this.previewSource = '';
     }
-    if (!state.linked) { this.selectedFile = undefined; this.previewSource = ''; }
+    if ((!state.linked && !state.cloudCompanion) || (this.view.cloudCompanion && state.cloudCompanion?.key !== this.view.cloudCompanion.key)) { this.selectedFile = undefined; this.previewSource = ''; }
     if (this.cardIndex >= state.cards.length) this.cardIndex = 0;
     if (state.paused && !this.view.paused) this.inputOpen = true;
     if (state.voice !== this.view.voice) {
@@ -325,7 +326,7 @@ struct Index {
     }
     if (this.view.shareLabel) { this.pickingShareTarget = true; return true; }
     if (this.groupProfileKey) { this.groupProfileKey = ''; return true; }
-    if (this.view.cloudCompanion) { this.workspace.closeCloudCompanion(); return true; }
+    if (this.view.cloudCompanion) { if (this.workspace.closeRoomThread()) return true; this.workspace.closeCloudCompanion(); return true; }
     if (!this.view.task && this.projectList) { this.projectList = undefined; return true; }
     if (!this.view.task && this.showSearch) { this.showSearch = false; this.query = ''; return true; }
     if (!this.view.task) return false;
@@ -610,6 +611,10 @@ struct Index {
   @Builder
   composer() {
     Column({ space: 3 }) {
+      if (this.view.companionQuote && !this.view.editingMessage) {
+        Button('↩ ' + this.view.companionQuote.excerpt + '   ×').id('companion-reply-draft').width('100%').height(40)
+          .fontColor($r('app.color.ink')).backgroundColor($r('app.color.chip')).onClick(() => this.workspace.quoteCompanion(''))
+      }
       if (this.view.editingMessage) {
         Row({ space: 8 }) {
           Text($r('app.string.message_editing')).fontSize(14).fontColor($r('app.color.ink')).layoutWeight(1)
@@ -768,11 +773,28 @@ struct Index {
       LazyForEach(this.historySource, (item: Item) => {
         ListItem() {
           Column() {
-            HistoryMessage({ item: item, openLink: (url: string) => this.run(() => this.openPolicy(url)),
+            if (item.stamp) { Text(item.stamp).id('task-time-group').fontSize(12).fontColor($r('app.color.muted')).padding(6) }
+            Row({ space: 10 }) {
+              if (item.role === 'assistant' && this.view.taskCompanion) {
+                if (item.continued) { Blank().width(28) }
+                else {
+                  CompanionAvatar({ row: this.titleCompanion(false)!, portraitSize: 28,
+                    load: (c: Companion, v: () => boolean) => this.workspace.companionAvatar(c, v) })
+                }
+              }
+              Column() {
+                HistoryMessage({ item: item, locateQuote: (clientId: string) => {
+                  const index = this.view.messages.findIndex((r: Item) => r.clientId === clientId);
+                  if (index >= 0) this.scroll.scrollToIndex(index, true, ScrollAlign.CENTER);
+                  else this.getUIContext().getPromptAction().showToast({ message: $r('app.string.room_quote_outside') });
+                }, openLink: (url: string) => this.run(() => this.openPolicy(url)),
               loadImage: (file: MediaInfo, visible: () => boolean) => this.workspace.thumbnail(file, visible),
               preview: (file: MediaInfo) => this.run(() => this.showPreview(file, this.workspace.localPreview(file.path || ''))) })
+              }.layoutWeight(1)
+            }.id('task-body-' + item.id).width('100%').alignItems(VerticalAlign.Top).backgroundColor($r('app.color.canvas'))
             if (item.actions) {
               MessageFooter({ row: item, task: this.view.task, editing: this.view.editingMessage === item.id, companion: !!this.view.taskCompanion,
+                reply: () => { this.workspace.quoteCompanion(item.id); this.inputOpen = true; this.getUIContext().getFocusController().requestFocus('composer'); },
                 link: (task: string, id: string) => this.workspace.messageLink(task, id),
                 addLink: (href: string) => { this.workspace.editDraft([this.view.draft, href].filter((part: string) => !!part).join(' ')); this.inputOpen = true; },
                 edit: (task: string, id: string) => this.run(() => this.editUserMessage(task, id)),
@@ -1242,9 +1264,16 @@ struct Index {
           CompanionAvatar({ row, load: (buddy: Companion, visible: () => boolean) => this.workspace.companionAvatar(buddy, visible) })
         }, (row: Companion) => companionPortraitKey(row))
       }
-      Text(cloud ? this.titleCompanion(true)?.title || '' : this.headerTitle()).id(cloud ? 'cloud-title' : 'task-title')
-        .fontSize(18).fontWeight(FontWeight.Medium).layoutWeight(1)
-        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
+      Column({ space: 1 }) {
+        Text(cloud && this.view.cloudThread ? $r('app.string.room_topic') : cloud ? this.titleCompanion(true)?.title || '' : this.headerTitle())
+          .id(cloud ? 'cloud-title' : 'task-title').fontSize(18).fontWeight(FontWeight.Medium).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor($r('app.color.ink'))
+        if (cloud && (this.view.cloudThread || this.view.cloudProfile || !this.view.cloudCompanion?.group)) {
+          Text(this.view.cloudThread ? this.view.cloudCompanion?.title || '' : this.view.cloudProfile?.running ? $r('app.string.working') :
+            this.view.cloudProfile ? $r('app.string.group_member_count', this.view.cloudProfile.members.length) :
+              this.hostName(this.view.cloudCompanion?.host || '') ? $r('app.string.room_offline', this.hostName(this.view.cloudCompanion!.host)) : $r('app.string.room_home_offline'))
+            .id('room-header-subtitle').fontSize(12).maxLines(1).fontColor($r('app.color.muted'))
+        }
+      }.layoutWeight(1).alignItems(HorizontalAlign.Start).justifyContent(FlexAlign.Center)
     }.width('100%').height('100%').padding({ left: 8, right: 8 })
   }
 
@@ -1604,40 +1633,17 @@ struct Index {
 
   @Builder
   cloudConversation() {
-    Column() {
-      if (this.view.cloudMessages?.length || this.view.cloudOlder) {
-        List({ space: 10, initialIndex: this.view.cloudMessages?.length || 0 }) {
-          ListItem() {
-            if (this.view.cloudOlder) {
-              PillAction({ label: $r('app.string.older'), available: !this.view.cloudLoading,
-                onTap: () => this.run(() => this.workspace.cloudHistory(true)) })
-            }
-          }
-          ForEach(this.view.cloudMessages, (item: Item) => {
-            ListItem() {
-              Row() {
-                if (item.role === 'user') { Blank().layoutWeight(1) }
-                Column({ space: 4 }) {
-                  if (item.author) {
-                    Text(item.author).fontSize(13).fontColor($r('app.color.muted'))
-                  }
-                  Text(item.title).fontSize(16).fontColor($r('app.color.ink')).copyOption(CopyOptions.InApp)
-                }.alignItems(HorizontalAlign.Start).padding(10).constraintSize({ maxWidth: item.role === 'user' ? '88%' : '100%' })
-                  .backgroundColor(item.role === 'user' ? $r('app.color.panel') : Color.Transparent).borderRadius(12)
-              }.width('100%').padding(DIRECTORY_ROW_INSETS)
-            }
-          }, (item: Item) => JSON.stringify([item.id, item.author, item.title]))
-        }.id('companion-history').width('100%').layoutWeight(1).maintainVisibleContentPosition(true)
-      } else if (this.view.cloudLoading) {
-        LoadingProgress().width(32).height(32).margin(24)
-      } else if (!this.view.cloudError) {
-        Text($r('app.string.companion_empty')).fontColor($r('app.color.muted')).padding(20)
-      }
-      if (this.view.cloudError) {
-        PillAction({ label: $r('app.string.companion_history_retry'), onTap: () => this.run(() => this.workspace.cloudHistory(false)) })
-      }
-      Text(this.view.cloudCompanion?.group ? $r('app.string.group_readonly') : $r('app.string.companion_readonly')).id('companion-readonly').fontSize(13).fontColor($r('app.color.muted')).padding(12)
-    }.height('100%').width('100%').backgroundColor($r('app.color.canvas'))
+    if (this.view.cloudCompanion) {
+      ForEach([JSON.stringify([this.view.cloudCompanion.key, this.view.cloudThread || ''])], (_: string) => {
+        RoomConversation({ workspace: this.workspace, buddy: this.view.cloudCompanion!, rows: this.view.cloudMessages || [],
+          profile: this.view.cloudProfile, root: this.view.cloudRoot, pending: this.view.cloudPending,
+          more: this.view.cloudOlder || false, loading: this.view.cloudLoading || false, failed: this.view.cloudError || false,
+          move: this.view.homeMove || '', target: this.view.homeTarget || '', homeName: this.hostName(this.view.cloudCompanion!.host),
+          connected: !this.view.cloudCompanion!.host || !this.hostOffline(this.view.cloudCompanion!.host),
+          preview: (file: MediaInfo) => { if (file.url) this.showPreview(file, file.url); },
+          openLink: (url: string) => this.run(() => this.openPolicy(url)) })
+      }, (key: string) => key)
+    }
   }
 
   @Builder

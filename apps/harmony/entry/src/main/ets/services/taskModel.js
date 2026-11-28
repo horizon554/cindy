@@ -1,5 +1,5 @@
 import { editSource } from './messageEdit';
-import { normalizeAskQuestions, answerKey, askQuestionOptions, askAnswerError, encodeMultiSelectAnswer,
+import { readChatReplyQuote, normalizeAskQuestions, answerKey, askQuestionOptions, askAnswerError, encodeMultiSelectAnswer,
   selectionFromAnswer, buildPermissionReviewPresentation, readVoiceCallRecord, formatCompactTokens, resolveSessionTotalMoney, messageCostParts, isSyntheticTriggerText, isAnsweredAsyncQuestionClientId } from './protocol.generated';
 
 function decode(content) {
@@ -57,7 +57,7 @@ function messageMetadata(row, content, text, hasMedia) {
   const eligible = !row.systemCardType && !meta.parentUuid && !meta.autoResume && !meta.failedSamplingAttempt && !isAnsweredAsyncQuestionClientId(row.clientId) &&
     !meta.isStreaming && !meta.streaming && !content?.isStreaming && !content?.streaming &&
     (assistant ? !!text.trim() : (!!text.trim() || hasMedia) && !isSyntheticTriggerText(text));
-  const fields = { createdAt: messageTimestamp(row.createdAt), boundary, eligible };
+  const fields = { quote: readChatReplyQuote(content?.replyQuote) || undefined, createdAt: messageTimestamp(row.createdAt), boundary, eligible };
   if (!assistant || !eligible) return fields;
   const total = resolveSessionTotalMoney({ totalMoney: meta.userTurnCost, totalCostUsd: meta.userTurnCostUsd });
   const money = total || resolveSessionTotalMoney({ totalMoney: meta.turnCost, totalCostUsd: meta.turnCostUsd });
@@ -119,7 +119,7 @@ export function taskPage(rows, task) {
     if (call) {
       const voiceCall = callTranscript(call);
       // Empty calls still anchor Host pagination and history reconciliation.
-      page.push({ id: row.id, clientId: row.clientId || '', role: row.role, title: '',
+      page.push({ id: row.id, clientId: row.clientId || '', role: row.role, title: '', createdAt: messageTimestamp(row.createdAt ?? call.startedAt),
         ...(voiceCall ? { voiceCall } : { emptyVoiceCall: true }) });
       continue;
     }

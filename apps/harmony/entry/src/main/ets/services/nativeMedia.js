@@ -26,7 +26,7 @@ export async function pickFile(ctx, image, remaining) {
   return result;
 }
 
-export async function uploadFile(ctx, uri, token, transfer, existing) {
+export async function uploadFile(ctx, uri, token, transfer, existing, chatApi) {
   const path = directory(ctx) + '/' + util.generateRandomUUID(true);
   let input, session;
   const check = () => { if (transfer.cancelled) throw new Error('附件已取消'); };
@@ -35,6 +35,7 @@ export async function uploadFile(ctx, uri, token, transfer, existing) {
     input = await fs.open(uri, fs.OpenMode.READ_ONLY);
     const stat = await fs.stat(input.fd);
     if (!stat.isFile() || stat.size < 1 || stat.size > 2147483648) throw new Error('请选择 1 字节到 2 GiB 的文件');
+    if (chatApi && stat.size > 100 * 1024 * 1024) throw new Error('群附件最大为 100 MiB');
     await fs.copyFile(input.fd, path);
     check();
     const size = (await fs.stat(path)).size;
@@ -47,6 +48,20 @@ export async function uploadFile(ctx, uri, token, transfer, existing) {
         const type = utd.getUniformDataTypeByFilenameExtension(ext);
         mimeType = utd.getTypeDescriptor(type)?.mimeTypes?.find(m => m.includes('/') && !m.includes('*')) || mimeType;
       } catch { /* The file picker also supports files with unregistered extensions. */ }
+    }
+    if (chatApi) {
+      const ticket = await chatApi('/media', { operationId: 'media:' + util.generateRandomUUID(true), name, type: mimeType, size });
+      if (!/^[a-f0-9-]{36}$/i.test(ticket?.id) || !/^https:\/\/[^\s@/]+\//i.test(ticket?.uploadUrl)) throw new Error('附件上传地址无效');
+      check();
+      session = rcp.createSession();
+      transfer.abort = () => session.cancel();
+      const req = new rcp.Request(ticket.uploadUrl, 'PUT', { 'Content-Type': mimeType }, new rcp.UploadFromFile(path));
+      req.configuration = { transfer: { autoRedirect: false, timeout: { connectMs: 15000, transferMs: 300000 } } };
+      const reply = await session.fetch(req);
+      if (reply.statusCode < 200 || reply.statusCode >= 300) throw new Error('群附件上传失败');
+      check();
+      await chatApi('/media/' + ticket.id + '/complete', { operationId: 'seal:' + ticket.id });
+      return { id: ticket.id, name, mimeType, size, ext, category: mimeType.startsWith('image/') ? 'image' : 'file', path: '' };
     }
     const sha256 = (await hash.hash(path, 'sha256')).toLowerCase();
     check();

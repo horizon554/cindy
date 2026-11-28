@@ -1,3 +1,4 @@
+import { botGroupResourceRef, REMOTE_RESOURCE_PROTOCOL_VERSION, BOT_GROUP_CLIENT_PRIMITIVES } from './protocol.generated';
 // The homepage can read several peers. Navigation and every mutation still use
 // Workspace's selected peer and version. Each subscription owns its own rows.
 import { HomeDeviceSyncLimiter, buildSessionScheduleIndex, normalizeScheduleList, normalizeScheduleRuns, PROTOCOL_VERSION } from './protocol.generated';
@@ -127,6 +128,8 @@ export class HomeDevices {
           const last = taskPage(visible, sessionId).reverse().find(message => !message.emptyVoiceCall);
           return !!last?.voiceCall;
         };
+        peer.groupSend = (groupId, input) => call('maker:remote-resources:invoke', [{ client: { protocolVersion: REMOTE_RESOURCE_PROTOCOL_VERSION,
+          primitives: BOT_GROUP_CLIENT_PRIMITIVES, locale: app.locale }, collectionId: 'bot-groups', actionId: 'send', resourceRef: botGroupResourceRef(groupId), input }]);
         peer.groupHistory = groupId => hostGroupHistory(call, groupId, app.locale);
         peer.bots.refresh();
         peer.groups.refresh();

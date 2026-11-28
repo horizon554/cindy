@@ -1015,6 +1015,98 @@
     {
       "name": "message_edit_recover",
       "value": "取回编辑内容"
+    },
+    {
+      "name": "room_move",
+      "value": "换一台电脑继续"
+    },
+    {
+      "name": "room_move_confirm",
+      "value": "将伙伴的主力电脑切换为「%s」？"
+    },
+    {
+      "name": "room_no_hosts",
+      "value": "暂无其他可用电脑"
+    },
+    {
+      "name": "room_wait",
+      "value": "正在等待新电脑接管…"
+    },
+    {
+      "name": "room_timeout",
+      "value": "新电脑尚未就绪"
+    },
+    {
+      "name": "room_retry",
+      "value": "重新等待"
+    },
+    {
+      "name": "room_offline",
+      "value": "主力电脑「%s」离线"
+    },
+    {
+      "name": "room_share_image",
+      "value": "分享为图片"
+    },
+    {
+      "name": "room_reply",
+      "value": "引用回复"
+    },
+    {
+      "name": "room_topic",
+      "value": "话题"
+    },
+    {
+      "name": "room_topic_create",
+      "value": "创建话题"
+    },
+    {
+      "name": "room_topic_open",
+      "value": "查看话题"
+    },
+    {
+      "name": "room_mention",
+      "value": "提及成员"
+    },
+    {
+      "name": "room_replies",
+      "value": "%d 条回复"
+    },
+    {
+      "name": "room_task_started",
+      "value": "已开始"
+    },
+    {
+      "name": "room_task_waiting",
+      "value": "等待中"
+    },
+    {
+      "name": "room_task_completed",
+      "value": "已完成"
+    },
+    {
+      "name": "room_task_failed",
+      "value": "失败"
+    },
+    {
+      "name": "room_task_cancelled",
+      "value": "已取消"
+    },
+    {
+      "name": "room_task_timeout",
+      "value": "超时"
+    },
+    {
+      "name": "room_home_offline",
+      "value": "主力电脑离线"
+    },
+    {
+      "name": "room_quote_outside",
+      "value": "原消息不在已加载的历史中"
+    },
+    {
+      "name": "room_send_uncertain",
+      "value": "发送结果待确认。点发送可重试原消息。"
     }
   ]
 }

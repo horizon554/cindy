@@ -1,3 +1,6 @@
+import { LengthMetrics } from '@kit.ArkUI';
+import { CompanionMessageActions, MessageActionGlyph, MessageCopyButton } from './CompanionMessageActions';
+import { shareMessageImage } from './ShareMessage';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
 import systemShare from '@hms.collaboration.systemShare';
@@ -12,6 +15,7 @@ export struct MessageFooter {
   link: (task: string, id: string) => string = () => '';
   addLink: (value: string) => void = () => {};
   edit: (task: string, id: string) => void = () => {};
+  reply: () => void = () => {};
   fork: (task: string, id: string) => void = () => {};
   @State private now: number = Date.now();
   private timer: number = -1;
@@ -20,7 +24,7 @@ export struct MessageFooter {
     clearInterval(this.timer);
     if (!visible) return;
     this.now = Date.now();
-    if (this.now - Date.parse(this.row.createdAt || '') < 86400000) {
+    if (!this.companion && this.now - Date.parse(this.row.createdAt || '') < 86400000) {
       this.timer = setInterval(() => { this.now = Date.now(); }, 60000);
     }
   }
@@ -78,7 +82,7 @@ export struct MessageFooter {
   @Builder
   time() {
     if (this.row.createdAt && Number.isFinite(Date.parse(this.row.createdAt))) {
-      Text(this.timeLabel()).id('message-time').fontSize(12).maxLines(1).fontColor($r('app.color.muted'))
+      Text(this.timeLabel()).id('message-time').fontSize(12).lineHeight(24).maxLines(1).fontColor($r('app.color.faint'))
         .accessibilityDescription(new Date(this.row.createdAt).toLocaleString())
     }
   }
@@ -86,23 +90,29 @@ export struct MessageFooter {
   @Builder
   icon(image: Resource, label: Resource, id: string, click: () => void) {
     Button({ type: ButtonType.Circle }) {
-      Image(image).width(17).height(17).fillColor($r('app.color.muted')).accessibilityLevel('no')
+      MessageActionGlyph({ icon: image })
     }.id(id).width(44).height(44).padding(0).backgroundColor(Color.Transparent).accessibilityText(label).onClick(click)
   }
 
   @Builder
   menu() {
     Menu() {
-      if (this.row.editPlacement === 'menu' && !this.editing) {
+      if (this.companion) {
+        MenuItem({ content: $r('app.string.message_copy') }).onClick(() => this.copy(this.text()))
+        MenuItem({ content: $r('app.string.room_share_image') }).onClick(() => {
+          shareMessageImage(this.getUIContext(), 'task-body-' + this.row.id).catch(() => this.getUIContext().getPromptAction().showToast({ message: $r('app.string.message_share_error') }));
+        })
+      }
+      if ((this.row.editPlacement === 'menu' || (this.companion && !!this.row.editPlacement)) && !this.editing) {
         MenuItem({ content: $r('app.string.message_edit') }).id('message-edit-menu')
           .onClick(() => this.edit(this.task, this.row.id))
       }
       if (this.row.clientId && this.task) {
         MenuItem({ content: $r('app.string.message_link') }).onClick(() => this.copy(this.link(this.task, this.row.id)))
-        MenuItem({ content: $r('app.string.message_add_link') }).onClick(() => {
+        if (!this.companion) { MenuItem({ content: $r('app.string.message_add_link') }).onClick(() => {
           const href = this.link(this.task, this.row.id);
           if (href) this.addLink(href);
-        })
+        }) }
       }
       if (this.row.createdAt && Number.isFinite(Date.parse(this.row.createdAt))) {
         MenuItem({ content: new Date(this.row.createdAt).toLocaleString() }).enabled(false)
@@ -111,29 +121,40 @@ export struct MessageFooter {
   }
 
   build() {
-    Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap,
-      justifyContent: this.row.role === 'user' ? FlexAlign.End : FlexAlign.Start, alignItems: ItemAlign.Center }) {
-      if (this.row.role === 'user') { this.time() }
-      this.icon($r('app.media.message_copy'), $r('app.string.message_copy'), 'message-copy', () => this.copy(this.text()))
-      this.icon($r('app.media.message_share'), $r('app.string.message_share'), 'message-share', () => this.share())
-      if (this.row.forkable && !this.companion) {
-        this.icon($r('app.media.message_fork'), $r('app.string.message_fork'), 'message-fork', () => this.confirmFork())
-      }
-      if (this.row.editPlacement === 'inline') {
-        this.icon($r('app.media.message_edit'), $r('app.string.message_edit'), 'message-edit', () => this.edit(this.task, this.row.id))
-      }
-      if ((this.row.clientId && this.task) || this.row.createdAt) {
-        Button({ type: ButtonType.Circle }) {
-          Image($r('app.media.message_more')).width(17).height(17).fillColor($r('app.color.muted')).accessibilityLevel('no')
-        }.id('message-more').width(44).height(44).padding(0).backgroundColor(Color.Transparent)
-          .accessibilityText($r('app.string.more_actions')).bindMenu(this.menu)
-      }
-      if (this.row.role !== 'user') { this.time() }
-      if (!this.companion && this.row.usage) {
-        Text(this.usageLabel()).id('message-usage')
-          .fontSize(12).fontColor($r('app.color.muted')).margin({ left: 4 })
-      }
-    }.id('message-actions-' + this.row.id).width('100%')
-      .onVisibleAreaChange([0], (visible: boolean, ratio: number) => this.updateClock(visible && ratio > 0))
+    if (this.companion) {
+      Row() {
+        CompanionMessageActions({ own: this.row.role === 'user', text: this.text(),
+          showReply: !!this.task && !!this.row.clientId && !this.editing, showMore: !!((this.row.clientId && this.task) || this.row.createdAt),
+          reply: this.reply }) { this.menu() }
+      }.id('message-actions-' + this.row.id).width('100%').margin({ top: 4 })
+        .padding({ left: this.row.role === 'assistant' ? 38 : 0 })
+        .justifyContent(this.row.role === 'user' ? FlexAlign.End : FlexAlign.Start)
+    } else {
+      Flex({ direction: FlexDirection.Row, wrap: FlexWrap.Wrap,
+        justifyContent: this.row.role === 'user' ? FlexAlign.End : FlexAlign.Start, alignItems: ItemAlign.Center,
+        space: { main: LengthMetrics.vp(2), cross: LengthMetrics.vp(2) } }) {
+        if (this.row.role === 'user') { this.time() }
+        if (this.text()) { MessageCopyButton({ text: this.text() }) }
+        this.icon($r('app.media.message_share'), $r('app.string.message_share'), 'message-share', () => this.share())
+        if (this.row.forkable) {
+          this.icon($r('app.media.message_fork'), $r('app.string.message_fork'), 'message-fork', () => this.confirmFork())
+        }
+        if (this.row.editPlacement === 'inline') {
+          this.icon($r('app.media.message_edit'), $r('app.string.message_edit'), 'message-edit', () => this.edit(this.task, this.row.id))
+        }
+        if ((this.row.clientId && this.task) || this.row.createdAt) {
+          Button({ type: ButtonType.Circle }) {
+            MessageActionGlyph({ icon: $r('app.media.message_more') })
+          }.id('message-more').width(44).height(44).padding(0).backgroundColor(Color.Transparent)
+            .accessibilityText($r('app.string.more_actions')).bindMenu(this.menu)
+        }
+        if (this.row.role !== 'user') { this.time() }
+        if (this.row.usage) {
+          Text(this.usageLabel()).id('message-usage')
+            .fontSize(12).lineHeight(24).fontColor($r('app.color.faint'))
+        }
+      }.id('message-actions-' + this.row.id).width('100%')
+        .onVisibleAreaChange([0], (visible: boolean, ratio: number) => this.updateClock(visible && ratio > 0))
+    }
   }
 }

@@ -3,20 +3,25 @@ import { common } from '@kit.AbilityKit';
 export interface CallLine { role: string; text: string; status?: string }
 export interface CallTranscript { startedAt: number; endedAt?: number; lines: CallLine[] }
 export interface UsagePart { value: string; estimated: boolean }
-export interface Row { clientId?: string; createdAt?: string; actions?: boolean; forkable?: boolean; editPlacement?: 'inline' | 'menu'; usage?: UsagePart[]; author?: string; voiceCall?: CallTranscript; agentKind?: string; lead?: boolean; attached?: boolean; remote?: boolean; hasDraft?: boolean; localDraft?: boolean; scheduled?: boolean; scheduleStopped?: boolean; pinnedAt?: string; rightStatus?: string; host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; created?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
+export interface ReplyQuote { excerpt: string; authorName?: string; clientId?: string; messageId?: string }
+export interface TaskCard { title: string; state: string; summary?: string }
+export interface TrackedMention { botId: string; label: string; start: number }
+export interface RoomPending { tracked?: TrackedMention[]; signature?: string; text: string; mentionIds: string[]; files: Attachment[]; quoteId: string }
+export interface Row { stamp?: string; continued?: boolean; quote?: ReplyQuote; interactive?: boolean; taskCard?: TaskCard; authorId?: string; bot?: boolean; replyCount?: number; clientId?: string; createdAt?: string; actions?: boolean; forkable?: boolean; editPlacement?: 'inline' | 'menu'; usage?: UsagePart[]; author?: string; voiceCall?: CallTranscript; agentKind?: string; lead?: boolean; attached?: boolean; remote?: boolean; hasDraft?: boolean; localDraft?: boolean; scheduled?: boolean; scheduleStopped?: boolean; pinnedAt?: string; rightStatus?: string; host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; created?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
 export interface Companion { group?: boolean; recentCall?: boolean; faces?: Companion[]; preview?: string; subtitle?: string; searchText?: string; key: string; id: string; host: string; title: string; avatar: string; avatarImage?: string; cloudImage?: string; preset?: string; actor?: string }
 export interface GroupMember extends Companion { role?: string }
-export interface GroupProfile { title: string; topic?: string; description?: string; members: GroupMember[] }
+export interface GroupProfile { writable?: boolean; attachments?: boolean; running?: boolean; title: string; topic?: string; description?: string; members: GroupMember[] }
 export interface PreferenceOption extends Row { brand?: PickerBrand; sectionBrand?: PickerBrand; provider?: string; model?: string; activeSource?: boolean }
 export interface Choice { label: string; detail: string; selected: boolean }
 export interface Question { key: string; valid?: boolean; label: string; multi: boolean; free: boolean; value: string; options: Choice[] }
 export interface Card { id: string; revision: number; kind: string; title: string; detail: string; questions: Question[]; complete?: boolean; approvalKey?: string; risk?: string; code?: string }
-export interface MediaInfo { path?: string; name: string; size?: number; mimeType?: string }
+export interface MediaInfo { id?: string; url?: string; path?: string; name: string; size?: number; mimeType?: string }
 export interface PendingUpload { id: string; previewUri?: string; title: string; failed: boolean; uploading: boolean }
 export interface Attachment extends MediaInfo { id: string }
 export interface FolderList { path: string; parent: string; rows: Row[] }
 export interface NewTaskDraft { owner: string; text: string; attachments: Attachment[]; media: Map<string, string> }
 export interface ViewState {
+  cloudRoot?: Row; cloudThread?: string; cloudPending?: RoomPending; homeMove?: string; homeTarget?: string; companionQuote?: ReplyQuote;
   editingMessage?: string; editSubmitting?: boolean; editFileCount?: number; editRecoverable?: boolean;
   companionsCollapsed: boolean; showCollapsedCompanionAvatars: boolean;
   companions?: Companion[]; companionError?: boolean; taskCompanion?: Companion; cloudCompanion?: Companion; cloudProfile?: GroupProfile; cloudMessages?: Row[]; cloudOlder?: boolean; cloudLoading?: boolean; cloudError?: boolean;
@@ -51,6 +56,18 @@ export class Workspace {
   cancelMessageEdit(): void;
   recoverMessageEdit(): Promise<void>;
   forkMessage(task: string, id: string): Promise<void>;
+  quoteCompanion(id: string): void;
+  roomMentionIds(text: string, tracked: TrackedMention[]): string[];
+  roomEditedMentions(previous: string, text: string, tracked: TrackedMention[]): TrackedMention[];
+  saveRoomDraft(key: string, thread: string, draft: RoomPending): void;
+  openRoomThread(id: string): Promise<void>;
+  closeRoomThread(): boolean;
+  sendRoom(text: string, mentions: string[], files: Attachment[], quote: string): Promise<void>;
+  pickRoomFile(images: boolean): Promise<Attachment | undefined>;
+  roomFile(id: string, file: string): Promise<MediaInfo>;
+  roomThumbnail(id: string, file: string, visible: () => boolean): Promise<string>;
+  roomTargets(): Promise<Row[]>;
+  moveRoom(target: string, retry: boolean): Promise<void>;
   closeCloudCompanion(): void;
   cloudHistory(older: boolean): Promise<void>;
   openTask(id: string): Promise<void>;
