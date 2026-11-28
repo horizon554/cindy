@@ -98,10 +98,15 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
         { id: room, externalId: 'deleted', kind: 'bot', disabled: true, homeDeviceId: 'offline', name: 'Gone' },
       ];
       if (url.endsWith('/v1/conversations')) {
+        if (body.participants[0] === room) {
+          assert.equal(body.operationId, 'companion-room:' + room);
+          return { id: roomUuid(713) };
+        }
         assert.deepEqual(body.participants, [actor]);
         assert.equal(body.operationId, 'companion-room:' + actor);
         return { id: room };
       }
+      if (url.endsWith('/v1/conversations/' + roomUuid(713) + '/messages?limit=100')) return [];
       if (url.endsWith('/v1/conversations/' + room + '/messages?limit=100')) {
         cloudReads++;
         if (delayedCloud) await delayedCloud;
@@ -342,7 +347,8 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
     turns: [{ id: 'u', role: 'user', text: 'fixture question', complete: true, createdAt: 1001 },
       { id: 'a', role: 'assistant', text: 'fixture reply', complete: true, createdAt: 1002 }],
     handoffs: [{ id: 'task', inputId: 'u', state: 'accepted', text: 'fixture question' }] } } });
-  // A newer voice card has an empty stored body, even when the host still lists an older text preview.
+  // An empty assistant marker after the call must not displace the voice preview on the homepage.
+  rows.push({ id: 'blank-after-call', sessionId: canonical, role: 'assistant', content: '' });
   await app.loadCompanionCall(hosted.key);
   assert.equal(state.companions.find(row => row.key === hosted.key).recentCall, true);
   await app.openCompanion(hosted.key);
@@ -377,6 +383,22 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
   resumeCloud();
   await refreshCloud;
   assert.deepEqual(state.cloudMessages, []);
+  assert.equal(state.cloudCompanion, undefined);
+  // On cold launch the cloud roster can reach the phone before the online computer's list.
+  const hostBots = app.home.peers.get(hosted.host).bots;
+  const onlineRows = hostBots.rows;
+  hostBots.rows = [];
+  await app.openCompanion(hosted.key);
+  assert.equal(state.cloudCompanion.key, hosted.key);
+  app.closeCloudCompanion();
+  hostBots.rows = onlineRows;
+  app.companions.publish();
+  assert.equal(state.task, '');
+  hostBots.rows = [];
+  await app.openCompanion(hosted.key);
+  hostBots.rows = onlineRows;
+  app.companions.publish();
+  await until(() => state.task === canonical && state.taskCompanion?.key === hosted.key);
   assert.equal(state.cloudCompanion, undefined);
   await app.logout();
   assert.deepEqual(state.companions, []);
@@ -680,13 +702,23 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   assert.equal(view.messages[1].voiceCall.lines[0].text, 'late transcript');
   history = Array.from({length:85},(_,i)=>({id:'m'+i,sessionId:task,createdAt:20,role:'user',content:'行 '+i}));
   history[80] = {...history[80],role:'future',content:{}};
+  // The destination Host keeps blank assistant and thinking records as real pagination anchors.
+  history[45] = { ...history[45], role: 'assistant', content: '' };
+  history[46] = { ...history[46], role: 'thinking', content: { kind: 'thinking', text: '  ', durationMs: 90, isRedacted: false } };
+  history[47] = { ...history[47], role: 'assistant', content: { text: '', files: [{ name: 'result.txt' }] } };
+  history[48] = { ...history[48], role: 'assistant', content: [{ type: 'future-card' }] };
   await app.history(app.version);
   assert.equal(app.state.messages[0].id,'m45');
+  assert.deepEqual(view.messages.slice(0, 2).map(row => row.id), ['m47', 'm48']);
+  assert.equal(view.messages[0].media[0].name, 'result.txt');
+  assert.equal(view.messages[1].title, '暂不支持显示此消息');
   await app.older(); await app.older();
   assert.equal(app.state.hasOlder,false);
   assert.deepEqual(app.state.messages.map(m=>m.id),history.map(m=>m.id));
   assert.equal(app.state.messages[80].title,'暂不支持显示此消息');
+  history[45].content = 'late reply';
   await app.history(app.version);
+  assert.equal(view.messages.find(row => row.id === 'm45')?.title, 'late reply');
   assert.equal(new Set(app.state.messages.map(m=>m.id)).size,85);
   const oldReadEntered = new Promise(ok => { holdHistory = ok; });
   const oldRead = app.history(app.version);
@@ -1364,6 +1396,10 @@ test('group composer preserves a quoted send across a lost reply, opens its topi
   assert.deepEqual(sent.at(-1).mentions, [bot]);
   assert.ok(app.closeRoomThread());
   await until(() => app.state.cloudPending?.text === draft.text && !app.state.cloudLoading);
+  const revised = { ...draft, text: 'caption', files: [attachment] };
+  app.saveRoomDraft(key, '', revised);
+  await app.cloudHistory(false);
+  assert.deepEqual(app.state.cloudPending, revised);
   revoked = true;
   await app.cloudHistory(false);
   assert.equal(app.state.cloudCompanion, undefined);

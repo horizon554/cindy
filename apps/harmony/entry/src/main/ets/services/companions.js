@@ -238,10 +238,17 @@ export class Companions {
   }
   publish() {
     const rows = this.rows();
-    if (this.open && !rows.some(row => row.key === this.open.key) &&
-        !(this.open.moving && this.actors.some(a => a.id === this.open.actor && a.homeDeviceId === this.open.moving))) this.close();
+    const room = this.open;
+    const selected = room && rows.find(row => row.key === room.key);
+    if (room && !selected &&
+        !(room.moving && this.actors.some(a => a.id === room.actor && a.homeDeviceId === room.moving))) this.close();
     this.app.show({ companions: rows, cloudProfile: this.groupProfile(this.open), companionError: !!(this.error || this.groups.error) ||
       [...this.app.home.peers.values()].some(peer => peer.bots?.error || peer.groups?.error) });
+    // The cloud directory may arrive before Device Link confirms this same buddy on its host.
+    if (room?.waitingForHost && selected && !selected.actor && !selected.group && !room.moving && this.app.available(selected.host)) {
+      room.waitingForHost = false;
+      this.app.openCompanion(selected.key, room).catch(error => { if (this.open === room) this.app.report(error); });
+    }
   }
   close() {
     clearTimeout(this.open?.timer);
@@ -252,6 +259,7 @@ export class Companions {
   async openRoom(row) {
     this.close();
     const room = { botId: row.id, key: row.key, group: !!row.group, host: row.host, id: row.group ? row.id : '', actor: row.actor, messages: new Map() };
+    room.waitingForHost = !!row.actor && !row.group && (!this.app.directoryReady || this.app.available(row.host));
     this.open = room;
     this.app.show({ cloudCompanion: row, cloudProfile: this.groupProfile(room), cloudMessages: [], cloudOlder: false, cloudLoading: true, cloudError: false });
     await this.loadRoom(room);

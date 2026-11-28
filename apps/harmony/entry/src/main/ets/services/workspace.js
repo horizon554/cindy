@@ -546,7 +546,7 @@ export class Workspace {
   }
   loadCompanionCall(key, visible = true) { return this.companions?.loadCall(key, visible); }
   async companionAvatar(row, visible) { return await this.companions?.avatars.load(row, visible) || ''; }
-  async openCompanion(key) {
+  async openCompanion(key, fromRoom) {
     const roster = this.companions;
     const lookup = () => roster.rows().find(row => row.key === key);
     const row = lookup();
@@ -554,9 +554,14 @@ export class Workspace {
     if (row.group || row.actor) return roster.openRoom(row);
     if (!this.available(row.host)) throw new Error('请等待伙伴的电脑上线');
     if (this.state.device !== row.host || !this.state.linked) await this.openDevice(row.host);
+    if (fromRoom && (roster.open !== fromRoom || fromRoom.moving)) return;
     const v = this.version;
     if (this.companions !== roster || this.state.device !== row.host || !lookup()) throw new Error('伙伴名单已变更');
     const id = await resolveCompanion((ch, args) => this.invoke(ch, args, v), row.id, this.locale);
+    if (fromRoom) {
+      const current = lookup();
+      if (roster.open !== fromRoom || fromRoom.moving || !current || current.actor) return;
+    }
     this.guard(v);
     await this.enterTask(id, row);
   }
@@ -758,7 +763,11 @@ export class Workspace {
   }
   saveRoomDraft(key, thread, draft) {
     const room = this.companions?.open;
-    if (room?.key === key && (room.thread || '') === thread) room.draft = draft;
+    if (!room || room.key !== key || (room.thread || '') !== thread) return;
+    room.draft = draft;
+    // Screen refreshes re-publish the restored draft. Keep it current without
+    // replacing the immutable payload of a send whose receipt is still pending.
+    if (this.state.cloudPending && !this.state.cloudPending.signature) this.state.cloudPending = draft;
   }
   openRoomThread(id) { return this.companions.thread(id); }
   closeRoomThread() { return this.companions?.leaveThread(); }

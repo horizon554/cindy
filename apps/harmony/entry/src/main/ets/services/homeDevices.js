@@ -4,7 +4,7 @@ import { botGroupResourceRef, REMOTE_RESOURCE_PROTOCOL_VERSION, BOT_GROUP_CLIENT
 import { HomeDeviceSyncLimiter, buildSessionScheduleIndex, normalizeScheduleList, normalizeScheduleRuns, PROTOCOL_VERSION } from './protocol.generated';
 import { hostGroups, hostGroupHistory } from './groupChats';
 import { hostCompanions } from './companions';
-import { taskPage } from './taskModel';
+import { hasMessageContent, taskPage } from './taskModel';
 import { homeTask } from './homeList';
 
 // A task can be the schedule's explicit target or the session of a particular run.
@@ -125,7 +125,7 @@ export class HomeDevices {
           const visible = rows.filter(row => row?.sessionId === sessionId && !row.rewindAt && !row.agentMeta?.autoResume &&
             !row.agentMeta?.botPrivateReply && !row.agentMeta?.parentUuid && !row.agentMeta?.botDirectMessage &&
             (row.role === 'user' || row.role === 'assistant'));
-          const last = taskPage(visible, sessionId).reverse().find(message => !message.emptyVoiceCall);
+          const last = taskPage(visible, sessionId).reverse().find(hasMessageContent);
           return !!last?.voiceCall;
         };
         peer.groupSend = (groupId, input) => call('maker:remote-resources:invoke', [{ client: { protocolVersion: REMOTE_RESOURCE_PROTOCOL_VERSION,

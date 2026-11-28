@@ -29,6 +29,19 @@ function body(content) {
   return '';
 }
 
+function emptyTextContent(content) {
+  if (content == null) return true;
+  if (typeof content === 'string') return !content.trim();
+  if (Array.isArray(content)) return content.every(part => part?.type === 'text' && typeof part.text === 'string' && !part.text.trim());
+  return typeof content.text === 'string' && !content.text.trim() &&
+    (content.kind === 'thinking' || Object.keys(content).length === 1);
+}
+
+// Empty records still carry the Host's cursor and may receive content on the next read.
+export function hasMessageContent(row) {
+  return !!(row.title || row.voiceCall || row.media?.length || row.quote);
+}
+
 function callTranscript(record) {
   const handoffs = new Map(record.handoffs.map(task => [task.inputId, task]));
   const lines = [];
@@ -81,7 +94,7 @@ function messageMetadata(row, content, text, hasMedia) {
 
 // Resolve turn boundaries after merging pages so loading older history cannot manufacture a footer.
 export function messageActionRows(history, running, forkAllowed, editAllowed = false) {
-  const rows = history.filter(row => !row.emptyVoiceCall);
+  const rows = history.filter(hasMessageContent);
   const finals = new Set();
   let last, latestUser, sealed = false;
   for (const row of rows) {
@@ -118,9 +131,8 @@ export function taskPage(rows, task) {
     const call = row.role === 'assistant' && readVoiceCallRecord(row.agentMeta?.voiceCall);
     if (call) {
       const voiceCall = callTranscript(call);
-      // Empty calls still anchor Host pagination and history reconciliation.
       page.push({ id: row.id, clientId: row.clientId || '', role: row.role, title: '', createdAt: messageTimestamp(row.createdAt ?? call.startedAt),
-        ...(voiceCall ? { voiceCall } : { emptyVoiceCall: true }) });
+        ...(voiceCall ? { voiceCall } : {}) });
       continue;
     }
     let title, detail;
@@ -153,8 +165,10 @@ export function taskPage(rows, task) {
       !row.agentMeta?.parentUuid && !isAnsweredAsyncQuestionClientId(row.clientId) && !isSyntheticTriggerText(messageText);
     const source = realUser ? editSource(editContent, media) : undefined;
     if (source && source.text === (media.length ? content?.text || '' : messageText)) delete source.text;
+    const emptyText = !row.systemCardType && !row.toolName && !media.length &&
+      ((row.role === 'assistant' && emptyTextContent(row.content)) || (row.role === 'thinking' && emptyTextContent(content)));
     page.push({ ...(row.role === 'user' ? { realUser, editSource: source } : {}), ...messageMetadata(row, content, messageText, media.length > 0), ...(detail ? { detail } : {}), ...(media.length ? { media, messageText: content.text || '' } : {}), id: row.id, clientId: row.clientId || '', role: row.role || '',
-      title: (typeof title === 'string' && title) || messageText || row.toolName || '暂不支持显示此消息' });
+      title: emptyText ? '' : (typeof title === 'string' && title) || messageText || row.toolName || '暂不支持显示此消息' });
   }
   return page.reverse();
 }
