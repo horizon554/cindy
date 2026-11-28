@@ -833,6 +833,10 @@
       "value": "收起"
     },
     {
+      "name": "show_collapsed_avatars",
+      "value": "收起时显示头像"
+    },
+    {
       "name": "companion_no_preview",
       "value": "暂无消息摘要"
     },

@@ -27,7 +27,7 @@ const bundled = await build({
           ? 'export default { getUptime:()=>performance.now(), TimeType:{ACTIVE:1} }'
           : args.path === '@ohos.util'
           ? 'export default {generateRandomUUID:()=>crypto.randomUUID(),TextEncoder:class { encodeInto(s){return Buffer.from(s)} },Base64Helper:class {encodeToStringSync(b){return b.toString("base64")} decodeSync(s){return Buffer.from(s,"base64url")}}, TextDecoder:{create:()=>({decodeWithStream:b=>b.toString()})}}'
-          : 'export const {accountUrl,directoryUrl,relayUrl,request,downloadAvatarBytes,deviceIdentity,readSession,saveSession,createSocket}=globalThis.harmonyPorts'
+          : 'export const {accountUrl,directoryUrl,relayUrl,request,downloadAvatarBytes,deviceIdentity,homeDisplayPreferences,readSession,saveSession,createSocket}=globalThis.harmonyPorts'
       }));
     }
   }]
@@ -64,6 +64,7 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
     target: { kind: 'session', sessionId: canonical } }] });
   let socket, authorizeUrl, exchanges = 0, count = 0, subscriptions = 0, refreshes = 0;
   globalThis.harmonyPorts = {
+    homeDisplayPreferences: () => ({ getSync: (_key, fallback) => fallback }),
     downloadAvatarBytes: async address => {
       if ([publicPhoto + '?group', publicPhoto + '?sixth'].includes(address)) return png;
       assert.equal(address, publicPhoto); publicFetches++;
@@ -382,6 +383,40 @@ test('restore login and delivery on relaunch, then open the bound host or cloud 
   assert.equal(state.account, 'Fixture');
   assert.equal(exchanges, 1);
   await app.logout();
+});
+
+// Integration: only the native home opens this preference store. Two accounts with
+// the same display name must independently retain disclosure and avatar visibility on relaunch.
+test('restore companion display choices independently per account on the task home', async t => {
+  const saved = new Map();
+  let owner = 'first';
+  globalThis.harmonyPorts = {
+    deviceIdentity: async () => 'phone',
+    readSession: async () => ({ id: owner, name: 'Identical name' }),
+    homeDisplayPreferences: () => ({
+      getSync: (key, fallback) => saved.get(key) ?? fallback,
+      putSync: (key, value) => saved.set(key, value),
+      flush: async () => {},
+    }),
+  };
+  const { Workspace } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64') + '#companion-display');
+  let app;
+  const restart = async () => {
+    app?.client.stop();
+    app = new Workspace(() => {}, true);
+    await app.init({});
+    return [app.state.companionsCollapsed, app.state.showCollapsedCompanionAvatars];
+  };
+  t.after(() => { app?.client.stop(); delete globalThis.harmonyPorts; });
+  assert.deepEqual(await restart(), [false, true]);
+  app.setCompanionDisplay('companionsCollapsed', true);
+  assert.deepEqual(await restart(), [true, true]);
+  app.setCompanionDisplay('showCollapsedCompanionAvatars', false);
+  assert.deepEqual(await restart(), [true, false]);
+  owner = 'second';
+  assert.deepEqual(await restart(), [false, true]);
+  owner = 'first';
+  assert.deepEqual(await restart(), [true, false]);
 });
 
 // Tier 1: two computers can contain identical task IDs and project paths. Run the

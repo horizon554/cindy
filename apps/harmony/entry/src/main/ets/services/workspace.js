@@ -8,12 +8,13 @@ import { openCache } from './cache';
 import { approvalKey, taskPage, messageActionRows, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
 import util from '@ohos.util';
 import { resolveRemoteInvokeTimeoutMs, buildTaskDeepLink, isSharedTaskPeer, mobileSessionBulkPatch, normalizeScheduleList, buildMobileModelSections, flattenProviderSections, providerPickerListArgs, deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
-import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, readSession, saveSession, createSocket } from './platform';
+import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, homeDisplayPreferences, readSession, saveSession, createSocket } from './platform';
 
 import { authorize, cancelAuthorization, consumeAuthorization, listenForWant, pendingAuthorization } from './sso';
 
 const taskView = { canEditHistory: false, editingMessage: '', editFileCount: 0, editRecoverable: false, editSubmitting: false, queuedInputs: 0, taskCompanion: undefined, legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', voiceCaret: undefined, pendingUploads: [], pickingFiles: false, waitingToCreate: false, failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
   attachments: [], transfer: '', uploadPending: false, voice: '', activity: '', hasOlder: false, paused: false, retryable: false, delivery: '' };
+const companionDisplayDefaults = { companionsCollapsed: false, showCollapsedCompanionAvatars: true };
 const hostView = { ...taskView, device: '', tasks: [], linked: false, moreTasks: false };
 
 // One instance owns one visible account. Only the native page can initiate a send.
@@ -34,7 +35,7 @@ export class Workspace {
     this.voiceTake = 0;
     this.authEpoch = 0;
     this.sessionWrite = Promise.resolve();
-    this.state = { ...hostView, shareLabel: '', shareText: '', shareFiles: [], pushStatus: '', pushEnabled: false, ssoWaiting: false, ssoMethods: [], verification: '', accounts: [], account: '', relay: '', devices: [], error: '' };
+    this.state = { ...hostView, ...companionDisplayDefaults, shareLabel: '', shareText: '', shareFiles: [], pushStatus: '', pushEnabled: false, ssoWaiting: false, ssoMethods: [], verification: '', accounts: [], account: '', relay: '', devices: [], error: '' };
   }
   show(patch) {
     if (this.taskHome && patch.devices) {
@@ -249,6 +250,26 @@ export class Workspace {
     await this.accept(reply);
     return this.access;
   }
+  readCompanionDisplay() {
+    const display = { ...companionDisplayDefaults };
+    if (!this.taskHome) return display;
+    try {
+      this.homePreferences = homeDisplayPreferences(this.context);
+      for (const key of Object.keys(display)) {
+        display[key] = this.homePreferences.getSync(this.session.id + '/' + key, display[key]);
+      }
+    } catch (e) { return { ...companionDisplayDefaults, error: e.message }; }
+    return display;
+  }
+  setCompanionDisplay(key, value) {
+    const owner = this.session?.id;
+    if (!owner || this.state[key] === value) return;
+    this.show({ [key]: value });
+    try {
+      this.homePreferences.putSync(owner + '/' + key, value);
+      this.homePreferences.flush().catch(e => { if (this.session?.id === owner) this.report(e); });
+    } catch (e) { this.report(e); }
+  }
   start() {
     this.client?.stop();
     const client = new DeviceLinkClient({
@@ -257,7 +278,7 @@ export class Workspace {
       logger: { debug() {}, info() {}, warn() {}, error() {} }
     });
     this.client = client;
-    this.show({ account: this.session.name, error: '' });
+    this.show({ account: this.session.name, error: '', ...this.readCompanionDisplay() });
     const directoryEpoch = this.directoryEpoch || 0;
     this.cache.read(this.key('devices', '', '')).then(rows => {
       if (client !== this.client || directoryEpoch !== (this.directoryEpoch || 0) || !rows) return;
@@ -1854,7 +1875,7 @@ export class Workspace {
     this.cancelDraftTimer();
     this.resetTask();
     client?.stop();
-    this.show({ ...hostView, companions: [], companionError: false, cloudCompanion: undefined, cloudProfile: undefined, cloudMessages: [], cloudOlder: false, cloudLoading: false, cloudError: false, shareLabel: '', shareText: '', shareFiles: [], pushEnabled: false, pushStatus: '', accounts: [], account: '', accountEmail: '', accountAvatar: '', relay: '', devices: [], error: '' });
+    this.show({ ...hostView, ...companionDisplayDefaults, companions: [], companionError: false, cloudCompanion: undefined, cloudProfile: undefined, cloudMessages: [], cloudOlder: false, cloudLoading: false, cloudError: false, shareLabel: '', shareText: '', shareFiles: [], pushEnabled: false, pushStatus: '', accounts: [], account: '', accountEmail: '', accountAvatar: '', relay: '', devices: [], error: '' });
     await Promise.all([this.storeSession(null), owner && this.cache.forget(owner)]);
     if (owner && this.native) {
       const disable = () => this.native.disablePush(owner, access);

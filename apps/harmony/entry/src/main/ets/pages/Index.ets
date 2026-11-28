@@ -51,7 +51,7 @@ class DrawerGesture implements AttributeModifier<SideBarContainerAttribute> {
 @Entry
 @Component
 struct Index {
-  @State view: ViewState = { retryable: false, attachments: [], voice: '', transfer: '', pushStatus: '', pushEnabled: false,
+  @State view: ViewState = { companionsCollapsed: false, showCollapsedCompanionAvatars: true, retryable: false, attachments: [], voice: '', transfer: '', pushStatus: '', pushEnabled: false,
     shareLabel: '', cards: [], activity: '', delivery: '', draft: '', linked: false, paused: false, moreTasks: false,
     hasOlder: false, running: false, ssoWaiting: false, ssoMethods: [], verification: '', accounts: [], account: '',
     relay: '', devices: [], tasks: [], messages: [], live: '', device: '', task: '', error: '' };
@@ -92,7 +92,6 @@ struct Index {
   @State drawerOpen: boolean = false;
   @State query: string = '';
   @State companionsExpanded: boolean = false;
-  @State companionsCollapsed: boolean = false;
   @State statusFilter: string = 'active';
   @State scope: string = '';
   @State collapsed: string[] = [];
@@ -156,7 +155,7 @@ struct Index {
     }
     const switched = state.task !== this.view.task;
     const changed = state.messages.length !== this.view.messages.length || state.live !== this.view.live;
-    if (state.account !== this.view.account) { this.companionsExpanded = false; this.companionsCollapsed = false; this.scope = ''; this.query = ''; this.showSearch = false; this.shareQuery = ''; this.projectFilter = ''; this.sortBy = 'recent'; this.groupProjects = true; this.groupDevices = true; this.collapsed = []; this.projectList = undefined; this.statusFilter = 'active'; }
+    if (state.account !== this.view.account) { this.companionsExpanded = false; this.scope = ''; this.query = ''; this.showSearch = false; this.shareQuery = ''; this.projectFilter = ''; this.sortBy = 'recent'; this.groupProjects = true; this.groupDevices = true; this.collapsed = []; this.projectList = undefined; this.statusFilter = 'active'; }
     if (state.shareVersion !== this.view.shareVersion && state.shareLabel) {
       this.projectList = undefined; this.pickingShareTarget = true; this.shareQuery = ''; this.panel = ''; this.drawerOpen = false;
       this.selectedFile = undefined; this.previewSource = '';
@@ -1155,7 +1154,7 @@ struct Index {
     if (this.panel === 'rename' || this.panel === 'row-actions') this.actionRow = undefined;
     if (this.panel === 'new-host' && !this.view.device) { this.creating = false; this.workspace.cancelNew(); }
     if (this.panel === 'browse' || this.panel === 'path') this.panel = 'projects';
-    else if (['status', 'sort', 'group', 'filter'].includes(this.panel)) this.panel = 'display';
+    else if (['status', 'sort', 'group', 'filter', 'companion-display'].includes(this.panel)) this.panel = 'display';
     else this.panel = '';
   }
 
@@ -1177,6 +1176,7 @@ struct Index {
     switch (this.panel) {
       case 'hosts': case 'new-host': return $r('app.string.select_host');
       case 'settings': return $r('app.string.settings');
+      case 'companion-display': return $r('app.string.companions');
       case 'display': return $r('app.string.display_options');
       case 'sort': return $r('app.string.sort_by');
       case 'status': return $r('app.string.task_status');
@@ -1376,7 +1376,16 @@ struct Index {
       OptionRow({ label: $r('app.string.group_by'), value: this.homeGroupingLabel(), action: () => { this.panel = 'group'; }, control: 'display-group' })
       OptionRow({ label: $r('app.string.sort_by'), value: this.sortBy === 'created' ? $r('app.string.by_created') : $r('app.string.recent'), action: () => { this.panel = 'sort'; }, control: 'display-sort' })
       OptionRow({ label: $r('app.string.filter_project'), value: this.projectFilter ? this.projectName(this.projectFilter) : $r('app.string.all_projects'), action: () => { this.panel = 'filter'; }, control: 'display-filter' })
+      OptionRow({ label: $r('app.string.companions'), value: '', action: () => { this.panel = 'companion-display'; }, control: 'display-companions' })
       OptionRow({ label: $r('app.string.refresh'), value: '', action: () => { this.panel = ''; this.run(() => this.workspace.reconnect()); }, control: 'refresh-home' })
+    } else if (this.panel === 'companion-display') {
+      Row({ space: 12 }) {
+        Text($r('app.string.show_collapsed_avatars')).fontSize(16).fontColor($r('app.color.ink')).layoutWeight(1)
+          .accessibilityLevel('no').onClick(() => this.workspace.setCompanionDisplay('showCollapsedCompanionAvatars', !this.view.showCollapsedCompanionAvatars))
+        Toggle({ type: ToggleType.Switch, isOn: this.view.showCollapsedCompanionAvatars }).id('show-collapsed-avatars')
+          .selectedColor($r('app.color.action')).accessibilityText($r('app.string.show_collapsed_avatars'))
+          .onChange((on: boolean) => this.workspace.setCompanionDisplay('showCollapsedCompanionAvatars', on))
+      }.width('100%').constraintSize({ minHeight: 48 }).padding({ left: 12, right: 12 })
     } else if (this.panel === 'status') {
       ForEach(['active', 'archived', 'all'], (filter: string) => {
         ChoiceRow({ label: this.filterLabel(filter), group: 'status', selected: this.statusFilter === filter,
@@ -1513,6 +1522,10 @@ struct Index {
     return row.preview || row.subtitle || this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.companion_no_preview').id);
   }
 
+  private companionDescription(row: Companion): string {
+    return row.group ? this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.group_chat').id) : '';
+  }
+
   @Builder
   companionSection() {
     if (this.matchingCompanions().length || (this.view.companionError && !this.query.trim())) {
@@ -1520,22 +1533,28 @@ struct Index {
         Row() {
           Button({ type: ButtonType.Normal }) {
             Row({ space: 8 }) {
-              SymbolGlyph(this.companionsCollapsed && !this.query.trim() ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_down'))
+              SymbolGlyph(this.view.companionsCollapsed && !this.query.trim() ? $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_down'))
                 .fontSize(14).width(22).fontColor([$r('app.color.muted')])
               SymbolGlyph($r('sys.symbol.person_2')).fontSize(19).fontColor([$r('app.color.muted')])
               Text($r('app.string.companions')).fontSize(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink'))
               Blank()
-              Text(this.matchingCompanions().length.toString()).fontSize(14).fontColor($r('app.color.muted'))
+              if (this.matchingCompanions().length && (!this.view.companionsCollapsed || this.query.trim() || !this.view.showCollapsedCompanionAvatars)) {
+                Text(this.matchingCompanions().length.toString()).id('companions-count').fontSize(14).fontColor($r('app.color.muted'))
+              }
             }.width('100%')
           }.id('companions-header').height(44).layoutWeight(1).padding(DIRECTORY_ROW_INSETS).backgroundColor(Color.Transparent)
-            .onClick(() => { if (!this.query.trim()) this.companionsCollapsed = !this.companionsCollapsed; })
+            .onClick(() => {
+              if (this.query.trim()) return;
+              if (!this.view.companionsCollapsed) this.companionsExpanded = false;
+              this.workspace.setCompanionDisplay('companionsCollapsed', !this.view.companionsCollapsed);
+            })
           if (this.view.companionError && !this.query.trim()) {
             IconAction({ icon: $r('sys.symbol.arrow_clockwise'), label: $r('app.string.companions_retry'), controlId: 'companions-retry',
               onTap: () => this.run(() => this.workspace.refreshCompanions()) })
           }
         }.width('100%')
       }
-      if (!this.companionsCollapsed || this.query.trim()) {
+      if (!this.view.companionsCollapsed || this.query.trim()) {
         ForEach(this.companionsExpanded || this.query.trim() ? this.matchingCompanions() : this.matchingCompanions().slice(0, 3), (row: Companion) => {
           ListItem() {
             Button({ type: ButtonType.Normal }) {
@@ -1551,7 +1570,7 @@ struct Index {
                 if (!row.group && !row.actor) this.workspace.loadCompanionCall(row.key, visible && ratio > 0);
               })
               .onDisAppear(() => { if (!row.group && !row.actor) this.workspace.loadCompanionCall(row.key, false); })
-              .accessibilityText([row.title, this.companionSummary(row)].join('，')).accessibilityDescription(row.group ? this.getUIContext().getHostContext()!.resourceManager.getStringSync($r('app.string.group_chat').id) : '').onClick(() => this.run(() => this.workspace.openCompanion(row.key)))
+              .accessibilityText([row.title, this.companionSummary(row)].join('，')).accessibilityDescription(this.companionDescription(row)).onClick(() => this.run(() => this.workspace.openCompanion(row.key)))
           }
         }, (row: Companion) => JSON.stringify([companionPortraitKey(row), row.preview, row.subtitle, row.recentCall]))
         if (!this.query.trim() && this.matchingCompanions().length > 3) {
@@ -1560,6 +1579,24 @@ struct Index {
               .id('companions-show-all').height(44).fontColor($r('app.color.muted')).backgroundColor(Color.Transparent)
               .onClick(() => { this.companionsExpanded = !this.companionsExpanded; })
           }
+        }
+      } else if (this.view.showCollapsedCompanionAvatars && this.matchingCompanions().length) {
+        ListItem() {
+          Scroll() {
+            Row({ space: 8 }) {
+              ForEach(this.matchingCompanions(), (row: Companion) => {
+                Button({ type: ButtonType.Normal }) {
+                  Column({ space: 4 }) {
+                    CompanionAvatar({ row, portraitSize: 36, load: (buddy: Companion, visible: () => boolean) => this.workspace.companionAvatar(buddy, visible) })
+                    Text(row.title).fontSize(12).lineHeight(16).fontWeight(FontWeight.Medium).fontColor($r('app.color.ink'))
+                      .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).textAlign(TextAlign.Center)
+                  }.width('100%')
+                }.id('companion-strip-' + row.key).width(48).padding({ top: 6, bottom: 6 }).borderRadius(8).backgroundColor(Color.Transparent)
+                  .accessibilityText(row.title).accessibilityDescription(this.companionDescription(row))
+                  .onClick(() => this.run(() => this.workspace.openCompanion(row.key)))
+              }, (row: Companion) => companionPortraitKey(row))
+            }.padding({ left: 16, right: 16, bottom: 12 })
+          }.id('companions-strip').width('100%').align(Alignment.Start).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
         }
       }
     }
@@ -2064,7 +2101,7 @@ struct Index {
     }.bindSheet(this.isSheet(), this.sheetContent(), {
       height: this.panel === 'browse' ? SheetSize.LARGE : SheetSize.MEDIUM, dragBar: true, showClose: false,
       backgroundColor: $r('app.color.panel'), onWillDismiss: (event: DismissSheetAction) => {
-        if (['browse', 'path', 'sort', 'filter', 'status', 'group'].includes(this.panel)) this.closePanel();
+        if (['browse', 'path', 'sort', 'filter', 'status', 'group', 'companion-display'].includes(this.panel)) this.closePanel();
         else { this.closePanel(); event.dismiss(); }
       }
     }).width('100%').height('100%').backgroundColor(this.view.account ? $r('app.color.canvas') : $r('app.color.login_bg'))

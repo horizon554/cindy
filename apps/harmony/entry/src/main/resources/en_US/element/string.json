@@ -833,6 +833,10 @@
       "value": "Show less"
     },
     {
+      "name": "show_collapsed_avatars",
+      "value": "Show avatars when collapsed"
+    },
+    {
       "name": "companion_no_preview",
       "value": "No message preview"
     },

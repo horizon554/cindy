@@ -18,6 +18,7 @@ export interface FolderList { path: string; parent: string; rows: Row[] }
 export interface NewTaskDraft { owner: string; text: string; attachments: Attachment[]; media: Map<string, string> }
 export interface ViewState {
   editingMessage?: string; editSubmitting?: boolean; editFileCount?: number; editRecoverable?: boolean;
+  companionsCollapsed: boolean; showCollapsedCompanionAvatars: boolean;
   companions?: Companion[]; companionError?: boolean; taskCompanion?: Companion; cloudCompanion?: Companion; cloudProfile?: GroupProfile; cloudMessages?: Row[]; cloudOlder?: boolean; cloudLoading?: boolean; cloudError?: boolean;
   liveHosts?: string[]; uploadPending?: boolean; legacyPicker?: boolean; homeIndex?: Row[]; attachments: Attachment[]; transfer: string; voice: string; pushEnabled: boolean; pushStatus: string; shareLabel: string;
   ssoWaiting: boolean; ssoMethods: Row[]; verification: string; accounts: Row[]; account: string; accountEmail?: string; accountAvatar?: string; relay: string; devices: Row[]; tasks: Row[]; messages: Row[];
@@ -41,6 +42,7 @@ export class Workspace {
   openDevice(id: string): Promise<void>;
   loadCompanionCall(key: string, visible: boolean): Promise<void> | undefined;
   companionAvatar(row: Companion, visible: () => boolean): Promise<string>;
+  setCompanionDisplay(key: 'companionsCollapsed' | 'showCollapsedCompanionAvatars', enabled: boolean): void;
   openCompanion(key: string): Promise<void>;
   refreshCompanions(): Promise<void>;
   retryGroupProfile(): Promise<void>;

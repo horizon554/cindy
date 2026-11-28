@@ -75,6 +75,10 @@ export async function saveSession(value, key = 'cn.session') {
   await asset.add(query);
 }
 
+export function homeDisplayPreferences(context) {
+  return preferences.getPreferencesSync(context, { name: 'home_display' });
+}
+
 export async function deviceIdentity(context) {
   const prefs = await preferences.getPreferences(context, 'device');
   let id = await prefs.get('id', '');
