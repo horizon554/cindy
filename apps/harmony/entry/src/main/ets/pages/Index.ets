@@ -6,6 +6,7 @@ import { installInputs } from '../services/nativeEntry';
 import { ModelBrandIcon } from './ModelBrandIcon';
 import { GroupProfilePage } from './GroupProfilePage';
 import { CompanionAvatar, companionPortraitKey } from './CompanionAvatar';
+import { MessageFooter } from './MessageFooter';
 import { LoginBrand } from './LoginBrand';
 import { SettingsPage } from './SettingsPage';
 import { groupHomeRows, HomeGroup, matchingCompanions } from '../services/homeList';
@@ -317,6 +318,7 @@ struct Index {
       this.codeSent = false; this.enterprise = false; this.otp = ''; this.notice = ''; this.workspace.clearMethods(); return true;
     }
     if (this.view.voice) { this.workspace.cancelVoice(); return true; }
+    if (this.view.editingMessage) { this.workspace.cancelMessageEdit(); return true; }
     if (this.sharePicker()) { this.workspace.dismissShare(); return true; }
     if (this.creating) {
       this.leaveNewTask();
@@ -487,6 +489,17 @@ struct Index {
     return this.view.attachments.length + (this.view.pendingUploads?.length || (this.view.transfer && !this.view.uploadPending ? 1 : 0));
   }
 
+  private async editUserMessage(task: string, id: string): Promise<void> {
+    await this.workspace.beginMessageEdit(task, id);
+    if (this.view.task !== task || this.view.editingMessage !== id) return;
+    this.inputOpen = true;
+    this.getUIContext().postFrameCallback(new AfterEditorLayout(() => {
+      if (this.view.task !== task || this.view.editingMessage !== id) return;
+      this.getUIContext().getFocusController().requestFocus('composer');
+      this.editor.caretPosition(this.view.draft.length);
+    }));
+  }
+
   private async sendFromComposer(): Promise<void> {
     if (this.view.voice && !await this.workspace.finishVoiceForSend()) return;
     if (!this.view.linked || this.composing || this.view.cards.length || (this.view.transfer && !this.view.uploadPending) || this.view.failedFile || this.view.delivery) return;
@@ -523,7 +536,7 @@ struct Index {
       this.stopAction()
     } else if (this.view.voice || this.view.draft.trim() || this.view.attachments.length || this.view.uploadPending || (this.creating && this.view.shareLabel)) {
       IconAction({ icon: $r('sys.symbol.arrow_up'), label: this.view.voice ? $r('app.string.voice_send') :
-        this.creating && this.view.shareLabel ? $r('app.string.share_new') : $r('app.string.send'),
+        this.view.editingMessage ? $r('app.string.message_resend') : this.creating && this.view.shareLabel ? $r('app.string.share_new') : $r('app.string.send'),
         controlId: this.creating ? 'create-send' : 'send', prominent: true, available: !this.busy && !this.composing && this.view.linked &&
           (!this.view.transfer || !!this.view.uploadPending) && !this.view.failedFile && !this.view.delivery && (!this.view.voice || this.view.voice === '录音中'),
         onTap: () => this.run(() => this.sendFromComposer()) })
@@ -598,6 +611,19 @@ struct Index {
   @Builder
   composer() {
     Column({ space: 3 }) {
+      if (this.view.editingMessage) {
+        Row({ space: 8 }) {
+          Text($r('app.string.message_editing')).fontSize(14).fontColor($r('app.color.ink')).layoutWeight(1)
+          Button($r('app.string.cancel'), { type: ButtonType.Capsule }).id('message-edit-cancel')
+            .fontSize(14).height(44).fontColor($r('app.color.ink')).backgroundColor(Color.Transparent)
+            .accessibilityText($r('app.string.message_edit_cancel')).enabled(!this.busy && !this.view.editSubmitting)
+            .onClick(() => this.workspace.cancelMessageEdit())
+        }.width('100%').padding({ left: 10 })
+        if (this.view.editFileCount) {
+          Text($r('app.string.message_edit_files', this.view.editFileCount)).fontSize(13)
+            .fontColor($r('app.color.muted')).alignSelf(ItemAlign.Start).margin({ left: 10 })
+        }
+      }
       if (this.expanded()) {
         Button({ type: ButtonType.Normal }) {
           Divider().width(32).strokeWidth(3).color($r('app.color.line'))
@@ -692,8 +718,8 @@ struct Index {
                 this.selectionStart = start; this.selectionEnd = end; this.selectionDraft = this.view.draft;
               }
             })
-            .onWillInsert(() => !this.view.voice && !this.view.waitingToCreate)
-            .onWillDelete(() => !this.view.voice && !this.view.waitingToCreate)
+            .onWillInsert(() => !this.view.voice && !this.view.waitingToCreate && !this.view.editSubmitting)
+            .onWillDelete(() => !this.view.voice && !this.view.waitingToCreate && !this.view.editSubmitting)
             .onChange((value: string, preview?: PreviewText) => {
               if (this.view.voice) return;
               this.composing = !!preview?.value;
@@ -741,9 +767,20 @@ struct Index {
           onTap: () => this.run(() => this.workspace.older()) }) }
       }
       LazyForEach(this.historySource, (item: Item) => {
-        ListItem() { HistoryMessage({ item: item, openLink: (url: string) => this.run(() => this.openPolicy(url)),
-          loadImage: (file: MediaInfo, visible: () => boolean) => this.workspace.thumbnail(file, visible),
-          preview: (file: MediaInfo) => this.run(() => this.showPreview(file, this.workspace.localPreview(file.path || ''))) }) }.padding({ left: 16, right: 16 })
+        ListItem() {
+          Column() {
+            HistoryMessage({ item: item, openLink: (url: string) => this.run(() => this.openPolicy(url)),
+              loadImage: (file: MediaInfo, visible: () => boolean) => this.workspace.thumbnail(file, visible),
+              preview: (file: MediaInfo) => this.run(() => this.showPreview(file, this.workspace.localPreview(file.path || ''))) })
+            if (item.actions) {
+              MessageFooter({ row: item, task: this.view.task, editing: this.view.editingMessage === item.id, companion: !!this.view.taskCompanion,
+                link: (task: string, id: string) => this.workspace.messageLink(task, id),
+                addLink: (href: string) => { this.workspace.editDraft([this.view.draft, href].filter((part: string) => !!part).join(' ')); this.inputOpen = true; },
+                edit: (task: string, id: string) => this.run(() => this.editUserMessage(task, id)),
+                fork: (task: string, id: string) => this.run(() => this.workspace.forkMessage(task, id)) })
+            }
+          }.width('100%')
+        }.padding({ left: 16, right: 16 })
       }, (item: Item) => this.historySource.key(item))
       if (this.view.live) {
         ListItem() { MessageBody({ value: this.view.live, openLink: (url: string) => this.run(() => this.openPolicy(url)) }) }.padding({ left: 16, right: 16 })
@@ -767,8 +804,8 @@ struct Index {
         Column({ space: 4 }) {
           if (this.view.pendingLabel) { Text(this.view.pendingLabel).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }) }
           Text(this.view.delivery).fontSize(13).fontColor($r('app.color.warning'))
-          PillAction({ label: this.view.retryable ? $r('app.string.retry_last') : $r('app.string.verify_delivery'),
-            available: !this.busy && this.view.linked, onTap: () => this.run(() => this.view.retryable ? this.workspace.retryOriginal() : this.workspace.checkDelivery()) })
+          PillAction({ label: this.view.editRecoverable ? $r('app.string.message_edit_recover') : this.view.retryable ? $r('app.string.retry_last') : $r('app.string.verify_delivery'),
+            available: !this.busy && this.view.linked, onTap: () => this.run(() => this.view.editRecoverable ? this.workspace.recoverMessageEdit() : this.view.retryable ? this.workspace.retryOriginal() : this.workspace.checkDelivery()) })
         }.alignSelf(ItemAlign.End).padding(8).backgroundColor($r('app.color.chip')).borderRadius(12)
       }
       if (this.view.cards.length) {

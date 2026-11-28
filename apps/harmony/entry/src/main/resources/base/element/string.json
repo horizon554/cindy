@@ -943,6 +943,74 @@
     {
       "name": "group_role_guest",
       "value": "访客"
+    },
+    {
+      "name": "message_copy",
+      "value": "复制消息"
+    },
+    {
+      "name": "message_share",
+      "value": "分享消息"
+    },
+    {
+      "name": "message_fork",
+      "value": "从这里新建任务"
+    },
+    {
+      "name": "message_fork_prompt",
+      "value": "从这条消息分叉为新任务？原任务会保留。"
+    },
+    {
+      "name": "message_link",
+      "value": "复制消息链接"
+    },
+    {
+      "name": "message_share_error",
+      "value": "无法打开系统分享"
+    },
+    {
+      "name": "message_now",
+      "value": "刚刚"
+    },
+    {
+      "name": "message_minutes",
+      "value": "%d 分钟前"
+    },
+    {
+      "name": "message_hours",
+      "value": "%d 小时前"
+    },
+    {
+      "name": "message_value",
+      "value": "价值 %s"
+    },
+    {
+      "name": "message_add_link",
+      "value": "添加消息链接到输入框"
+    },
+    {
+      "name": "message_edit",
+      "value": "编辑"
+    },
+    {
+      "name": "message_editing",
+      "value": "正在编辑消息"
+    },
+    {
+      "name": "message_edit_cancel",
+      "value": "取消编辑"
+    },
+    {
+      "name": "message_resend",
+      "value": "发送修改"
+    },
+    {
+      "name": "message_edit_files",
+      "value": "发送将撤销上一轮对 %d 个文件的改动"
+    },
+    {
+      "name": "message_edit_recover",
+      "value": "取回编辑内容"
     }
   ]
 }

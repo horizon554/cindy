@@ -1,17 +1,18 @@
+import { editAttachments, updateEditRanges } from './messageEdit';
 import { Companions, resolveCompanion } from './companions';
 import { HomeDevices } from './homeDevices';
 import { homeTask } from './homeList';
 import { modelBrand, providerBrand } from './modelBrand';
 import { messageMedia } from './media';
 import { openCache } from './cache';
-import { approvalKey, taskPage, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
+import { approvalKey, taskPage, messageActionRows, mergePage, presentCards, questionAnswer, decisionFor } from './taskModel';
 import util from '@ohos.util';
-import { mobileSessionBulkPatch, normalizeScheduleList, buildMobileModelSections, flattenProviderSections, providerPickerListArgs, deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
+import { resolveRemoteInvokeTimeoutMs, buildTaskDeepLink, isSharedTaskPeer, mobileSessionBulkPatch, normalizeScheduleList, buildMobileModelSections, flattenProviderSections, providerPickerListArgs, deviceLinkApiBaseUrl, DeviceLinkClient, parseAttachmentOssRef, isSharedTaskMediaKey, PROTOCOL_VERSION, permissionModeOrAsk, isTurnContinuationBoundaryEvent } from './protocol.generated';
 import { accountUrl, directoryUrl, relayUrl, request, deviceIdentity, readSession, saveSession, createSocket } from './platform';
 
 import { authorize, cancelAuthorization, consumeAuthorization, listenForWant, pendingAuthorization } from './sso';
 
-const taskView = { taskCompanion: undefined, legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', voiceCaret: undefined, pendingUploads: [], pickingFiles: false, waitingToCreate: false, failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
+const taskView = { canEditHistory: false, editingMessage: '', editFileCount: 0, editRecoverable: false, editSubmitting: false, queuedInputs: 0, taskCompanion: undefined, legacyPicker: false, agent: '', model: '', provider: '', permission: '', voicePreview: '', voiceCaret: undefined, pendingUploads: [], pickingFiles: false, waitingToCreate: false, failedFile: '', task: '', messages: [], live: '', draft: '', cards: [], running: false,
   attachments: [], transfer: '', uploadPending: false, voice: '', activity: '', hasOlder: false, paused: false, retryable: false, delivery: '' };
 const hostView = { ...taskView, device: '', tasks: [], linked: false, moreTasks: false };
 
@@ -57,13 +58,32 @@ export class Workspace {
       const host = this.state.device;
       patch.homeIndex = [...(this.state.homeIndex || []).filter(row => row.host !== host), ...patch.tasks.map(row => ({ ...row, host }))];
     }
+    if (patch.linked === false) patch.editSubmitting = false;
+    const wasRunning = !!(this.state.running || this.state.live);
     Object.assign(this.state, patch);
     if (this.home) {
       const live = [...this.home.peers.values()].filter(peer => peer.loaded);
       this.state.liveHosts = live.map(peer => peer.id);
       this.state.moreTasks = live.some(peer => peer.more && (!this.home.scope || this.home.scope === peer.id));
     }
-    if (patch.messages) this.visibleMessages = patch.messages.filter(row => !row.emptyVoiceCall);
+    const running = !!(this.state.running || this.state.live);
+    const refreshActions = patch.messages || wasRunning !== running || 'linked' in patch || 'taskCompanion' in patch ||
+      patch.cards || 'canEditHistory' in patch;
+    if (refreshActions) {
+      const writable = this.state.linked && !isSharedTaskPeer(this.state.device);
+      this.visibleMessages = messageActionRows(this.state.messages, running, writable && !this.companion && !this.botSession,
+        writable && this.state.canEditHistory && !this.state.cards.length);
+    }
+    if (this.editing && !this.state.editSubmitting && (this.state.queuedInputs ||
+        ((refreshActions || 'editSubmitting' in patch) && !this.currentEditRow(this.editing.id)))) {
+      this.cancelMessageEdit();
+      return;
+    }
+    if (this.editing && !this.state.editSubmitting && wasRunning !== running) {
+      this.editing.previewSequence++;
+      this.state.editFileCount = 0;
+      if (!running) this.previewMessageEdit(this.editing);
+    }
     this.changed({ ...this.state, messages: this.visibleMessages || this.state.messages });
   }
   putHomeRows(host, tasks) {
@@ -379,12 +399,14 @@ export class Workspace {
   }
   async requestHost(client, host, channel, args, guard) {
     guard();
-    const response = await client.invoke(host, { channel, args }, undefined, { beforeDispatch: guard });
+    const timeout = (channel === 'maker:fork' || channel.startsWith('maker:rewind:')) ? resolveRemoteInvokeTimeoutMs(channel, args, 'mobile') : undefined;
+    const response = await client.invoke(host, { channel, args }, timeout, { beforeDispatch: guard });
     guard();
     if (!response.ok) {
-      const error = new Error('电脑请求失败（' + response.error.code + '）');
-      const inner = /^\[(NOT_FOUND|PERMISSION_DENIED|ACCESS_REVOKED|FORBIDDEN)\]/.exec(response.error.message || '');
-      error.code = response.error.code === 'IPC_ERROR' && inner ? inner[1] : response.error.code;
+      const inner = /^\[(NOT_FOUND|PERMISSION_DENIED|ACCESS_REVOKED|FORBIDDEN|SESSION_RUNNING|REWIND_TARGET_NOT_LATEST|EDIT_NOT_LAST_MESSAGE|NO_PRIOR_ASSISTANT)\]/.exec(response.error.message || '');
+      const code = response.error.code === 'IPC_ERROR' && inner ? inner[1] : response.error.code;
+      const error = new Error('电脑请求失败（' + code + '）');
+      error.code = code;
       throw error;
     }
     return response.result;
@@ -463,7 +485,9 @@ export class Workspace {
     else throw new Error('网络恢复后会自动连接');
   }
   resetTask() {
+    this.editing = null;
     this.companion = null;
+    this.botSession = false;
     this.newDraft = null;
     this.localMedia.clear();
     this.recentImages.clear();
@@ -519,6 +543,188 @@ export class Workspace {
     if (roster.open.host) await roster.readRoom();
     else await roster.refresh();
   }
+  messageLink(task, id) {
+    const row = this.visibleMessages?.find(m => m.id === id && m.actions);
+    if (this.state.task !== task || !row?.clientId) return '';
+    const link = buildTaskDeepLink(task, this.state.device);
+    return link + (link.includes('?') ? '&' : '?') + 'message=' + encodeURIComponent(row.clientId);
+  }
+  currentEditRow(id) {
+    return this.visibleMessages?.find(row => row.id === id && row.editPlacement);
+  }
+  async beginMessageEdit(task, id) {
+    const row = this.currentEditRow(id);
+    if (!this.ready || this.state.task !== task || !row) throw new Error('只能编辑当前任务最后一条可编辑的用户消息');
+    if (this.editing?.id === id) return;
+    if (this.sending || this.pending || this.state.queuedInputs) throw new Error('请先处理排队或待确认的消息');
+    if (this.recording || this.transfer || this.state.pickingFiles || this.state.failedFile) throw new Error('请先完成录音或处理附件传输');
+    const editing = { id, clientId: row.clientId, draft: this.state.draft, attachments: this.state.attachments,
+      metadata: row.editSource.metadata, version: this.version, previewSequence: 0 };
+    this.editing = editing;
+    this.show({ editingMessage: id, editFileCount: 0, draft: row.editSource.text ?? row.messageText ?? row.title, attachments: editAttachments(row), error: '' });
+    if (!this.state.running && !this.state.live) this.previewMessageEdit(editing);
+  }
+  previewMessageEdit(editing) {
+    const sequence = ++editing.previewSequence;
+    this.invoke('maker:rewind:preview', [this.state.task, editing.clientId], editing.version).then(preview => {
+      if (this.editing === editing && editing.previewSequence === sequence && !this.state.editSubmitting &&
+          preview?.canRewind && !preview.conversationOnly) {
+        this.show({ editFileCount: preview.filesChanged?.length || 0 });
+      }
+    }).catch(() => {});
+  }
+  restoreEditStash() {
+    const editing = this.editing;
+    if (!editing) return;
+    this.editing = null;
+    this.cancelVoice();
+    this.cancelTransfer();
+    if (this.uploadBatch) this.discardFailed();
+    this.show({ editingMessage: '', editFileCount: 0, draft: editing.draft, attachments: editing.attachments });
+  }
+  cancelMessageEdit() {
+    if (!this.state.editSubmitting) this.restoreEditStash();
+  }
+  async submitMessageEdit(editing, text) {
+    const { task } = this.state, version = editing.version;
+    const guard = () => {
+      this.guard(version);
+      if (this.editing !== editing || !this.currentEditRow(editing.id) || !this.state.linked || this.state.queuedInputs) {
+        throw new Error('消息或队列已变更，请检查任务后重试');
+      }
+    };
+    guard();
+    if (this.pending || this.state.editSubmitting || (!text.trim() && !this.state.attachments.length)) return;
+    const outboxKey = this.key('outbox');
+    const candidate = { id: util.generateRandomUUID(true), editTarget: editing.clientId, text, metadata: editing.metadata,
+      attachments: this.state.attachments.slice(), retrySafe: this.deliverySupported, awaitingRewind: true };
+    const opts = { requireLatestUser: true, ...(this.state.editFileCount > 0 ? {} : { allowFileRestore: false }) };
+    let commitAttempted = false;
+    this.show({ editSubmitting: true });
+    try {
+      await this.flushDraft();
+      await this.sendSession(task, version);
+      await this.reconcile(version);
+      guard();
+      // Journal the replacement before the Host can remove the old turn. This phase can never enqueue.
+      this.pending = candidate;
+      await this.cache.write(outboxKey, candidate);
+      guard();
+      let updated;
+      for (let attempt = 0; ; attempt++) {
+        guard();
+        try {
+          commitAttempted = true;
+          updated = await this.invoke('maker:rewind:commit', [task, editing.clientId, opts], version);
+          break;
+        } catch (error) {
+          if (error.code !== 'SESSION_RUNNING' || attempt >= 20) throw error;
+          guard();
+          if (attempt === 0) await this.invoke('maker:input:stop', [task, { keepQueue: true, pauseQueue: true }], version);
+          await new Promise(resolve => setTimeout(resolve, 750));
+        }
+      }
+      this.guard(version);
+      if (updated?.id !== task) throw new Error('无法确认电脑的回退结果');
+      const replacement = { ...candidate, awaitingRewind: false };
+      await this.cache.write(outboxKey, replacement);
+      this.guard(version);
+      this.pending = replacement;
+      this.restoreEditStash();
+      this.show({ delivery: '正在发送编辑后的消息', pendingLabel: text });
+      this.validateSendSession(task, updated);
+      await this.enqueuePending(task, version, updated, replacement);
+    } catch (error) {
+      if (version === this.version && this.pending === candidate) {
+        if (!commitAttempted || ['SESSION_RUNNING', 'EDIT_NOT_LAST_MESSAGE', 'REWIND_TARGET_NOT_LATEST', 'NO_PRIOR_ASSISTANT',
+          'CHANNEL_NOT_ALLOWED', 'PERMISSION_DENIED', 'FORBIDDEN'].includes(error.code)) {
+          await this.cache.write(outboxKey, null);
+          this.guard(version);
+          this.pending = null;
+        } else {
+          this.restoreEditStash();
+          this.show({ editRecoverable: true, delivery: '上次编辑尚未确认，可取回内容', pendingLabel: text });
+        }
+      }
+      throw error;
+    } finally {
+      if (version === this.version) {
+        if (this.pending?.editTarget && !this.pending.awaitingRewind && this.state.delivery) {
+          this.reconcile(version).catch(() => {});
+        }
+        this.show({ editSubmitting: false });
+        this.scheduleHistory();
+      }
+    }
+  }
+  async recoverMessageEdit() {
+    const pending = this.pending, version = this.version;
+    if (!pending?.awaitingRewind || this.state.editSubmitting) return;
+    // No enqueue was ever issued in this phase. Bring the text back for explicit user review.
+    await this.history(version, false, true);
+    this.guard(version);
+    const row = this.visibleMessages?.find(item => item.clientId === pending.editTarget && item.editPlacement);
+    if (row && !this.state.queuedInputs) {
+      this.pending = null;
+      try { await this.beginMessageEdit(this.state.task, row.id); }
+      catch (err) { this.pending = pending; throw err; }
+      this.guard(version);
+      if (this.editing?.id !== row.id) {
+        this.pending = pending;
+        throw new Error('消息或队列已变更，请重新取回内容');
+      }
+      this.editing.metadata = pending.metadata;
+      this.show({ draft: pending.text, attachments: pending.attachments });
+    } else {
+      // Preserve the normal draft, including identical attachment IDs, across recovery.
+      const draft = this.state.draft;
+      const text = pending.text;
+      if (text && draft !== text && !draft.startsWith(text + '\n\n')) this.editDraft([text, draft].filter(Boolean).join('\n\n'));
+      const ids = new Set(this.state.attachments.map(file => file.id));
+      await this.setAttachments([...this.state.attachments, ...pending.attachments.filter(file => !ids.has(file.id))]);
+      await this.flushDraft();
+    }
+    this.guard(version);
+    await this.cache.write(this.key('outbox'), null);
+    this.guard(version);
+    this.pending = null;
+    this.show({ editRecoverable: false, delivery: '', pendingLabel: '', retryable: false });
+  }
+  async forkMessage(task, id) {
+    const pending = this.forkRequest;
+    if (pending?.version === this.version) {
+      if (pending.task === task && pending.id === id) return pending.promise;
+      throw new Error('正在创建分叉任务');
+    }
+    const request = { version: this.version, task, id, promise: this.openFork(task, id) };
+    this.forkRequest = request;
+    try { await request.promise; }
+    finally { if (this.forkRequest === request) this.forkRequest = null; }
+  }
+  async openFork(task, id) {
+    const row = this.visibleMessages?.find(m => m.id === id && m.forkable);
+    if (task !== this.state.task || !row || !this.state.linked || this.companion) throw new Error('消息当前无法分叉');
+    if (this.recording || this.transfer) throw new Error('请先完成录音或附件传输');
+    const version = this.version, device = this.state.device;
+    await this.flushDraft();
+    this.guard(version);
+    const fork = await this.invoke('maker:fork', [task, row.clientId], version);
+    this.guard(version);
+    if (!fork?.id || fork.id === task || (fork.parentSessionId && fork.parentSessionId !== task) ||
+      (fork.forkedAtMessageId && fork.forkedAtMessageId !== row.clientId)) throw new Error('电脑返回的分叉任务不匹配');
+    this.home?.metadata(device, fork.id, fork);
+    this.show({ tasks: [homeTask(fork), ...this.state.tasks.filter(t => t.id !== fork.id)] });
+    await this.flushDraft();
+    this.guard(version);
+    await this.invoke('device-link:unsubscribe', [{ topics: ['session:' + task] }], version);
+    this.guard(version);
+    const openedVersion = this.version + 1;
+    await this.enterTask(fork.id);
+    if (this.version === openedVersion && this.state.task === fork.id && this.state.device === device && row.role === 'user' && !this.state.draft) {
+      this.editDraft(row.messageText ?? row.title);
+      await this.flushDraft();
+    }
+  }
   closeCloudCompanion() { this.companions?.close(); }
   cloudHistory(older) { return this.companions?.readRoom(older); }
   async enterTask(id, companion) {
@@ -556,7 +762,8 @@ export class Workspace {
       const row = await this.invoke('local-db:sessions:get', [id], version);
       if (this.companion && (row?.source !== 'bot' || row.status !== 'active')) throw Object.assign(new Error('伙伴会话已不可用'), { code: 'COMPANION_CHANGED' });
       if (!row || row.id !== id || row.status === 'deleted' || row.hiddenAt) throw Object.assign(new Error('任务已不可访问'), { code: 'NOT_FOUND' });
-      this.show({ agent: row.agentKind || '', model: row.model || '', provider: row.providerId || '', permission: row.permissionMode || '' });
+      this.botSession = row.source === 'bot';
+      this.show({ canEditHistory: !!row.workingDir && !row.agentDeviceId && !row.agentSwitchIntent, agent: row.agentKind || '', model: row.model || '', provider: row.providerId || '', permission: row.permissionMode || '' });
       if (subscribe) await this.invoke('device-link:subscribe', [{ topics: ['session:' + id], controllerName: 'Cindy HarmonyOS', capabilities: [] }], version);
       const tick = this.runtimeTick;
       await Promise.all([
@@ -601,7 +808,7 @@ export class Workspace {
       return;
     }
     if (channel === 'maker:input:projection') {
-      this.show({ paused: !!payload.queuePaused, error: payload.error || '' });
+      this.show({ queuedInputs: payload.pendingQueue?.length ?? this.state.queuedInputs, paused: !!payload.queuePaused, error: payload.error || '' });
     }
     if (channel === 'local-db:messages:deleted') {
       const ids = new Set(payload.clientIds || [payload.clientId]);
@@ -748,8 +955,10 @@ export class Workspace {
   cancelDraftTimer() { clearTimeout(this.draftTimer); this.draftTimer = null; this.dirtyDraft = null; }
   editDraft(text) {
     if (!this.session || (!this.state.task && !this.newDraft)) return;
+    if (this.state.editSubmitting || text === this.state.draft) return;
+    if (this.editing) this.editing.metadata = updateEditRanges(this.editing.metadata, this.state.draft, text);
     this.show({ draft: text });
-    if (this.newDraft) return;
+    if (this.newDraft || this.editing) return;
     this.dirtyDraft = { key: this.key('draft'), text };
     clearTimeout(this.draftTimer);
     this.draftTimer = setTimeout(() => this.flushDraft().catch(e => this.report(e)), 150);
@@ -1066,10 +1275,15 @@ export class Workspace {
   async reconcile(version) {
     const pending = this.pending;
     const task = this.state.task;
+    if (pending?.awaitingRewind) {
+      if (!this.state.editSubmitting) this.show({ delivery: '上次编辑尚未确认，可取回内容', pendingLabel: pending.text,
+        editRecoverable: true, retryable: false });
+      return false;
+    }
     const ids = pending ? [task, { deliveryClientIds: [pending.id] }] : [task];
     const projection = await this.invoke('maker:input:get-projection', ids, version);
     this.deliverySupported = projection?.inputDeliveryVersion === 1;
-    this.show({ paused: !!projection?.queuePaused && !!projection.pendingQueue?.length });
+    this.show({ queuedInputs: projection?.pendingQueue?.length || 0, paused: !!projection?.queuePaused && !!projection.pendingQueue?.length });
     if (!pending || this.pending !== pending) return;
     const receipt = projection?.deliveryReceipts?.find(r => r.clientId === pending.id);
     const accepted = ['accepted','pending','removed'].includes(receipt?.state) ||
@@ -1093,6 +1307,15 @@ export class Workspace {
   async acknowledge(pending, version) {
     this.guard(version);
     const key = this.key('outbox');
+    if (pending.editTarget) {
+      // Editing stashed the ordinary composer. Even equal text or attachment IDs belong to that draft.
+      await this.cache.write(key, null);
+      if (this.pending === pending) {
+        this.pending = null;
+        this.show({ retryable: false, editRecoverable: false, delivery: '', pendingLabel: '' });
+      }
+      return;
+    }
     const sent = new Set((pending.attachments || []).map(a => a.id));
     const sameDraftFiles = this.state.attachments.length === sent.size && this.state.attachments.every(a => sent.has(a.id));
     for (const file of pending.attachments || []) {
@@ -1113,7 +1336,8 @@ export class Workspace {
   }
   async send(text) {
     if (this.sending) return this.sending;
-    this.sending = this.afterUpload(() => this.sendOnce(text)).finally(() => { this.sending = null; });
+    const editing = this.editing;
+    this.sending = this.afterUpload(() => editing ? this.submitMessageEdit(editing, this.state.draft) : this.sendOnce(text)).finally(() => { this.sending = null; });
     return this.sending;
   }
   async afterUpload(action, creating = false) {
@@ -1150,17 +1374,29 @@ export class Workspace {
       if (!this.pending) return;
       if (!retry || (!original && (this.pending.text !== text || JSON.stringify((this.pending.attachments || []).map(f => f.id)) !== JSON.stringify(this.state.attachments.map(f => f.id))))) throw new Error('上次发送结果待确认，请先核对原消息');
     }
-    await this.validateCompanion(version);
-    const row = await this.invoke('local-db:sessions:get', [task], version);
-    if (this.companion && (row?.source !== 'bot' || row.status !== 'active')) throw Object.assign(new Error('伙伴会话已不可用'), { code: 'COMPANION_CHANGED' });
-    if (!row || row.id !== task || !row.workingDir) throw new Error('无法确认任务工作目录');
-    if (row.agentDeviceId || row.agentSwitchIntent) throw new Error('此任务涉及远程执行或切换 Agent，暂不支持发送');
+    const row = await this.sendSession(task, version);
+    this.guard(version);
     const pending = this.pending || { id: util.generateRandomUUID(true), text, attachments: this.state.attachments.slice(), retrySafe: this.deliverySupported };
-    const clientId = pending.id;
     this.pending = pending;
     await this.flushDraft();
     this.guard(version);
     await this.cache.write(this.key('outbox'), pending);
+    return this.enqueuePending(task, version, row, pending);
+  }
+  async sendSession(task, version) {
+    await this.validateCompanion(version);
+    const row = await this.invoke('local-db:sessions:get', [task], version);
+    this.validateSendSession(task, row);
+    return row;
+  }
+  validateSendSession(task, row) {
+    if (this.companion && (row?.source !== 'bot' || row.status !== 'active')) throw Object.assign(new Error('伙伴会话已不可用'), { code: 'COMPANION_CHANGED' });
+    if (!row || row.id !== task || !row.workingDir) throw new Error('无法确认任务工作目录');
+    if (row.agentDeviceId || row.agentSwitchIntent) throw new Error('此任务涉及远程执行或切换 Agent，暂不支持发送');
+  }
+  async enqueuePending(task, version, row, pending) {
+    const { id: clientId, text, metadata } = pending;
+    const { agentReferences, replyQuote, ...textMetadata } = metadata || {};
     const createdAt = new Date().toISOString();
     const createOpts = {
       agentKind: row.agentKind || 'claude-code', workingDir: row.workingDir,
@@ -1173,10 +1409,11 @@ export class Workspace {
     const { images, files } = messageMedia(attachments);
     const item = {
       ...(attachments.length ? { files: attachments } : {}),
+      ...(agentReferences?.length ? { agentReferences } : {}),
       clientId, text, uiLanguage: 'zh-CN', workingDir: row.workingDir,
       model: row.model, effort: createOpts.effort, permissionMode: createOpts.permissionMode,
-      persistedContent: JSON.stringify({ text, images, files }),
-      chatMessage: { clientId, role: 'user', content: text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}), isStreaming: false, createdAt },
+      persistedContent: JSON.stringify({ text, images, files, ...metadata }),
+      chatMessage: { clientId, role: 'user', content: text, ...textMetadata, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}), isStreaming: false, createdAt },
       createOpts
     };
     try {
@@ -1283,7 +1520,7 @@ export class Workspace {
   async setAttachments(attachments, patch = {}) {
     const key = this.key('attachments');
     this.show({ ...patch, attachments });
-    if (!this.newDraft) {
+    if (!this.newDraft && !this.editing) {
       await this.cache.write(key, attachments.length ? attachments : null);
       this.markComposerDraft(key);
     }

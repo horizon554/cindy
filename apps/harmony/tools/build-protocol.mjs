@@ -10,6 +10,16 @@ await build({
   stdin: {
     resolveDir: root,
     contents: `
+      export { resolveRemoteInvokeTimeoutMs } from './packages/device-link/src/invokePolicy.ts';
+      export { messageCostParts } from './packages/maker-shared/src/usageCostDetails.ts';
+      export { formatCompactTokens } from './packages/maker-shared/src/usageFormat.ts';
+      export { resolveSessionTotalMoney } from './apps/mobile/src/session/remoteMoney.ts';
+      export { readSentPastedTextRanges, readSentSlashCommandRanges } from './apps/mobile/src/session/sentMessageAtoms.ts';
+      export { readAgentInputReferences } from './packages/maker-shared/src/agentInputProjection.ts';
+      export { readChatReplyQuote } from './packages/maker-shared/src/chatReplyQuote.ts';
+      export { isSyntheticTriggerText } from './packages/maker-shared/src/syntheticTrigger.ts';
+      export { buildTaskDeepLink } from './packages/maker-shared/src/brandIdentity.ts';
+      export { isSharedTaskPeer } from './packages/device-link/src/sharedTaskPeer.ts';
       export { hasBotGroupCollection, botGroupMemberLinks, botGroupResourceRef, botGroupChatDataFromResource, BOT_GROUP_CLIENT_PRIMITIVES } from './apps/mobile/src/session/botGroupRemote.ts';
       export { createConversationListState } from './packages/maker-shared/src/chatConversationList.ts';
       export { latestBotGroupMessage, botGroupActivityAt, chatGroupMemberName } from './packages/maker-shared/src/botGroupPresentation.ts';
@@ -26,7 +36,7 @@ await build({
       export { buildLegacyAttachmentOssRef, parseAttachmentOssRef, isSharedTaskMediaKey } from './packages/device-link/src/attachmentOssRef.ts';
       export { DeviceLinkClient } from './packages/device-link/src/client.ts';
       export { permissionModeOrAsk } from './packages/maker-shared/src/permissionMode.ts';
-      export { normalizeAskQuestions, answerKey, askQuestionOptions, askAnswerError, encodeMultiSelectAnswer, selectionFromAnswer, buildPermissionReviewPresentation } from './packages/maker-shared/src/interaction.ts';
+      export { isAnsweredAsyncQuestionClientId, normalizeAskQuestions, answerKey, askQuestionOptions, askAnswerError, encodeMultiSelectAnswer, selectionFromAnswer, buildPermissionReviewPresentation } from './packages/maker-shared/src/interaction.ts';
       export { isTurnContinuationBoundaryEvent } from './packages/maker-shared/src/turnContinuation.ts';
       export { providerMonogram, buildMobileModelSections, flattenProviderSections } from './apps/mobile/src/session/providerModelSections.ts';
       export { resolveModelIconKind } from './packages/model-providers/src/sections.ts';

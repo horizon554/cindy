@@ -1,5 +1,6 @@
+import { editSource } from './messageEdit';
 import { normalizeAskQuestions, answerKey, askQuestionOptions, askAnswerError, encodeMultiSelectAnswer,
-  selectionFromAnswer, buildPermissionReviewPresentation, readVoiceCallRecord } from './protocol.generated';
+  selectionFromAnswer, buildPermissionReviewPresentation, readVoiceCallRecord, formatCompactTokens, resolveSessionTotalMoney, messageCostParts, isSyntheticTriggerText, isAnsweredAsyncQuestionClientId } from './protocol.generated';
 
 function decode(content) {
   if (typeof content !== 'string') return content;
@@ -42,6 +43,72 @@ function callTranscript(record) {
   return { startedAt: record.startedAt, endedAt: record.endedAt, lines };
 }
 
+export function messageTimestamp(value) {
+  if (typeof value !== 'number' && typeof value !== 'string') return undefined;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function messageMetadata(row, content, text, hasMedia) {
+  if (row.role !== 'user' && row.role !== 'assistant') return {};
+  const meta = row.agentMeta || {};
+  const assistant = row.role === 'assistant';
+  const boundary = !assistant && !meta.parentUuid;
+  const eligible = !row.systemCardType && !meta.parentUuid && !meta.autoResume && !meta.failedSamplingAttempt && !isAnsweredAsyncQuestionClientId(row.clientId) &&
+    !meta.isStreaming && !meta.streaming && !content?.isStreaming && !content?.streaming &&
+    (assistant ? !!text.trim() : (!!text.trim() || hasMedia) && !isSyntheticTriggerText(text));
+  const fields = { createdAt: messageTimestamp(row.createdAt), boundary, eligible };
+  if (!assistant || !eligible) return fields;
+  const total = resolveSessionTotalMoney({ totalMoney: meta.userTurnCost, totalCostUsd: meta.userTurnCostUsd });
+  const money = total || resolveSessionTotalMoney({ totalMoney: meta.turnCost, totalCostUsd: meta.turnCostUsd });
+  let parts;
+  if (money) {
+    const estimate = total ? meta.userTurnCostIsEstimate : meta.turnCostIsEstimate;
+    const projected = estimate ? { ...money, approximate: true, kind: 'value-estimate' } : money;
+    const { conversation, additional } = messageCostParts(projected, meta.turnUsageDetails);
+    parts = [...conversation, ...additional].map(({ amount, currency, kind }) => {
+      const symbol = currency === 'USD' ? '$' : '¥';
+      const value = amount >= 1000 ? (amount / 1000).toFixed(1) + 'k' : amount >= 10 ? String(Math.round(amount)) :
+        amount >= 0.01 ? amount.toFixed(2) : amount >= 0.001 ? amount.toFixed(3) : '0.001';
+      return { value: (amount < 0.001 ? '<' : '') + symbol + value, estimated: kind === 'value-estimate' };
+    });
+  }
+  const tokens = meta.turnUsageDetails?.totalTokens;
+  const hasTokens = Number.isFinite(tokens) && tokens > 0;
+  return { ...fields, sealed: meta.turnCompleted === true || !!money || hasTokens,
+    usage: parts?.length ? parts : hasTokens ? [{ value: formatCompactTokens(tokens) + ' tokens', estimated: false }] : undefined };
+}
+
+// Resolve turn boundaries after merging pages so loading older history cannot manufacture a footer.
+export function messageActionRows(history, running, forkAllowed, editAllowed = false) {
+  const rows = history.filter(row => !row.emptyVoiceCall);
+  const finals = new Set();
+  let last, latestUser, sealed = false;
+  for (const row of rows) {
+    if (row.boundary ?? row.role === 'user') {
+      if (last && !sealed) finals.add(last);
+      last = undefined;
+      sealed = false;
+    }
+    if (row.role === 'user' && row.boundary !== false && row.realUser !== false) latestUser = row;
+    if (row.role === 'assistant' && !row.voiceCall && (row.eligible ?? !!row.title)) {
+      last = row;
+      if (row.sealed) { finals.add(row); sealed = true; }
+    }
+  }
+  if (!running && last && !sealed) finals.add(last);
+  let priorUser = false;
+  return rows.map(row => {
+    const user = row.role === 'user' && row.eligible !== false;
+    const actions = user || finals.has(row);
+    const forkable = actions && !!row.clientId && forkAllowed && (!user || priorUser);
+    if (row.boundary ?? user) priorUser = true;
+    const editPlacement = user && row === latestUser && row.clientId && editAllowed && row.editSource ?
+      (running ? 'menu' : 'inline') : undefined;
+    return actions ? { ...row, actions: true, forkable, editPlacement } : row;
+  });
+}
+
 export function taskPage(rows, task) {
   const page = [];
   const seen = new Set();
@@ -74,13 +141,20 @@ export function taskPage(rows, task) {
     for (const kind of ['images', 'files']) {
       for (const file of Array.isArray(content?.[kind]) ? content[kind] : []) {
         if (!file || typeof file !== 'object') continue;
-        const path = file.url || file.path;
-        media.push({ path: typeof path === 'string' ? path : '', name: file.originalName || file.name || (kind === 'images' ? '图片' : '文件'),
+        const image = kind === 'images';
+        const path = file.url || file.path || (image && file.base64 ? 'data:' + (file.mimeType || 'image/png') + ';base64,' + file.base64 : '');
+        media.push({ image, ...(file.sha256 ? { sha256: file.sha256 } : {}), path: typeof path === 'string' ? path : '', name: file.originalName || file.name || (kind === 'images' ? '图片' : '文件'),
           size: Number(file.size) || 0, mimeType: file.mimeType || (kind === 'images' ? 'image/*' : '') });
       }
     }
-    page.push({ ...(detail ? { detail } : {}), ...(media.length ? { media, messageText: content.text || '' } : {}), id: row.id, clientId: row.clientId || '', role: row.role || '',
-      title: (typeof title === 'string' && title) || body(row.content) || row.toolName || '暂不支持显示此消息' });
+    const messageText = body(row.content);
+    const editContent = typeof row.content === 'string' && (content === null || typeof content !== 'object') ? row.content : content;
+    const realUser = row.role === 'user' && !row.agentMeta?.autoResume && !row.systemCardType &&
+      !row.agentMeta?.parentUuid && !isAnsweredAsyncQuestionClientId(row.clientId) && !isSyntheticTriggerText(messageText);
+    const source = realUser ? editSource(editContent, media) : undefined;
+    if (source && source.text === (media.length ? content?.text || '' : messageText)) delete source.text;
+    page.push({ ...(row.role === 'user' ? { realUser, editSource: source } : {}), ...messageMetadata(row, content, messageText, media.length > 0), ...(detail ? { detail } : {}), ...(media.length ? { media, messageText: content.text || '' } : {}), id: row.id, clientId: row.clientId || '', role: row.role || '',
+      title: (typeof title === 'string' && title) || messageText || row.toolName || '暂不支持显示此消息' });
   }
   return page.reverse();
 }

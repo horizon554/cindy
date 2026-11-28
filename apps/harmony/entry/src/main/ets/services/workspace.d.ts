@@ -2,7 +2,8 @@ import { PickerBrand } from './modelBrand';
 import { common } from '@kit.AbilityKit';
 export interface CallLine { role: string; text: string; status?: string }
 export interface CallTranscript { startedAt: number; endedAt?: number; lines: CallLine[] }
-export interface Row { author?: string; voiceCall?: CallTranscript; agentKind?: string; lead?: boolean; attached?: boolean; remote?: boolean; hasDraft?: boolean; localDraft?: boolean; scheduled?: boolean; scheduleStopped?: boolean; pinnedAt?: string; rightStatus?: string; host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; created?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
+export interface UsagePart { value: string; estimated: boolean }
+export interface Row { clientId?: string; createdAt?: string; actions?: boolean; forkable?: boolean; editPlacement?: 'inline' | 'menu'; usage?: UsagePart[]; author?: string; voiceCall?: CallTranscript; agentKind?: string; lead?: boolean; attached?: boolean; remote?: boolean; hasDraft?: boolean; localDraft?: boolean; scheduled?: boolean; scheduleStopped?: boolean; pinnedAt?: string; rightStatus?: string; host?: string; detail?: string; id: string; title: string; running?: boolean; project?: string; summary?: string; updated?: string; created?: string; status?: string; media?: MediaInfo[]; messageText?: string; offline?: boolean; role?: string }
 export interface Companion { group?: boolean; recentCall?: boolean; faces?: Companion[]; preview?: string; subtitle?: string; searchText?: string; key: string; id: string; host: string; title: string; avatar: string; avatarImage?: string; cloudImage?: string; preset?: string; actor?: string }
 export interface GroupMember extends Companion { role?: string }
 export interface GroupProfile { title: string; topic?: string; description?: string; members: GroupMember[] }
@@ -16,6 +17,7 @@ export interface Attachment extends MediaInfo { id: string }
 export interface FolderList { path: string; parent: string; rows: Row[] }
 export interface NewTaskDraft { owner: string; text: string; attachments: Attachment[]; media: Map<string, string> }
 export interface ViewState {
+  editingMessage?: string; editSubmitting?: boolean; editFileCount?: number; editRecoverable?: boolean;
   companions?: Companion[]; companionError?: boolean; taskCompanion?: Companion; cloudCompanion?: Companion; cloudProfile?: GroupProfile; cloudMessages?: Row[]; cloudOlder?: boolean; cloudLoading?: boolean; cloudError?: boolean;
   liveHosts?: string[]; uploadPending?: boolean; legacyPicker?: boolean; homeIndex?: Row[]; attachments: Attachment[]; transfer: string; voice: string; pushEnabled: boolean; pushStatus: string; shareLabel: string;
   ssoWaiting: boolean; ssoMethods: Row[]; verification: string; accounts: Row[]; account: string; accountEmail?: string; accountAvatar?: string; relay: string; devices: Row[]; tasks: Row[]; messages: Row[];
@@ -42,6 +44,11 @@ export class Workspace {
   openCompanion(key: string): Promise<void>;
   refreshCompanions(): Promise<void>;
   retryGroupProfile(): Promise<void>;
+  messageLink(task: string, id: string): string;
+  beginMessageEdit(task: string, id: string): Promise<void>;
+  cancelMessageEdit(): void;
+  recoverMessageEdit(): Promise<void>;
+  forkMessage(task: string, id: string): Promise<void>;
   closeCloudCompanion(): void;
   cloudHistory(older: boolean): Promise<void>;
   openTask(id: string): Promise<void>;

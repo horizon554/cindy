@@ -11,8 +11,8 @@ export function uploadedFile(meta, key) {
 
 export function messageMedia(attachments) {
   const images = [], files = [];
-  for (const { name, path, size, sha256, mimeType, category } of attachments) {
-    if (category === 'image') images.push({ originalName: name, url: path, mimeType, size, sha256 });
+  for (const { name, path, size, sha256, mimeType, category, base64 } of attachments) {
+    if (category === 'image') images.push({ originalName: name, ...(base64 ? { base64 } : { url: path }), mimeType, size, sha256 });
     else files.push({ name, path, size, sha256 });
   }
   return { images, files };

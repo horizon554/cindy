@@ -516,6 +516,10 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
       switch (channel) {
         case 'local-db:sessions:list': result = [...sessions.values()].slice(0,id); break;
         case 'local-db:sessions:get-many': result = id.map(k => sessions.get(k)).filter(Boolean); break;
+        case 'maker:fork':
+          result = { ...sessions.get(id), id: 'fixture-fork', parentSessionId: id, forkedAtMessageId: args[1] };
+          sessions.set(result.id, result);
+          break;
         case 'maker:get-new-maker-defaults': result = {selectedAgentKind:'pi',model:id === 'pi' ? 'host-model':'other', permissionMode:'ask'}; break;
         case 'maker:list-available-agents': result = ['pi','codex']; break;
         case 'maker:provider:list':
@@ -571,6 +575,39 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
   await assert.rejects(app.applyPreference('model','unlisted'), /重新选择/);
   await app.applyPreference('model','other');
   assert.equal(app.state.model,'other');
+  // Integration: resolve final answers across the 40-row Host page boundary, including
+  // an active tail, subagent output, two sealed answers and older hosts without a seal.
+  const message = (id, role, content, agentMeta) => ({ id, clientId: 'c-' + id, sessionId: task,
+    createdAt: '2026-02-03T04:05:06.000Z', role, content, agentMeta });
+  history = [message('initial','user','question'), message('middle','assistant','working'),
+    message('settled','assistant','first answer',{ turnCompleted:true, userTurnCostUsd:5.62, userTurnCostIsEstimate:true }),
+    message('continue','assistant','another answer',{ turnUsageDetails:{ totalTokens:1200 } }),
+    message('next','user','second request'), message('unsealed','assistant','legacy final'),
+    message('worker','assistant','nested',{parentUuid:'parent'}),
+    message('last','user','latest request'), message('stream','assistant','in progress',{ streaming:true }),
+    ...Array.from({length:33}, (_,i) => message('tool-'+i, 'tool_result','ok'))];
+  app.show({running:true});
+  await app.history(app.version, false, true);
+  assert.equal(view.hasOlder,true);
+  await app.older();
+  assert.deepEqual(view.messages.filter(m => m.actions).map(m => m.id), ['initial','settled','continue','next','unsealed','last']);
+  assert.equal(view.messages.find(m=>m.id==='settled').createdAt, '2026-02-03T04:05:06.000Z');
+  assert.deepEqual(view.messages.find(m=>m.id==='settled').usage,[{value:'$5.62',estimated:true}]);
+  assert.deepEqual(view.messages.find(m=>m.id==='continue').usage,[{value:'1.2k tokens',estimated:false}]);
+  assert.equal(view.messages[0].forkable,false);
+  assert.match(app.messageLink(task,'settled'), /message=c-settled/);
+  await assert.rejects(app.forkMessage(task,'worker'));
+  await assert.rejects(app.forkMessage(task,'initial'));
+  app.editDraft('original draft');
+  await Promise.all([app.forkMessage(task,'next'), app.forkMessage(task,'next')]);
+  assert.equal(view.task,'fixture-fork');
+  assert.equal(view.draft,'second request');
+  assert.deepEqual(requests.filter(r=>r.channel==='maker:fork').map(r=>r.args),[[task,'c-next']]);
+  await app.back();
+  await app.openTask(task);
+  assert.equal(view.draft,'original draft');
+  app.editDraft('');
+  app.show({running:false});
   // A whole page of empty calls still leads to the older visible conversation.
   const emptyRecord = { version: 1, callId: 'empty', startedAt: 1000, turns: [], handoffs: [] };
   history = [{ id: 'older-text', sessionId: task, role: 'user', content: 'before calls' },
@@ -800,6 +837,134 @@ test('recover creation, reconcile pages and decisions, isolate offline drafts an
 // Tier 1. Harmony page entry points. A picked file may finish after navigation,
 // and an accepted attachment-only enqueue may lose its reply. Assert what the
 // next task and the Host actually receive, including a cold task restore.
+// Regression (integration): an edit must never append before the latest-user rewind is confirmed,
+// even across a lost Host reply. The mobile tests do not exercise the Harmony draft/outbox handoff.
+test('edit only the latest user turn and recover its replacement across a lost rewind reply', async t => {
+  globalThis.harmonyPorts = { deviceIdentity: async () => 'phone', readSession: async () => null };
+  const { Workspace } = await import('data:text/javascript;base64,' + Buffer.from(bundled.outputFiles[0].text).toString('base64') + '#edit');
+  let view;
+  const app = new Workspace(state => { view = state; });
+  await app.init({});
+  app.session = { id: 'account' };
+  const task = { id: 'edit-task', workingDir: '/fixture', agentKind: 'codex' };
+  const msg = (id, role, content) => ({ id, clientId: 'client-' + id, sessionId: task.id, role, content });
+  const attachment = { name: 'notes.txt', path: '/fixture/notes.txt', size: 12 };
+  const first = msg('first', 'user', 'one');
+  const last = msg('last', 'user', { text: '/go now', slashCommandRanges: [{start: 0, end: 3}], files: [attachment] });
+  let history = [first, msg('reply', 'assistant', 'old reply'), last, msg('final', 'assistant', 'final')];
+  let running = false, loseRewind = false, queue = [];
+  const calls = [], received = [];
+  app.client = { async invoke(_, { channel, args }, timeout, options) {
+    options.beforeDispatch();
+    calls.push(channel);
+    let result;
+    switch (channel) {
+      case 'local-db:sessions:get': result = task; break;
+      case 'device-link:subscribe': case 'device-link:unsubscribe': break;
+      case 'local-db:messages:list': result = history.slice().reverse(); break;
+      case 'maker:get-pending-interactions': result = []; break;
+      case 'maker:list-active': result = []; break;
+      case 'maker:input:get-projection': result = { inputDeliveryVersion: 1, pendingQueue: queue }; break;
+      case 'maker:rewind:preview': result = { canRewind: true, filesChanged: ['notes.txt'] }; break;
+      case 'maker:rewind:commit': {
+        assert.ok(timeout > 0);
+        assert.equal(args[0], task.id);
+        assert.equal(args[2].requireLatestUser, true);
+        if (running) return { ok: false, error: { code: 'IPC_ERROR', message: '[SESSION_RUNNING]' } };
+        const latest = history.filter(m => m.role === 'user').at(-1);
+        if (args[1] !== latest.clientId) return {ok:false, error:{code:'IPC_ERROR',message:'[REWIND_TARGET_NOT_LATEST]'}};
+        history = history.slice(0, history.indexOf(latest));
+        if (loseRewind) throw new Error('rewind reply lost');
+        assert.equal(args[2].allowFileRestore, false);
+        result = task;
+        break;
+      }
+      case 'maker:input:stop': running = false; break;
+      case 'maker:input:enqueue':
+        received.push(args[1]);
+        history.push({ ...msg('replacement', 'user', JSON.parse(args[1].persistedContent)), clientId: args[1].clientId });
+        break;
+      default: throw new Error('Unexpected call: ' + channel);
+    }
+    return { ok: true, result };
+  }};
+  t.after(() => { clearTimeout(app.timer); app.cancelDraftTimer(); delete globalThis.harmonyPorts; });
+  app.show({ linked: true, device: 'pc', tasks: [task] });
+  await app.openTask(task.id);
+  const entries = () => view.messages.filter(row => row.editPlacement).map(row => [row.id, row.editPlacement]);
+  assert.deepEqual(entries(), [['last','inline']]);
+  await assert.rejects(app.beginMessageEdit(task.id, first.id));
+  const stash = { id: 'own-file', ...attachment };
+  app.editDraft('original draft');
+  await app.setAttachments([stash]);
+  await app.beginMessageEdit(task.id, last.id);
+  await until(() => view.editFileCount === 1);
+  assert.equal(view.draft, '/go now');
+  assert.equal(view.attachments[0].path, attachment.path);
+  await app.removeFile(view.attachments[0].id);
+  app.editDraft('discard me');
+  app.cancelMessageEdit();
+  assert.deepEqual([view.draft, view.attachments], ['original draft', [stash]]);
+  assert.equal(calls.includes('maker:rewind:commit'), false);
+
+  running = true;
+  app.push('maker:event', { event: {type:'status',data:{isRunning:true}} });
+  assert.deepEqual(entries(), [['last','menu']]);
+  await app.beginMessageEdit(task.id, last.id);
+  assert.equal(calls.includes('maker:input:stop'), false);
+  app.editDraft('try /go now');
+  await Promise.all([app.send(view.draft), app.send(view.draft)]);
+  assert.equal(calls.filter(c => c === 'maker:input:stop').length, 1);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].text, 'try /go now');
+  assert.deepEqual(received[0].chatMessage.slashCommandRanges, [{ start: 4, end: 7 }]);
+  assert.equal(received[0].files[0].path, attachment.path);
+  assert.deepEqual(history.map(m => m.id), ['first','reply','replacement']);
+  assert.deepEqual([view.draft, view.attachments], ['original draft', [stash]]);
+  app.show({running:false});
+  await app.history(app.version);
+  await app.beginMessageEdit(task.id, 'replacement');
+  queue = [{clientId:'another'}];
+  app.push('maker:input:projection', {pendingQueue: queue});
+  assert.equal(view.editingMessage, '');
+  assert.equal(view.draft, 'original draft');
+  queue = [];
+  app.push('maker:input:projection', {pendingQueue: queue});
+  await app.beginMessageEdit(task.id, 'replacement');
+  app.editDraft('survives disconnect');
+  loseRewind = true;
+  await assert.rejects(app.send(view.draft), /reply lost/);
+  assert.equal(view.editRecoverable, true);
+  await app.back();
+  await app.openTask(task.id);
+  assert.equal(view.editRecoverable, true);
+  await app.recoverMessageEdit();
+  assert.equal(view.draft, 'survives disconnect\n\noriginal draft');
+  assert.equal(received.length, 1);
+  assert.deepEqual(entries(), [['first','inline']]);
+  await app.beginMessageEdit(task.id, 'first');
+  history.push(msg('newer','user','newer input'));
+  await app.history(app.version);
+  assert.equal(view.editingMessage, '');
+  assert.deepEqual(entries(), [['newer','inline']]);
+  history.push(msg('structured','user',{text:'linked',sessionReferences:[{sessionId:'elsewhere'}]}));
+  await app.history(app.version);
+  assert.deepEqual(entries(), []);
+
+  // Another controller appends after the local footer was drawn but before commit.
+  history.push(msg('race','user','editable'));
+  await app.history(app.version);
+  await app.beginMessageEdit(task.id,'race');
+  app.editDraft('must not overwrite another controller');
+  history.push(msg('other-controller','user','intervening'));
+  await assert.rejects(app.send(view.draft), /REWIND_TARGET_NOT_LATEST/);
+  assert.equal(history.at(-1).id, 'other-controller');
+  assert.equal(received.length, 1);
+  await app.history(app.version);
+  assert.equal(view.editingMessage, '');
+  assert.deepEqual(entries(), [['other-controller','inline']]);
+});
+
 test('route a notification, accept a share and recover one attachment-only message', async () => {
   const previews = [];
   globalThis.harmonyPorts = { request: async (url, body, token) => {

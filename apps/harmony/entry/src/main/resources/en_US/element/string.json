@@ -943,6 +943,74 @@
     {
       "name": "group_role_guest",
       "value": "Guest"
+    },
+    {
+      "name": "message_copy",
+      "value": "Copy message"
+    },
+    {
+      "name": "message_share",
+      "value": "Share message"
+    },
+    {
+      "name": "message_fork",
+      "value": "Fork from this message"
+    },
+    {
+      "name": "message_fork_prompt",
+      "value": "Create a new task from this message? The original task will be kept."
+    },
+    {
+      "name": "message_link",
+      "value": "Copy message link"
+    },
+    {
+      "name": "message_share_error",
+      "value": "Could not open the share sheet"
+    },
+    {
+      "name": "message_now",
+      "value": "Just now"
+    },
+    {
+      "name": "message_minutes",
+      "value": "%d min ago"
+    },
+    {
+      "name": "message_hours",
+      "value": "%d h ago"
+    },
+    {
+      "name": "message_value",
+      "value": "Value %s"
+    },
+    {
+      "name": "message_add_link",
+      "value": "Add message link to draft"
+    },
+    {
+      "name": "message_edit",
+      "value": "Edit"
+    },
+    {
+      "name": "message_editing",
+      "value": "Editing message"
+    },
+    {
+      "name": "message_edit_cancel",
+      "value": "Cancel editing"
+    },
+    {
+      "name": "message_resend",
+      "value": "Send edited message"
+    },
+    {
+      "name": "message_edit_files",
+      "value": "Sending will undo changes to %d files from this turn"
+    },
+    {
+      "name": "message_edit_recover",
+      "value": "Recover edited message"
     }
   ]
 }
